@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CC-Web - Claude Code Web Interface</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="app">
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>Sessions</h2>
+                <button id="newSessionBtn" title="New Session">+</button>
+            </div>
+            <div id="newSessionForm" class="new-session-form" style="display:none;">
+                <input type="text" id="cwdInput" placeholder="Working directory (e.g., C:/Users/you/project)">
+                <div class="form-buttons">
+                    <button id="createSessionBtn">Create</button>
+                    <button id="cancelSessionBtn">Cancel</button>
+                </div>
+            </div>
+            <div id="sessionList" class="session-list"></div>
+            <div class="sidebar-footer">
+                <button id="modelsBtn" class="footer-btn">Models</button>
+            </div>
+        </div>
+
+        <div class="main">
+            <div class="topbar">
+                <button id="toggleSidebar" class="icon-btn">☰</button>
+                <span class="logo">⚡ CC-Web</span>
+                <span id="modelDisplay" class="model-display"></span>
+            </div>
+
+            <div class="chat-container" id="chatContainer">
+                <div class="welcome-screen" id="welcomeScreen">
+                    <h1>⚡ CC-Web</h1>
+                    <p>Claude Code Web Interface</p>
+                    <ol>
+                        <li>Click <strong>+</strong> to create a new session</li>
+                        <li>Enter your project directory</li>
+                        <li>Start chatting with Claude Code!</li>
+                    </ol>
+                </div>
+
+                <div id="messages" class="messages" style="display:none;"></div>
+                
+                <div id="typingIndicator" class="typing-indicator" style="display:none;">
+                    <span>Thinking...</span>
+                </div>
+            </div>
+
+            <div class="input-area" id="inputArea" style="display:none;">
+                <div class="input-wrapper">
+                    <textarea id="messageInput" placeholder="Message..." rows="1"></textarea>
+                    <button id="sendBtn" class="send-btn">Send</button>
+                </div>
+                <div class="input-footer">
+                    <select id="modelSelect"></select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
