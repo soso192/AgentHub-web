@@ -50,8 +50,12 @@ pub async fn delete_session(
     let session_id = path.into_inner();
     let mut sessions = data.sessions.lock().unwrap();
     
-    if sessions.remove(&session_id).is_some() {
-        data.claude_manager.lock().unwrap().remove_session(&session_id);
+    if let Some(session) = sessions.remove(&session_id) {
+        // Remove from the appropriate assistant
+        let mut registry = data.registry.lock().unwrap();
+        if let Some(assistant) = registry.get_mut(&session.assistant) {
+            assistant.delete_session(&session_id);
+        }
         HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
     } else {
         HttpResponse::NotFound().json(serde_json::json!({

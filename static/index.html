@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CC-Web - Claude Code Web Interface</title>
+    <title>CC-Web - AI Coding Assistant Hub</title>
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -14,7 +14,22 @@
                 <button id="newSessionBtn" title="New Session">+</button>
             </div>
             <div id="newSessionForm" class="new-session-form" style="display:none;">
-                <input type="text" id="cwdInput" placeholder="Working directory (e.g., C:/Users/you/project)">
+                <div class="form-group">
+                    <label>AI Assistant</label>
+                    <select id="assistantSelect" class="form-select">
+                        <!-- Populated dynamically -->
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Working Directory</label>
+                    <input type="text" id="cwdInput" placeholder="e.g., C:/Users/you/project">
+                </div>
+                <div class="form-group">
+                    <label>Model</label>
+                    <select id="modelSelectNew" class="form-select">
+                        <!-- Populated dynamically -->
+                    </select>
+                </div>
                 <div class="form-buttons">
                     <button id="createSessionBtn">Create</button>
                     <button id="cancelSessionBtn">Cancel</button>
@@ -22,7 +37,9 @@
             </div>
             <div id="sessionList" class="session-list"></div>
             <div class="sidebar-footer">
-                <button id="modelsBtn" class="footer-btn">Models</button>
+                <div class="assistant-status" id="assistantStatus">
+                    <!-- Shows available assistants -->
+                </div>
             </div>
         </div>
 
@@ -30,24 +47,44 @@
             <div class="topbar">
                 <button id="toggleSidebar" class="icon-btn">☰</button>
                 <span class="logo">⚡ CC-Web</span>
-                <span id="modelDisplay" class="model-display"></span>
+                
+                <!-- Assistant Selector -->
+                <div class="topbar-selector">
+                    <label>Assistant:</label>
+                    <select id="assistantSelector" class="topbar-select">
+                        <!-- Populated dynamically -->
+                    </select>
+                </div>
+                
+                <!-- Model Selector -->
+                <div class="topbar-selector">
+                    <label>Model:</label>
+                    <select id="modelSelector" class="topbar-select">
+                        <!-- Populated dynamically -->
+                    </select>
+                </div>
+                
+                <span id="statusDisplay" class="status-display"></span>
             </div>
 
             <div class="chat-container" id="chatContainer">
                 <div class="welcome-screen" id="welcomeScreen">
                     <h1>⚡ CC-Web</h1>
-                    <p>Claude Code Web Interface</p>
+                    <p>AI Coding Assistant Hub</p>
+                    <div class="assistant-cards" id="assistantCards">
+                        <!-- Populated dynamically -->
+                    </div>
                     <ol>
+                        <li>Select an <strong>AI Assistant</strong> above</li>
                         <li>Click <strong>+</strong> to create a new session</li>
-                        <li>Enter your project directory</li>
-                        <li>Start chatting with Claude Code!</li>
+                        <li>Start coding with your preferred AI!</li>
                     </ol>
                 </div>
 
                 <div id="messages" class="messages" style="display:none;"></div>
                 
                 <div id="typingIndicator" class="typing-indicator" style="display:none;">
-                    <span>Thinking...</span>
+                    <span class="assistant-name"></span> Thinking...
                 </div>
             </div>
 
@@ -55,9 +92,6 @@
                 <div class="input-wrapper">
                     <textarea id="messageInput" placeholder="Message..." rows="1"></textarea>
                     <button id="sendBtn" class="send-btn">Send</button>
-                </div>
-                <div class="input-footer">
-                    <select id="modelSelect"></select>
                 </div>
             </div>
         </div>

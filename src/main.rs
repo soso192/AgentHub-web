@@ -1,18 +1,18 @@
 use actix_web::{web, App, HttpServer, middleware};
 use actix_cors::Cors;
 use std::sync::Mutex;
-use std::collections::HashMap;
 
 mod api;
-mod claude;
+mod ai;
 mod models;
 mod static_files;
 
-use claude::ClaudeManager;
+use ai::{AssistantRegistry, AiAssistant};
+use ai::claude::ClaudeAssistant;
 
 pub struct AppState {
-    pub claude_manager: Mutex<ClaudeManager>,
-    pub sessions: Mutex<HashMap<String, models::Session>>,
+    pub registry: Mutex<AssistantRegistry>,
+    pub sessions: Mutex<std::collections::HashMap<String, models::Session>>,
 }
 
 #[actix_web::main]
@@ -20,9 +20,21 @@ async fn main() -> std::io::Result<()> {
     println!("🚀 Starting CC-Web server...");
     println!("📍 Open http://localhost:3030 in your browser");
 
+    // Initialize AI assistant registry
+    let mut registry = AssistantRegistry::new();
+    
+    // Register Claude Code assistant
+    let claude = ClaudeAssistant::new();
+    println!("✅ Claude Code registered (default model: {})", claude.default_model());
+    registry.register(Box::new(claude));
+    
+    // TODO: Register more assistants here
+    // registry.register(Box::new(CodexAssistant::new()));
+    // registry.register(Box::new(PiAssistant::new()));
+
     let data = web::Data::new(AppState {
-        claude_manager: Mutex::new(ClaudeManager::new()),
-        sessions: Mutex::new(HashMap::new()),
+        registry: Mutex::new(registry),
+        sessions: Mutex::new(std::collections::HashMap::new()),
     });
 
     HttpServer::new(move || {
@@ -38,6 +50,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(data.clone())
             // API routes
             .route("/api/models", web::get().to(api::models::get_models))
+            .route("/api/assistants", web::get().to(api::models::list_assistants))
             .route("/api/sessions", web::get().to(api::sessions::list_sessions))
             .route("/api/sessions/{id}", web::get().to(api::sessions::get_session))
             .route("/api/sessions/{id}", web::delete().to(api::sessions::delete_session))

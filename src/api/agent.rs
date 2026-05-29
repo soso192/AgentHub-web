@@ -1,8 +1,6 @@
 use actix_web::{web, HttpResponse, HttpRequest};
-use actix_web::rt::time;
 use tokio::sync::mpsc;
-use futures::StreamExt;
-use crate::models::{NewSessionRequest, CommandRequest, Message, AgentEvent};
+use crate::models::{NewSessionRequest, CommandRequest, Message};
 use crate::AppState;
 use chrono::Utc;
 
@@ -10,19 +8,40 @@ pub async fn new_session(
     data: web::Data<AppState>,
     req: web::Json<NewSessionRequest>,
 ) -> HttpResponse {
-    let model = req.model.clone()
-        .or_else(|| {
-            dirs::home_dir()
-                .map(|h| h.join(".claude").join("settings.json"))
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|s| s.get("env")?.get("ANTHROPIC_MODEL")?.as_str().map(String::from))
-        })
-        .unwrap_or_else(|| "MiniMax-M2.7".to_string());
+    let assistant_name = req.assistant.clone().unwrap_or_else(|| "claude".to_string());
+    let model = req.model.clone();
+    
+    let mut registry = data.registry.lock().unwrap();
+    
+    // Get the requested assistant
+    let assistant = match registry.get_mut(&assistant_name) {
+        Some(a) => a,
+        None => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "error": format!("Assistant '{}' not found", assistant_name)
+            }));
+        }
+    };
 
-    let session_id = data.claude_manager.lock().unwrap()
-        .create_session(req.cwd.clone(), Some(model.clone()));
+    // Create session - use async directly
+    let session_id = match assistant.create_session(req.cwd.clone(), model.clone()).await {
+        Ok(id) => id,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "error": e
+            }));
+        }
+    };
 
+    let current_model = assistant.get_model(&session_id)
+        .unwrap_or_else(|| assistant.default_model().to_string());
+
+    // Drop the registry lock before sending message
+    drop(registry);
+
+    // Store session info
     let now = Utc::now();
     let user_message = Message {
         role: "user".to_string(),
@@ -32,8 +51,9 @@ pub async fn new_session(
 
     let session = crate::models::Session {
         id: session_id.clone(),
+        assistant: assistant_name.clone(),
         cwd: req.cwd.clone(),
-        model: model.clone(),
+        model: current_model.clone(),
         messages: vec![user_message],
         created_at: now,
         updated_at: now,
@@ -41,15 +61,25 @@ pub async fn new_session(
 
     data.sessions.lock().unwrap().insert(session_id.clone(), session);
 
-    // Call Claude
-    let claude_response = data.claude_manager.lock().unwrap()
-        .call_claude(&session_id, &req.message);
+    // Send message to assistant
+    let registry = data.registry.lock().unwrap();
+    let assistant = match registry.get(&assistant_name) {
+        Some(a) => a,
+        None => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "error": format!("Assistant '{}' not available", assistant_name)
+            }));
+        }
+    };
 
-    match claude_response {
-        Ok(response) => {
+    let response = assistant.send_message(&session_id, &req.message).await;
+
+    match response {
+        Ok(resp) => {
             let assistant_message = Message {
                 role: "assistant".to_string(),
-                content: response.clone(),
+                content: resp.content.clone(),
                 timestamp: Utc::now().timestamp_millis(),
             };
 
@@ -61,8 +91,10 @@ pub async fn new_session(
             HttpResponse::Ok().json(serde_json::json!({
                 "success": true,
                 "sessionId": session_id,
+                "assistant": assistant_name,
                 "data": {
-                    "response": response
+                    "response": resp.content,
+                    "model": resp.model
                 }
             }))
         }
@@ -79,6 +111,21 @@ pub async fn send_command(
     req: web::Json<CommandRequest>,
 ) -> HttpResponse {
     let session_id = path.into_inner();
+    
+    // Get session info
+    let session_info = data.sessions.lock().unwrap()
+        .get(&session_id)
+        .map(|s| (s.assistant.clone(), s.model.clone()));
+
+    let (assistant_name, _model) = match session_info {
+        Some(info) => info,
+        None => {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "success": false,
+                "error": "Session not found"
+            }));
+        }
+    };
 
     match req.cmd_type.as_str() {
         "prompt" => {
@@ -94,14 +141,24 @@ pub async fn send_command(
                     session.updated_at = Utc::now();
                 }
 
-                let claude_response = data.claude_manager.lock().unwrap()
-                    .call_claude(&session_id, message);
+                let registry = data.registry.lock().unwrap();
+                let assistant = match registry.get(&assistant_name) {
+                    Some(a) => a,
+                    None => {
+                        return HttpResponse::InternalServerError().json(serde_json::json!({
+                            "success": false,
+                            "error": format!("Assistant '{}' not available", assistant_name)
+                        }));
+                    }
+                };
 
-                match claude_response {
-                    Ok(response) => {
+                let response = assistant.send_message(&session_id, message).await;
+
+                match response {
+                    Ok(resp) => {
                         let assistant_message = Message {
                             role: "assistant".to_string(),
-                            content: response.clone(),
+                            content: resp.content.clone(),
                             timestamp: Utc::now().timestamp_millis(),
                         };
 
@@ -112,7 +169,10 @@ pub async fn send_command(
 
                         HttpResponse::Ok().json(serde_json::json!({
                             "success": true,
-                            "data": { "response": response }
+                            "data": {
+                                "response": resp.content,
+                                "model": resp.model
+                            }
                         }))
                     }
                     Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
@@ -129,8 +189,23 @@ pub async fn send_command(
         }
         "set_model" => {
             if let Some(model) = &req.model {
-                data.claude_manager.lock().unwrap()
-                    .set_session_model(&session_id, model.clone());
+                let mut registry = data.registry.lock().unwrap();
+                let assistant = match registry.get_mut(&assistant_name) {
+                    Some(a) => a,
+                    None => {
+                        return HttpResponse::InternalServerError().json(serde_json::json!({
+                            "success": false,
+                            "error": format!("Assistant '{}' not available", assistant_name)
+                        }));
+                    }
+                };
+
+                if let Err(e) = assistant.set_model(&session_id, model) {
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "success": false,
+                        "error": e
+                    }));
+                }
                 
                 if let Some(session) = data.sessions.lock().unwrap().get_mut(&session_id) {
                     session.model = model.clone();
@@ -155,6 +230,7 @@ pub async fn send_command(
                     "success": true,
                     "data": {
                         "sessionId": session.id,
+                        "assistant": session.assistant,
                         "model": session.model,
                         "messageCount": session.messages.len(),
                         "cwd": session.cwd,
@@ -187,6 +263,7 @@ pub async fn get_state(
             "running": true,
             "state": {
                 "sessionId": session.id,
+                "assistant": session.assistant,
                 "model": session.model,
                 "messageCount": session.messages.len(),
                 "cwd": session.cwd,
@@ -203,11 +280,10 @@ pub async fn get_state(
 pub async fn events(
     data: web::Data<AppState>,
     path: web::Path<String>,
-    req: HttpRequest,
+    _req: HttpRequest,
 ) -> HttpResponse {
     let session_id = path.into_inner();
     
-    // Verify session exists
     let exists = data.sessions.lock().unwrap().contains_key(&session_id);
     if !exists {
         return HttpResponse::NotFound().json(serde_json::json!({
@@ -217,13 +293,11 @@ pub async fn events(
 
     let (tx, rx) = mpsc::unbounded_channel::<String>();
 
-    // Send connected event
     let _ = tx.send(serde_json::json!({
         "type": "connected",
         "sessionId": session_id
     }).to_string());
 
-    // Create SSE stream
     let stream = async_stream::stream! {
         let mut rx = rx;
         while let Some(msg) = rx.recv().await {
