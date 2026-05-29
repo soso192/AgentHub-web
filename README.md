@@ -1,6 +1,7 @@
-# CC-Web (Rust Version)
+# Claudecode-web
 
-A lightweight web interface for Claude Code CLI, written in Rust.
+
+claudecode web端 一键部署 任何地方使用你的claudecode 
 
 ## Features
 
@@ -63,7 +64,3 @@ Default model is taken from `ANTHROPIC_MODEL` environment variable or settings f
 - `POST /api/agent/:id` - Send command to session
 - `GET /api/agent/:id` - Get agent state
 - `GET /api/agent/:id/events` - SSE event stream
-
-## License
-
-MIT
