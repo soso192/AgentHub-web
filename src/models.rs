@@ -13,6 +13,9 @@ pub struct Session {
     /// Context from previous assistant, injected into first message after switch
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_context: Option<String>,
+    /// Agent's native session ID for session continuity (Claude --resume / Pi --session)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +59,8 @@ pub struct CommandRequest {
     pub cmd_type: String,
     pub message: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub content_blocks: Option<Vec<ContentBlock>>,
 }
 
 #[derive(Debug, Deserialize)]

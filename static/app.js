@@ -327,12 +327,12 @@ function renderMessages(messages, assistant) {
                 } else if (block.type === 'tool_result') {
                     html += renderToolResultBlock(block.content);
                 } else if (block.type === 'text') {
-                    html += `<div class="text-block">${escapeHtml(block.text)}</div>`;
+                    html += `<div class="text-block">${renderMarkdown(block.text)}</div>`;
                 }
             });
             html += '</div>';
         } else {
-            html += `<div class="message-content">${escapeHtml(msg.content)}</div>`;
+            html += `<div class="message-content">${msg.role === 'assistant' ? renderMarkdown(msg.content) : escapeHtml(msg.content)}</div>`;
         }
         div.innerHTML = html;
         messagesContainer.appendChild(div);
@@ -380,23 +380,58 @@ function renderThinkingBlock(thinking) {
     </div>`;
 }
 
+// Tool type icons
+const TOOL_ICONS = {
+    'Bash': '💻', 'bash': '💻',
+    'Read': '📖', 'read': '📖',
+    'Write': '✏️', 'write': '✏️',
+    'Edit': '📝', 'edit': '📝',
+    'Glob': '🔍', 'glob': '🔍',
+    'Grep': '🔎', 'grep': '🔎',
+    'WebFetch': '🌐', 'WebSearch': '🔎',
+    'Agent': '🤖',
+    'default': '🔧'
+};
+
+// Get tool preview text
+function getToolPreview(name, input) {
+    if (!input || typeof input !== 'object') return '';
+    if (name === 'Bash' || name === 'bash') return input.command || '';
+    if (name === 'Read' || name === 'read') return input.file_path || input.path || '';
+    if (name === 'Write' || name === 'write') return input.file_path || input.path || '';
+    if (name === 'Edit' || name === 'edit') return input.file_path || input.path || '';
+    if (name === 'Glob' || name === 'glob') return input.pattern || '';
+    if (name === 'Grep' || name === 'grep') return input.pattern || input.query || '';
+    if (name === 'WebFetch') return input.url || '';
+    if (name === 'WebSearch') return input.query || '';
+    return input.command || input.path || input.file_path || input.pattern || input.query || '';
+}
+
 // Render tool call block (collapsible)
 function renderToolCallBlock(id, name, input) {
-    let preview = '';
-    if (input && typeof input === 'object') {
-        preview = input.command || input.path || input.file_path || input.pattern || input.query || '';
-        if (typeof preview === 'object') preview = JSON.stringify(preview);
-        if (preview.length > 80) preview = preview.slice(0, 80) + '...';
+    const icon = TOOL_ICONS[name] || TOOL_ICONS.default;
+    let preview = getToolPreview(name, input);
+    if (typeof preview === 'object') preview = JSON.stringify(preview);
+    if (preview.length > 100) preview = preview.slice(0, 100) + '...';
+
+    // Format input for display
+    let inputDisplay;
+    if (name === 'Bash' || name === 'bash') {
+        // For Bash, show just the command prominently
+        inputDisplay = input.command ? escapeHtml(input.command) : escapeHtml(JSON.stringify(input, null, 2));
+    } else {
+        inputDisplay = escapeHtml(JSON.stringify(input, null, 2));
     }
+
     return `<div class="tool-call-block" data-tool-id="${id}">
         <div class="tool-call-header" onclick="this.parentElement.classList.toggle('expanded')">
-            <span class="tool-icon">🔧</span>
+            <span class="tool-icon">${icon}</span>
             <span class="tool-name">${escapeHtml(name)}</span>
             <span class="tool-preview">${escapeHtml(preview)}</span>
             <span class="tool-toggle">▶</span>
         </div>
         <div class="tool-call-content">
-            <pre class="tool-input">${escapeHtml(JSON.stringify(input, null, 2))}</pre>
+            <pre class="tool-input">${inputDisplay}</pre>
             <div class="tool-result-area" data-tool-id="${id}"></div>
         </div>
     </div>`;
@@ -425,8 +460,69 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// Basic markdown rendering for text blocks
+function renderMarkdown(text) {
+    if (!text) return '';
+    let html = escapeHtml(text);
+
+    // Code blocks (```...```)
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        return `<pre><code>${code}</code></pre>`;
+    });
+
+    // Inline code (`...`)
+    html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+    // Bold (**...**)
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+    // Italic (*...*)
+    html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+
+    // Headings (### ... at start of line)
+    html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+    // Blockquote (> ...)
+    html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+    // Horizontal rule (---)
+    html = html.replace(/^---$/gm, '<hr>');
+
+    // Unordered list (- ... or * ...)
+    html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+
+    // Ordered list (1. ...)
+    html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+
+    // Wrap consecutive <li> in <ul>
+    html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+
+    // Links [text](url)
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+
+    // Paragraphs: double newline → paragraph break
+    html = html.replace(/\n\n/g, '</p><p>');
+    // Single newline → <br>
+    html = html.replace(/\n/g, '<br>');
+
+    // Wrap in paragraph if not already structured
+    if (!html.startsWith('<')) {
+        html = '<p>' + html + '</p>';
+    }
+
+    return html;
+}
+
 // Connect to SSE and handle streaming events
 function connectSSE(sessionId, message, onDone) {
+    // Close any existing SSE connection first
+    if (currentEventSource) {
+        currentEventSource.close();
+        currentEventSource = null;
+    }
     const es = new EventSource(`${API_BASE}/api/agent/${sessionId}/events`);
     currentEventSource = es;
 
@@ -434,6 +530,11 @@ function connectSSE(sessionId, message, onDone) {
     let contentDiv = null;
     let hasContent = false;
     let finalResult = '';
+
+    // Collect content blocks for persistence
+    const contentBlocks = [];
+    const toolCallMap = {}; // id -> {name, input} for matching results
+    let promptSent = false; // Prevent duplicate prompt sends on reconnect
 
     es.onmessage = (e) => {
         try {
@@ -445,12 +546,12 @@ function connectSSE(sessionId, message, onDone) {
     };
 
     es.onerror = () => {
-        // Reconnect after a short delay if still streaming
-        if (isStreaming) {
+        // Only reconnect if we haven't sent the prompt yet (first connection)
+        // If prompt was sent, the stream will close naturally when done
+        if (isStreaming && !promptSent) {
             setTimeout(() => {
-                if (isStreaming && es.readyState === EventSource.CLOSED) {
-                    // Connection closed, try to reconnect
-                    connectSSE(sessionId, null, onDone);
+                if (isStreaming && es.readyState === EventSource.CLOSED && !promptSent) {
+                    connectSSE(sessionId, message, onDone);
                 }
             }, 1000);
         }
@@ -459,8 +560,8 @@ function connectSSE(sessionId, message, onDone) {
     function handleStreamEvent(event) {
         switch (event.type) {
             case 'connected':
-                // SSE connected, now send the prompt if we have one
-                if (message) {
+                if (message && !promptSent) {
+                    promptSent = true;
                     sendStartPrompt(sessionId, message);
                 }
                 break;
@@ -475,11 +576,12 @@ function connectSSE(sessionId, message, onDone) {
                     streamingDiv = createStreamingMessage();
                     contentDiv = streamingDiv.querySelector('.message-content');
                 }
-                // Append thinking block
                 const thinkingEl = document.createElement('div');
                 thinkingEl.innerHTML = renderThinkingBlock(event.thinking);
                 contentDiv.appendChild(thinkingEl.firstElementChild);
                 hasContent = true;
+                // Collect for persistence
+                contentBlocks.push({ type: 'thinking', thinking: event.thinking });
                 scrollToBottom();
                 break;
 
@@ -492,11 +594,13 @@ function connectSSE(sessionId, message, onDone) {
                 toolEl.innerHTML = renderToolCallBlock(event.id, event.name, event.input);
                 contentDiv.appendChild(toolEl.firstElementChild);
                 hasContent = true;
+                // Track tool call and collect for persistence
+                toolCallMap[event.id] = { name: event.name, input: event.input };
+                contentBlocks.push({ type: 'tool_use', id: event.id, name: event.name, input: event.input });
                 scrollToBottom();
                 break;
 
             case 'tool_result':
-                // Find the tool call block and add result
                 const toolResultArea = contentDiv?.querySelector(`.tool-result-area[data-tool-id="${event.id}"]`);
                 if (toolResultArea) {
                     toolResultArea.innerHTML = `<div class="tool-result-inline">
@@ -507,7 +611,6 @@ function connectSSE(sessionId, message, onDone) {
                         <pre class="tool-result-content">${escapeHtml(event.output)}</pre>
                     </div>`;
                 } else {
-                    // If no matching tool call, add as standalone result
                     if (!streamingDiv) {
                         streamingDiv = createStreamingMessage();
                         contentDiv = streamingDiv.querySelector('.message-content');
@@ -516,6 +619,8 @@ function connectSSE(sessionId, message, onDone) {
                     resultEl.innerHTML = renderToolResultBlock(event.output);
                     contentDiv.appendChild(resultEl.firstElementChild);
                 }
+                // Collect for persistence
+                contentBlocks.push({ type: 'tool_result', tool_use_id: event.id, content: event.output });
                 scrollToBottom();
                 break;
 
@@ -524,7 +629,6 @@ function connectSSE(sessionId, message, onDone) {
                     streamingDiv = createStreamingMessage();
                     contentDiv = streamingDiv.querySelector('.message-content');
                 }
-                // Append or update text content
                 let textBlock = contentDiv.querySelector('.text-block:last-child');
                 if (!textBlock || textBlock.dataset.finalized === 'true') {
                     textBlock = document.createElement('div');
@@ -533,17 +637,22 @@ function connectSSE(sessionId, message, onDone) {
                 }
                 textBlock.textContent = (textBlock.textContent || '') + event.content;
                 hasContent = true;
-                finalResult = event.content;
+                finalResult += event.content;
+                // Collect text chunk
+                const lastBlock = contentBlocks[contentBlocks.length - 1];
+                if (lastBlock && lastBlock.type === 'text') {
+                    lastBlock.text += event.content;
+                } else {
+                    contentBlocks.push({ type: 'text', text: event.content });
+                }
                 scrollToBottom();
                 break;
 
             case 'result':
-                // Final result
                 if (!streamingDiv) {
                     streamingDiv = createStreamingMessage();
                     contentDiv = streamingDiv.querySelector('.message-content');
                 }
-                // If there's a result and no text content yet, show it
                 if (event.content && !hasContent) {
                     let lastText = contentDiv.querySelector('.text-block:last-child');
                     if (!lastText) {
@@ -553,6 +662,13 @@ function connectSSE(sessionId, message, onDone) {
                     }
                     lastText.textContent = event.content;
                     lastText.dataset.finalized = 'true';
+                    finalResult = event.content;
+                    // If no text blocks collected yet, add this
+                    if (!contentBlocks.some(b => b.type === 'text')) {
+                        contentBlocks.push({ type: 'text', text: event.content });
+                    }
+                } else if (event.content && !finalResult) {
+                    finalResult = event.content;
                 }
                 // Mark streaming as done
                 finishStreaming();
@@ -581,6 +697,20 @@ function connectSSE(sessionId, message, onDone) {
         if (streamingDiv) {
             streamingDiv.classList.remove('streaming');
         }
+
+        // Save assistant response to backend for persistence (with full content blocks)
+        if ((finalResult || contentBlocks.length > 0) && sessionId) {
+            fetch(`${API_BASE}/api/agent/${sessionId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type: 'save_message',
+                    message: finalResult || '',
+                    content_blocks: contentBlocks.length > 0 ? contentBlocks : undefined
+                })
+            }).catch(e => console.error('Failed to save response:', e));
+        }
+
         loadSessions().then(() => renderSessionList());
         if (onDone) onDone();
     }
@@ -634,12 +764,17 @@ async function createSession() {
         welcomeScreen.style.display = 'none';
         messagesContainer.style.display = 'block';
         inputArea.style.display = 'block';
+        // Clear previous messages and reset session state
+        messagesContainer.innerHTML = '';
+        currentSessionId = null;  // Detach from any old session
         currentAssistant = assistant;
         currentModel = model;
         pendingCwd = cwd;
         assistantSelector.value = assistant;
         modelSelector.value = model;
         statusDisplay.textContent = model;
+        // Update sidebar highlight
+        renderSessionList();
         messageInput.focus();
     } catch (e) {
         console.error('Failed to create session:', e);
@@ -656,6 +791,9 @@ async function createSessionWithMessage(cwd, message) {
         sendBtn.disabled = true;
         messageInput.value = '';
         messageInput.style.height = 'auto';
+
+        // Clear previous messages for the new session
+        messagesContainer.innerHTML = '';
 
         addMessage('user', message, assistant);
         typingIndicator.style.display = 'block';
@@ -674,6 +812,10 @@ async function createSessionWithMessage(cwd, message) {
             currentSessionId = data.sessionId;
             currentAssistant = data.assistant || assistant;
             pendingCwd = null;
+
+            // Refresh session list to show the new session in sidebar
+            await loadSessions();
+            renderSessionList();
 
             // Step 2: Connect SSE, which will trigger step 3 (start prompt) on connect
             connectSSE(data.sessionId, message);
@@ -701,6 +843,9 @@ async function sendToSession(message) {
         addMessage('user', message);
         typingIndicator.style.display = 'block';
         typingIndicator.querySelector('.assistant-name').textContent = currentAssistant;
+
+        // Refresh sessions to update message count in sidebar
+        await loadSessions();
 
         // Connect SSE, which will trigger start prompt on connect
         connectSSE(currentSessionId, message);

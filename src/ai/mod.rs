@@ -3,10 +3,13 @@
 
 pub mod claude;
 pub mod pi;
+pub mod streaming;
 pub mod types;
 
 use async_trait::async_trait;
+use tokio::sync::broadcast;
 use types::{AiResponse, AiEvent, ModelInfo};
+use streaming::StreamResult;
 
 /// Core trait for AI coding assistants
 /// Implement this trait to add support for new AI assistants
@@ -14,16 +17,16 @@ use types::{AiResponse, AiEvent, ModelInfo};
 pub trait AiAssistant: Send + Sync {
     /// Get the name of this assistant (e.g., "claude", "codex", "pi")
     fn name(&self) -> &str;
-    
+
     /// Get the display name (e.g., "Claude Code", "Codex", "Pi Agent")
     fn display_name(&self) -> &str;
-    
+
     /// Get available models for this assistant
     fn available_models(&self) -> Vec<ModelInfo>;
-    
+
     /// Get the default model
     fn default_model(&self) -> &str;
-    
+
     /// Create a new session
     async fn create_session(&mut self, cwd: String, model: Option<String>) -> Result<String, String>;
 
@@ -47,9 +50,23 @@ pub trait AiAssistant: Send + Sync {
     /// Delete a session
     fn delete_session(&mut self, session_id: &str);
 
+    /// Stream a session message. Each agent implements its own CLI invocation.
+    /// Default implementation does nothing (returns empty StreamResult).
+    fn stream_session(
+        &self,
+        _session_id: &str,
+        _cwd: &str,
+        _model: &str,
+        _message: &str,
+        _tx: Option<&broadcast::Sender<String>>,
+        _agent_session_id: Option<&str>,
+    ) -> StreamResult {
+        StreamResult { agent_session_id: None }
+    }
+
     /// Check if the assistant is available (e.g., CLI is installed)
     async fn is_available(&self) -> bool;
-    
+
     /// Get the version of the assistant
     async fn version(&self) -> Option<String>;
 }
@@ -67,12 +84,12 @@ impl AssistantRegistry {
             default_index: 0,
         }
     }
-    
+
     /// Register a new assistant
     pub fn register(&mut self, assistant: Box<dyn AiAssistant>) {
         self.assistants.push(assistant);
     }
-    
+
     /// Set the default assistant by name
     pub fn set_default(&mut self, name: &str) -> Result<(), String> {
         if let Some(index) = self.assistants.iter().position(|a| a.name() == name) {
@@ -82,27 +99,27 @@ impl AssistantRegistry {
             Err(format!("Assistant '{}' not found", name))
         }
     }
-    
+
     /// Get the default assistant
     pub fn get_default(&self) -> &dyn AiAssistant {
         self.assistants[self.default_index].as_ref()
     }
-    
+
     /// Get the default assistant (mutable)
     pub fn get_default_mut(&mut self) -> &mut dyn AiAssistant {
         self.assistants[self.default_index].as_mut()
     }
-    
+
     /// Get an assistant by name
     pub fn get(&self, name: &str) -> Option<&dyn AiAssistant> {
         self.assistants.iter().find(|a| a.name() == name).map(|a| a.as_ref())
     }
-    
+
     /// Get an assistant by name (mutable)
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Box<dyn AiAssistant>> {
         self.assistants.iter_mut().find(|a| a.name() == name)
     }
-    
+
     /// List all available assistants
     pub fn list(&self) -> Vec<AssistantInfo> {
         self.assistants.iter().enumerate().map(|(i, a)| {

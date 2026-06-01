@@ -1,19 +1,24 @@
 use super::{AiAssistant, types::*};
+use super::streaming::StreamResult;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::io::Write;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// Pi Coding Agent assistant implementation
 pub struct PiAssistant {
     sessions: HashMap<String, PiSession>,
     default_model: String,
+    pi_cmd: String,
 }
 
 struct PiSession {
     cwd: String,
     model: String,
+    /// Path to the pi session file for --resume
+    session_file: Option<String>,
 }
 
 impl Clone for PiSession {
@@ -21,30 +26,137 @@ impl Clone for PiSession {
         Self {
             cwd: self.cwd.clone(),
             model: self.model.clone(),
+            session_file: self.session_file.clone(),
         }
     }
 }
 
 impl PiAssistant {
-    pub fn new() -> Self {
-        Self {
-            sessions: HashMap::new(),
-            default_model: "anthropic/claude-sonnet-4-20250514".to_string(),
+    fn create_pi_command(&self) -> Command {
+        if self.pi_cmd.starts_with("node:") {
+            // Extract base path from: node:<base>/node_modules/.../cli.js
+            // Handle both forward and back slashes
+            let cli_js = &self.pi_cmd[5..];
+            let sep = if cli_js.contains('\\') { "\\node_modules\\" } else { "/node_modules/" };
+            if let Some(idx) = cli_js.find(sep) {
+                let base_path = &cli_js[..idx];
+                let node_exe = format!("{}{}node.exe", base_path, if cli_js.contains('\\') { "\\" } else { "/" });
+                eprintln!("[pi] resolved node.exe: {}", node_exe);
+                if std::path::Path::new(&node_exe).exists() {
+                    let mut cmd = Command::new(&node_exe);
+                    cmd.arg(cli_js);
+                    return cmd;
+                }
+                eprintln!("[pi] node.exe not found at: {}", node_exe);
+            }
+            // Fallback: try system node
+            eprintln!("[pi] falling back to system node");
+            let mut cmd = Command::new("node");
+            cmd.arg(cli_js);
+            cmd
+        } else if self.pi_cmd.ends_with(".cmd") {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.arg("/C").arg(&self.pi_cmd);
+            cmd
+        } else {
+            Command::new(&self.pi_cmd)
         }
     }
 
-    fn get_pi_args(&self, model: &str) -> Vec<String> {
-        vec![
-            "@earendil-works/pi-coding-agent".to_string(),
-            "--model".to_string(),
-            model.to_string(),
-            "--print".to_string(),
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--verbose".to_string(),
-            "--permission-mode".to_string(),
-            "bypassPermissions".to_string(),
-        ]
+    pub fn new() -> Self {
+        // Find the pi CLI executable
+        let pi_cmd = Self::find_pi_cmd();
+
+        Self {
+            sessions: HashMap::new(),
+            default_model: "mimo-v2.5-pro".to_string(),
+            pi_cmd,
+        }
+    }
+
+    /// Find the session file path from a UUID by searching ~/.pi/agent/sessions/
+    fn find_session_file(uuid: &str) -> Option<String> {
+        let sessions_dir = dirs::home_dir()?.join(".pi").join("agent").join("sessions");
+        for entry in std::fs::read_dir(&sessions_dir).ok()? {
+            let entry = entry.ok()?;
+            if !entry.file_type().ok()?.is_dir() {
+                continue;
+            }
+            for file in std::fs::read_dir(entry.path()).ok()? {
+                let file = file.ok()?;
+                let name = file.file_name().to_string_lossy().to_string();
+                if name.contains(uuid) && name.ends_with(".jsonl") {
+                    return Some(file.path().to_string_lossy().to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Read the provider name for a model from pi's models.json
+    fn find_provider_for_model(model: &str) -> Option<String> {
+        let models_path = dirs::home_dir()?.join(".pi").join("agent").join("models.json");
+        let content = std::fs::read_to_string(models_path).ok()?;
+        let config: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let providers = config.get("providers")?.as_object()?;
+        for (provider_name, provider_config) in providers {
+            if let Some(models) = provider_config.get("models").and_then(|m| m.as_array()) {
+                for m in models {
+                    if m.get("id").and_then(|id| id.as_str()) == Some(model) {
+                        return Some(provider_name.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn find_pi_cmd() -> String {
+        // 1. Check PI_CMD environment variable
+        if let Ok(pi_path) = std::env::var("PI_CMD") {
+            if std::path::Path::new(&pi_path).exists() {
+                return pi_path;
+            }
+        }
+
+        // 2. Try running `pi` directly (works if in PATH)
+        if Command::new("pi").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            return "pi".to_string();
+        }
+
+        // 3. Search common installation paths
+        if let Some(home) = dirs::home_dir() {
+            // npm global: ~/.npm-global/bin/pi or AppData/Roaming/npm/pi
+            let npm_paths = vec![
+                home.join("AppData").join("Roaming").join("npm").join("pi.cmd"),
+                home.join("AppData").join("Roaming").join("npm").join("pi"),
+                home.join(".npm-global").join("bin").join("pi"),
+            ];
+            for path in &npm_paths {
+                if path.exists() {
+                    return path.to_string_lossy().to_string();
+                }
+            }
+
+            // pi-node: ~/AppData/Local/pi-node/current/
+            let pi_node = home.join("AppData").join("Local").join("pi-node").join("current");
+            if pi_node.exists() {
+                // Prefer direct node.exe + cli.js invocation
+                let node_exe = pi_node.join("node.exe");
+                let cli_js = pi_node.join("node_modules").join("@earendil-works").join("pi-coding-agent").join("dist").join("cli.js");
+                if node_exe.exists() && cli_js.exists() {
+                    return format!("node:{}", cli_js.to_string_lossy());
+                }
+                // Fallback to pi.cmd
+                let pi_cmd = pi_node.join("pi.cmd");
+                if pi_cmd.exists() {
+                    return pi_cmd.to_string_lossy().to_string();
+                }
+            }
+        }
+
+        // 4. Fallback to just "pi"
+        "pi".to_string()
     }
 }
 
@@ -61,6 +173,14 @@ impl AiAssistant for PiAssistant {
     fn available_models(&self) -> Vec<ModelInfo> {
         vec![
             ModelInfo {
+                id: "mimo-v2.5-pro".to_string(),
+                name: "MiMo v2.5 Pro".to_string(),
+                provider: "xiaomi".to_string(),
+                max_tokens: Some(200000),
+                supports_streaming: true,
+                supports_tools: true,
+            },
+            ModelInfo {
                 id: "anthropic/claude-sonnet-4-20250514".to_string(),
                 name: "Claude Sonnet 4".to_string(),
                 provider: "anthropic".to_string(),
@@ -71,14 +191,6 @@ impl AiAssistant for PiAssistant {
             ModelInfo {
                 id: "anthropic/claude-opus-4-20250514".to_string(),
                 name: "Claude Opus 4".to_string(),
-                provider: "anthropic".to_string(),
-                max_tokens: Some(200000),
-                supports_streaming: true,
-                supports_tools: true,
-            },
-            ModelInfo {
-                id: "anthropic/claude-haiku-3-20240307".to_string(),
-                name: "Claude Haiku 3".to_string(),
                 provider: "anthropic".to_string(),
                 max_tokens: Some(200000),
                 supports_streaming: true,
@@ -98,6 +210,7 @@ impl AiAssistant for PiAssistant {
         self.sessions.insert(session_id.clone(), PiSession {
             cwd,
             model,
+            session_file: None,
         });
 
         Ok(session_id)
@@ -111,20 +224,54 @@ impl AiAssistant for PiAssistant {
         let cwd = session.cwd.clone();
         let model = session.model.clone();
         let message = message.to_string();
+        let pi_cmd = self.pi_cmd.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let args = vec![
-                "@earendil-works/pi-coding-agent".to_string(),
+            let mut args = vec![
                 "--print".to_string(),
-                "--output-format".to_string(),
+                "--mode".to_string(),
                 "text".to_string(),
-                "--permission-mode".to_string(),
-                "bypassPermissions".to_string(),
                 "--model".to_string(),
                 model.clone(),
             ];
 
-            let mut cmd = Command::new("npx");
+            // Resume session if we have a session file
+            if let Some(ref session_file) = session.session_file {
+                args.push("--session".to_string());
+                args.push(session_file.clone());
+            }
+
+            args.push(message.clone());
+
+            let mut cmd = if pi_cmd.starts_with("node:") {
+                let cli_js = &pi_cmd[5..];
+                let sep = if cli_js.contains('\\') { "\\node_modules\\" } else { "/node_modules/" };
+                let node_exe = cli_js.find(sep)
+                    .map(|idx| {
+                        let base = &cli_js[..idx];
+                        let slash = if cli_js.contains('\\') { "\\" } else { "/" };
+                        format!("{}{}node.exe", base, slash)
+                    })
+                    .filter(|p| std::path::Path::new(p).exists());
+                match node_exe {
+                    Some(ne) => {
+                        let mut c = Command::new(&ne);
+                        c.arg(cli_js);
+                        c
+                    }
+                    None => {
+                        let mut c = Command::new("node");
+                        c.arg(cli_js);
+                        c
+                    }
+                }
+            } else if pi_cmd.ends_with(".cmd") {
+                let mut c = Command::new("cmd.exe");
+                c.arg("/C").arg(&pi_cmd);
+                c
+            } else {
+                Command::new(&pi_cmd)
+            };
             cmd.args(&args)
                 .current_dir(&cwd)
                 .stdin(Stdio::piped())
@@ -134,11 +281,9 @@ impl AiAssistant for PiAssistant {
             let mut child = cmd.spawn()
                 .map_err(|e| format!("Failed to start Pi Agent: {}", e))?;
 
-            if let Some(mut stdin) = child.stdin.take() {
-                let msg = message.clone();
-                std::thread::spawn(move || {
-                    let _ = stdin.write_all(msg.as_bytes());
-                });
+            // Close stdin to signal end of input
+            if let Some(stdin) = child.stdin.take() {
+                drop(stdin);
             }
 
             let output = child.wait_with_output()
@@ -168,190 +313,12 @@ impl AiAssistant for PiAssistant {
 
     async fn send_message_streaming(
         &self,
-        session_id: &str,
-        message: &str,
-        callback: Box<dyn Fn(AiEvent) + Send>,
+        _session_id: &str,
+        _message: &str,
+        _callback: Box<dyn Fn(AiEvent) + Send>,
     ) -> Result<(), String> {
-        let session = self.sessions.get(session_id)
-            .ok_or_else(|| "Session not found".to_string())?
-            .clone();
-
-        let message = message.to_string();
-        let cwd = session.cwd.clone();
-        let model = session.model.clone();
-
-        // Fire start event
-        callback(AiEvent {
-            event_type: "start".to_string(),
-            data: AiEventData::Start {
-                session_id: session_id.to_string(),
-                model: model.clone(),
-            },
-        });
-
-        // Execute in background with stream-json output
-        tokio::task::spawn_blocking(move || {
-            let args = vec![
-                "@earendil-works/pi-coding-agent".to_string(),
-                "--print".to_string(),
-                "--output-format".to_string(),
-                "stream-json".to_string(),
-                "--verbose".to_string(),
-                "--permission-mode".to_string(),
-                "bypassPermissions".to_string(),
-                "--model".to_string(),
-                model.clone(),
-            ];
-
-            let mut cmd = Command::new("npx");
-            cmd.args(&args)
-                .current_dir(&cwd)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-
-            let mut child = match cmd.spawn() {
-                Ok(c) => c,
-                Err(e) => {
-                    callback(AiEvent {
-                        event_type: "error".to_string(),
-                        data: AiEventData::Error {
-                            message: format!("Failed to start Pi Agent: {}", e),
-                        },
-                    });
-                    return;
-                }
-            };
-
-            // Write message to stdin
-            if let Some(mut stdin) = child.stdin.take() {
-                let msg = message.clone();
-                let _ = stdin.write_all(msg.as_bytes());
-            }
-
-            // Read stdout line by line and parse stream-json events
-            let stdout = child.stdout.take().expect("stdout should be piped");
-            let reader = std::io::BufReader::new(stdout);
-            use std::io::BufRead;
-
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(e) => {
-                        callback(AiEvent {
-                            event_type: "error".to_string(),
-                            data: AiEventData::Error {
-                                message: format!("Read error: {}", e),
-                            },
-                        });
-                        return;
-                    }
-                };
-
-                let event: serde_json::Value = match serde_json::from_str(&line) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-
-                let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                let subtype = event.get("subtype").and_then(|s| s.as_str());
-
-                match event_type {
-                    "assistant" => {
-                        if let Some(message_obj) = event.get("message") {
-                            if let Some(content_arr) = message_obj.get("content").and_then(|c| c.as_array()) {
-                                for block in content_arr {
-                                    let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                    match block_type {
-                                        "thinking" => {
-                                            if let Some(thinking_text) = block.get("thinking").and_then(|t| t.as_str()) {
-                                                callback(AiEvent {
-                                                    event_type: "thinking".to_string(),
-                                                    data: AiEventData::Thinking {
-                                                        thinking: thinking_text.to_string(),
-                                                    },
-                                                });
-                                            }
-                                        }
-                                        "tool_use" => {
-                                            let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                                            let input = block.get("input").cloned().unwrap_or(serde_json::Value::Null);
-                                            callback(AiEvent {
-                                                event_type: "tool_call".to_string(),
-                                                data: AiEventData::ToolCall { id, name, input },
-                                            });
-                                        }
-                                        "text" => {
-                                            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                                callback(AiEvent {
-                                                    event_type: "chunk".to_string(),
-                                                    data: AiEventData::Chunk {
-                                                        content: text.to_string(),
-                                                        accumulated: text.to_string(),
-                                                    },
-                                                });
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    "user" => {
-                        if let Some(message_obj) = event.get("message") {
-                            if let Some(content_arr) = message_obj.get("content").and_then(|c| c.as_array()) {
-                                for block in content_arr {
-                                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-                                        let tool_use_id = block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                        let content = block.get("content").map(|c| {
-                                            if let Some(s) = c.as_str() { s.to_string() }
-                                            else { c.to_string() }
-                                        }).unwrap_or_default();
-                                        callback(AiEvent {
-                                            event_type: "tool_result".to_string(),
-                                            data: AiEventData::ToolResult { id: tool_use_id, output: content },
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    "result" => {
-                        let result_text = event.get("result").and_then(|r| r.as_str()).unwrap_or("");
-                        let is_error = event.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-
-                        if is_error {
-                            callback(AiEvent {
-                                event_type: "error".to_string(),
-                                data: AiEventData::Error {
-                                    message: result_text.to_string(),
-                                },
-                            });
-                        } else {
-                            callback(AiEvent {
-                                event_type: "end".to_string(),
-                                data: AiEventData::End {
-                                    response: AiResponse {
-                                        content: result_text.to_string(),
-                                        model: model.clone(),
-                                        usage: None,
-                                        metadata: None,
-                                    },
-                                },
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // Wait for process to finish
-            let _ = child.wait();
-        });
-
-        Ok(())
+        // Use stream_session instead
+        Err("Use stream_session instead".to_string())
     }
 
     fn set_model(&mut self, session_id: &str, model: &str) -> Result<(), String> {
@@ -371,20 +338,248 @@ impl AiAssistant for PiAssistant {
         self.sessions.remove(session_id);
     }
 
+    fn stream_session(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        model: &str,
+        message: &str,
+        tx: Option<&broadcast::Sender<String>>,
+        agent_session_id: Option<&str>,
+    ) -> StreamResult {
+        eprintln!("[pi] stream_session called: session={}, model={}, pi_cmd={}", session_id, model, self.pi_cmd);
+        let mut args = vec![
+            "--mode".to_string(),
+            "json".to_string(),
+            "--print".to_string(),
+            "--model".to_string(),
+            model.to_string(),
+        ];
+
+        // Auto-detect provider from pi's models.json
+        if let Some(provider) = Self::find_provider_for_model(model) {
+            args.push("--provider".to_string());
+            args.push(provider);
+        }
+
+        // Resume session if we have a session ID
+        if let Some(sid) = agent_session_id {
+            args.push("--session".to_string());
+            args.push(sid.to_string());
+        }
+
+        args.push(message.to_string());
+
+        let mut cmd = self.create_pi_command();
+        cmd.args(&args)
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Remove the provider flag - let pi auto-detect from models.json
+        // The --provider flag was causing "No API key found for opencode-go"
+
+        eprintln!("[pi] cmd: {:?}, args: {:?}", cmd.get_program(), cmd.get_args().collect::<Vec<_>>());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => {
+                eprintln!("[pi] process spawned successfully");
+                c
+            }
+            Err(e) => {
+                eprintln!("[pi] failed to spawn: {}", e);
+                send_pi_event(tx, serde_json::json!({
+                    "type": "error",
+                    "message": format!("Failed to start Pi Agent: {}", e)
+                }));
+                return StreamResult { agent_session_id: None };
+            }
+        };
+
+        // Close stdin
+        if let Some(stdin) = child.stdin.take() {
+            drop(stdin);
+        }
+
+        // Drain stderr in background to prevent blocking
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                let reader = std::io::BufReader::new(stderr);
+                for line in reader.lines() {
+                    if let Ok(line) = line {
+                        eprintln!("[pi:stderr] {}", line);
+                    }
+                }
+            });
+        }
+
+        // Read stdout line by line
+        let stdout = child.stdout.take().expect("stdout should be piped");
+        let reader = std::io::BufReader::new(stdout);
+        use std::io::BufRead;
+
+        let mut pi_session_id: Option<String> = None;
+
+        let mut line_count = 0;
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("[pi] read error: {}", e);
+                    continue;
+                }
+            };
+            line_count += 1;
+
+            let event: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(e) => {
+                    let preview: String = line.chars().take(100).collect();
+                    eprintln!("[pi] json parse error: {} (line: {})", e, preview);
+                    continue;
+                }
+            };
+
+            let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+            match event_type {
+                "session" => {
+                    // Capture session ID for future --session
+                    if let Some(sid) = event.get("id").and_then(|s| s.as_str()) {
+                        pi_session_id = Some(sid.to_string());
+                    }
+                    send_pi_event(tx, serde_json::json!({
+                        "type": "start",
+                        "sessionId": session_id,
+                        "model": model
+                    }));
+                }
+                "message_update" => {
+                    if let Some(ame) = event.get("assistantMessageEvent") {
+                        let ame_type = ame.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                        match ame_type {
+                            "thinking_end" => {
+                                // Send complete thinking block
+                                if let Some(content) = ame.get("content").and_then(|c| c.as_str()) {
+                                    if !content.is_empty() {
+                                        send_pi_event(tx, serde_json::json!({
+                                            "type": "thinking",
+                                            "thinking": content
+                                        }));
+                                    }
+                                }
+                            }
+                            "text_delta" => {
+                                if let Some(delta) = ame.get("delta").and_then(|d| d.as_str()) {
+                                    send_pi_event(tx, serde_json::json!({
+                                        "type": "chunk",
+                                        "content": delta
+                                    }));
+                                }
+                            }
+                            "text_end" => {
+                                // Text ended - send final result
+                                if let Some(content) = ame.get("content").and_then(|c| c.as_str()) {
+                                    let preview: String = content.chars().take(100).collect();
+                                    eprintln!("[pi] text_end: content={}", preview);
+                                    send_pi_event(tx, serde_json::json!({
+                                        "type": "result",
+                                        "content": content,
+                                        "model": model
+                                    }));
+                                } else {
+                                    eprintln!("[pi] text_end: no content field in ame");
+                                }
+                            }
+                            "tool_use_start" => {
+                                if let Some(tool) = ame.get("tool") {
+                                    let id = tool.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                    let name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    let input = tool.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+                                    send_pi_event(tx, serde_json::json!({
+                                        "type": "tool_call",
+                                        "id": id,
+                                        "name": name,
+                                        "input": input
+                                    }));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                "tool_execution_start" => {
+                    let tool_id = event.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("");
+                    let tool_name = event.get("toolName").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    send_pi_event(tx, serde_json::json!({
+                        "type": "tool_call",
+                        "id": tool_id,
+                        "name": tool_name,
+                        "input": {}
+                    }));
+                }
+                "tool_execution_end" => {
+                    let tool_id = event.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("");
+                    let output = event.get("result").map(|r| {
+                        if let Some(s) = r.as_str() { s.to_string() }
+                        else { r.to_string() }
+                    }).unwrap_or_default();
+                    send_pi_event(tx, serde_json::json!({
+                        "type": "tool_result",
+                        "id": tool_id,
+                        "output": output
+                    }));
+                }
+                "turn_end" => {
+                    // Fallback: if no text_end was received, extract from turn_end
+                    // (text_end normally sends the result)
+                }
+                "agent_end" => {
+                    // Agent finished
+                }
+                _ => {}
+            }
+        }
+
+        let _ = child.wait();
+        eprintln!("[pi] stream loop ended, {} lines processed", line_count);
+
+        // Convert UUID to full file path for --session
+        let session_path = pi_session_id.and_then(|uuid| {
+            Self::find_session_file(&uuid).or_else(|| {
+                eprintln!("[pi] could not find session file for UUID: {}", uuid);
+                Some(uuid) // Fallback to UUID
+            })
+        });
+
+        StreamResult {
+            agent_session_id: session_path,
+        }
+    }
+
     async fn is_available(&self) -> bool {
-        Command::new("npx")
-            .args(&["@earendil-works/pi-coding-agent", "--version"])
+        self.create_pi_command()
+            .args(&["--version"])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
 
     async fn version(&self) -> Option<String> {
-        Command::new("npx")
-            .args(&["@earendil-works/pi-coding-agent", "--version"])
+        self.create_pi_command()
+            .args(&["--version"])
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|v| v.trim().to_string())
+    }
+}
+
+fn send_pi_event(tx: Option<&broadcast::Sender<String>>, event: serde_json::Value) {
+    if let Some(tx) = tx {
+        let _ = tx.send(event.to_string());
     }
 }

@@ -3,8 +3,6 @@ use tokio::sync::broadcast;
 use crate::models::{NewSessionRequest, StartPromptRequest, SwitchAssistantRequest, CommandRequest, Message};
 use crate::AppState;
 use chrono::Utc;
-use std::io::{BufRead, Write};
-use std::process::{Command, Stdio};
 
 pub async fn new_session(
     data: web::Data<AppState>,
@@ -61,11 +59,12 @@ pub async fn new_session(
         created_at: now,
         updated_at: now,
         history_context: None,
+        agent_session_id: None,
     };
 
     data.sessions.lock().unwrap().insert(session_id.clone(), session);
+    crate::save_sessions_to_disk(&data.sessions.lock().unwrap());
 
-    // Create broadcast event channel for this session
     let (tx, _) = broadcast::channel::<String>(256);
     data.events_tx.lock().unwrap().insert(session_id.clone(), tx);
 
@@ -85,10 +84,10 @@ pub async fn start_prompt(
     let session_id = path.into_inner();
 
     // Get session info
-    let (assistant_name, cwd, model) = {
+    let (assistant_name, cwd, model, existing_agent_session_id) = {
         let sessions = data.sessions.lock().unwrap();
         match sessions.get(&session_id) {
-            Some(s) => (s.assistant.clone(), s.cwd.clone(), s.model.clone()),
+            Some(s) => (s.assistant.clone(), s.cwd.clone(), s.model.clone(), s.agent_session_id.clone()),
             None => {
                 return HttpResponse::NotFound().json(serde_json::json!({
                     "success": false,
@@ -111,10 +110,12 @@ pub async fn start_prompt(
         session.updated_at = Utc::now();
     }
 
+    crate::save_sessions_to_disk(&data.sessions.lock().unwrap());
+
     // Get the broadcast sender for this session
     let tx = data.events_tx.lock().unwrap().get(&session_id).cloned();
 
-    // Read and clear history context (used for first message after assistant switch)
+    // Read and clear history context (set by switch_assistant)
     let history_context = {
         let mut sessions = data.sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(&session_id) {
@@ -124,62 +125,88 @@ pub async fn start_prompt(
         }
     };
 
+    // If no explicit history_context and no agent session ID (restart scenario),
+    // build history from previous messages for agents without native persistence
+    let auto_history = if history_context.is_none() && existing_agent_session_id.is_none() {
+        let sessions = data.sessions.lock().unwrap();
+        if let Some(session) = sessions.get(&session_id) {
+            // Only inject if there are previous messages (more than the one we just added)
+            if session.messages.len() > 1 {
+                let mut ctx = String::from("Here is the previous conversation history for context:\n\n");
+                for msg in &session.messages {
+                    if msg.role == "system" { continue; }
+                    let role_label = match msg.role.as_str() {
+                        "user" => "User",
+                        "assistant" => "Assistant",
+                        _ => &msg.role,
+                    };
+                    let content = if msg.content.len() > 2000 {
+                        format!("{}...(truncated)", &msg.content[..2000])
+                    } else {
+                        msg.content.clone()
+                    };
+                    ctx.push_str(&format!("**{}:** {}\n\n", role_label, content));
+                }
+                ctx.push_str("---\nPlease continue the conversation naturally, picking up where you left off.");
+                Some(ctx)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Build the effective message (prepend history context if present)
     let message = if let Some(ref ctx) = history_context {
+        format!("{}\n\n---\n\nUser's latest message: {}", ctx, req.message)
+    } else if let Some(ref ctx) = auto_history {
         format!("{}\n\n---\n\nUser's latest message: {}", ctx, req.message)
     } else {
         req.message.clone()
     };
-    let session_id_for_stream = session_id.clone();
-    let session_id_for_cleanup1 = session_id.clone();
-    let session_id_for_cleanup2 = session_id.clone();
+
+    let session_id_clone = session_id.clone();
+    let session_id_for_save = session_id.clone();
+    let session_id_for_cleanup = session_id.clone();
     let data_clone = data.clone();
+    let data_clone2 = data.clone();
 
-    // Dispatch to the correct assistant's streaming function
-    match assistant_name.as_str() {
-        "pi" => {
-            // Pi Agent streaming via npx
-            tokio::spawn(async move {
-                let result = tokio::task::spawn_blocking(move || {
-                    stream_pi_session(&session_id_for_stream, &cwd, &model, &message, tx.as_ref())
-                }).await;
+    // Dispatch streaming through the trait
+    tokio::spawn(async move {
+        let assistant_name_clone = assistant_name.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let registry = data_clone.registry.lock().unwrap();
+            match registry.get(&assistant_name_clone) {
+                Some(assistant) => assistant.stream_session(
+                    &session_id_clone,
+                    &cwd,
+                    &model,
+                    &message,
+                    tx.as_ref(),
+                    existing_agent_session_id.as_deref(),
+                ),
+                None => crate::ai::streaming::StreamResult { agent_session_id: None },
+            }
+        }).await;
 
-                match result {
-                    Ok(()) => {}
-                    Err(e) => eprintln!("Pi streaming task error: {}", e),
-                }
-                data_clone.events_tx.lock().unwrap().remove(&session_id_for_cleanup1);
-            });
-        }
-        _ => {
-            // Default: Claude Code streaming
-            let git_bash = std::env::var("CLAUDE_CODE_GIT_BASH_PATH").unwrap_or_else(|_| {
-                let paths = vec![
-                    r"D:\Downloads\Software\Git\bin\bash.exe",
-                    r"C:\Program Files\Git\bin\bash.exe",
-                    r"C:\Program Files (x86)\Git\bin\bash.exe",
-                ];
-                for path in paths {
-                    if std::path::Path::new(path).exists() {
-                        return path.to_string();
+        match result {
+            Ok(stream_result) => {
+                // Save agent session ID for session continuity (--resume)
+                if let Some(sid) = stream_result.agent_session_id {
+                    if let Some(session) = data_clone2.sessions.lock().unwrap().get_mut(&session_id_for_save) {
+                        session.agent_session_id = Some(sid);
                     }
+                    crate::save_sessions_to_disk(&data_clone2.sessions.lock().unwrap());
                 }
-                "bash".to_string()
-            });
-
-            tokio::spawn(async move {
-                let result = tokio::task::spawn_blocking(move || {
-                    stream_claude_session(&session_id_for_stream, &cwd, &model, &git_bash, &message, tx.as_ref())
-                }).await;
-
-                match result {
-                    Ok(()) => {}
-                    Err(e) => eprintln!("Claude streaming task error: {}", e),
-                }
-                data_clone.events_tx.lock().unwrap().remove(&session_id_for_cleanup2);
-            });
+            }
+            Err(e) => eprintln!("Streaming task error: {}", e),
         }
-    }
+
+        data_clone2.events_tx.lock().unwrap().remove(&session_id_for_cleanup);
+    });
 
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
@@ -196,7 +223,6 @@ pub async fn switch_assistant(
     let new_assistant_name = req.assistant.clone();
     let new_model = req.model.clone();
 
-    // Get current session info
     let (old_assistant_name, cwd, existing_messages) = {
         let sessions = data.sessions.lock().unwrap();
         match sessions.get(&session_id) {
@@ -210,7 +236,6 @@ pub async fn switch_assistant(
         }
     };
 
-    // Don't switch if already on the same assistant
     if old_assistant_name == new_assistant_name {
         return HttpResponse::Ok().json(serde_json::json!({
             "success": true,
@@ -219,7 +244,6 @@ pub async fn switch_assistant(
         }));
     }
 
-    // Check if new assistant exists
     {
         let registry = data.registry.lock().unwrap();
         if registry.get(&new_assistant_name).is_none() {
@@ -230,11 +254,10 @@ pub async fn switch_assistant(
         }
     }
 
-    // Build history context string for injection into first message
     let history_context = if !existing_messages.is_empty() {
         let mut ctx = String::from("You are continuing a conversation that was started with a different AI assistant. Here is the conversation history for context:\n\n");
         for msg in &existing_messages {
-            if msg.role == "system" { continue; } // Skip system messages
+            if msg.role == "system" { continue; }
             let role_label = match msg.role.as_str() {
                 "user" => "User",
                 "assistant" => "Assistant",
@@ -253,37 +276,24 @@ pub async fn switch_assistant(
         None
     };
 
-    // Create a new internal session with the new assistant
-    // Note: create_session generates its own UUID, but we use the cc-web session ID
-    // for routing in start_prompt. The internal session is mainly for set_model etc.
     {
         let mut registry = data.registry.lock().unwrap();
-        let assistant = match registry.get_mut(&new_assistant_name) {
-            Some(a) => a,
-            None => {
+        if let Some(assistant) = registry.get_mut(&new_assistant_name) {
+            if let Err(e) = assistant.create_session(cwd.clone(), new_model.clone()).await {
                 return HttpResponse::InternalServerError().json(serde_json::json!({
                     "success": false,
-                    "error": format!("Assistant '{}' not available", new_assistant_name)
+                    "error": e
                 }));
             }
-        };
-
-        if let Err(e) = assistant.create_session(cwd.clone(), new_model.clone()).await {
-            return HttpResponse::InternalServerError().json(serde_json::json!({
-                "success": false,
-                "error": e
-            }));
         }
     };
 
-    // Get model from new assistant
     let current_model = {
         let registry = data.registry.lock().unwrap();
         let assistant = registry.get(&new_assistant_name).unwrap();
         new_model.clone().unwrap_or_else(|| assistant.default_model().to_string())
     };
 
-    // Update the existing session to point to new assistant
     {
         let mut sessions = data.sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(&session_id) {
@@ -291,8 +301,8 @@ pub async fn switch_assistant(
             session.model = current_model.clone();
             session.updated_at = Utc::now();
             session.history_context = history_context;
+            session.agent_session_id = None;
 
-            // Add a system message about the switch
             session.messages.push(Message {
                 role: "system".to_string(),
                 content: format!(
@@ -305,17 +315,15 @@ pub async fn switch_assistant(
         }
     }
 
-    // Clean up old assistant's internal session and register new one
+    crate::save_sessions_to_disk(&data.sessions.lock().unwrap());
+
     {
         let mut registry = data.registry.lock().unwrap();
-
-        // Delete old assistant's internal session
         if let Some(old_assistant) = registry.get_mut(&old_assistant_name) {
             old_assistant.delete_session(&session_id);
         }
     }
 
-    // Create a new broadcast channel for the switched session
     let (tx, _) = broadcast::channel::<String>(256);
     data.events_tx.lock().unwrap().insert(session_id.clone(), tx);
 
@@ -326,317 +334,6 @@ pub async fn switch_assistant(
         "model": current_model,
         "message": format!("Switched to {}", new_assistant_name)
     }))
-}
-fn stream_claude_session(
-    session_id: &str,
-    cwd: &str,
-    model: &str,
-    git_bash: &str,
-    message: &str,
-    tx: Option<&broadcast::Sender<String>>,
-) {
-    let args = vec![
-        "--print".to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
-        "--permission-mode".to_string(),
-        "bypassPermissions".to_string(),
-        "--model".to_string(),
-        model.to_string(),
-    ];
-
-    let mut cmd = Command::new("claude");
-    cmd.args(&args)
-        .current_dir(cwd)
-        .env("CLAUDE_CODE_GIT_BASH_PATH", git_bash)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            send_event(tx, serde_json::json!({
-                "type": "error",
-                "message": format!("Failed to start Claude: {}", e)
-            }));
-            return;
-        }
-    };
-
-    // Write message to stdin
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(message.as_bytes());
-    }
-
-    // Read stdout line by line
-    let stdout = child.stdout.take().expect("stdout should be piped");
-    let reader = std::io::BufReader::new(stdout);
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-
-        let event: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        let subtype = event.get("subtype").and_then(|s| s.as_str());
-
-        match event_type {
-            "system" if subtype == Some("init") => {
-                // Forward init event
-                send_event(tx, serde_json::json!({
-                    "type": "start",
-                    "sessionId": session_id,
-                    "model": model
-                }));
-            }
-            "assistant" => {
-                if let Some(message_obj) = event.get("message") {
-                    if let Some(content_arr) = message_obj.get("content").and_then(|c| c.as_array()) {
-                        for block in content_arr {
-                            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            match block_type {
-                                "thinking" => {
-                                    if let Some(thinking_text) = block.get("thinking").and_then(|t| t.as_str()) {
-                                        send_event(tx, serde_json::json!({
-                                            "type": "thinking",
-                                            "thinking": thinking_text
-                                        }));
-                                    }
-                                }
-                                "tool_use" => {
-                                    let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                    let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                    let input = block.get("input").cloned().unwrap_or(serde_json::Value::Null);
-                                    send_event(tx, serde_json::json!({
-                                        "type": "tool_call",
-                                        "id": id,
-                                        "name": name,
-                                        "input": input
-                                    }));
-                                }
-                                "text" => {
-                                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                        send_event(tx, serde_json::json!({
-                                            "type": "chunk",
-                                            "content": text
-                                        }));
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-            "user" => {
-                // Tool results come as user messages
-                if let Some(message_obj) = event.get("message") {
-                    if let Some(content_arr) = message_obj.get("content").and_then(|c| c.as_array()) {
-                        for block in content_arr {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-                                let tool_use_id = block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
-                                let content = block.get("content").map(|c| {
-                                    if let Some(s) = c.as_str() { s.to_string() }
-                                    else { c.to_string() }
-                                }).unwrap_or_default();
-                                send_event(tx, serde_json::json!({
-                                    "type": "tool_result",
-                                    "id": tool_use_id,
-                                    "output": content
-                                }));
-                            }
-                        }
-                    }
-                }
-            }
-            "result" => {
-                let result_text = event.get("result").and_then(|r| r.as_str()).unwrap_or("");
-                let is_error = event.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-
-                if is_error {
-                    send_event(tx, serde_json::json!({
-                        "type": "error",
-                        "message": result_text
-                    }));
-                } else {
-                    send_event(tx, serde_json::json!({
-                        "type": "result",
-                        "content": result_text,
-                        "model": model
-                    }));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let _ = child.wait();
-}
-
-/// Stream Pi Agent CLI output, parsing stream-json events and broadcasting via channel
-fn stream_pi_session(
-    session_id: &str,
-    cwd: &str,
-    model: &str,
-    message: &str,
-    tx: Option<&broadcast::Sender<String>>,
-) {
-    let args = vec![
-        "@earendil-works/pi-coding-agent".to_string(),
-        "--print".to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
-        "--permission-mode".to_string(),
-        "bypassPermissions".to_string(),
-        "--model".to_string(),
-        model.to_string(),
-    ];
-
-    let mut cmd = Command::new("npx");
-    cmd.args(&args)
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            send_event(tx, serde_json::json!({
-                "type": "error",
-                "message": format!("Failed to start Pi Agent: {}", e)
-            }));
-            return;
-        }
-    };
-
-    // Write message to stdin
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(message.as_bytes());
-    }
-
-    // Read stdout line by line
-    let stdout = child.stdout.take().expect("stdout should be piped");
-    let reader = std::io::BufReader::new(stdout);
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-
-        let event: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        let subtype = event.get("subtype").and_then(|s| s.as_str());
-
-        match event_type {
-            "system" if subtype == Some("init") => {
-                send_event(tx, serde_json::json!({
-                    "type": "start",
-                    "sessionId": session_id,
-                    "model": model
-                }));
-            }
-            "assistant" => {
-                if let Some(message_obj) = event.get("message") {
-                    if let Some(content_arr) = message_obj.get("content").and_then(|c| c.as_array()) {
-                        for block in content_arr {
-                            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            match block_type {
-                                "thinking" => {
-                                    if let Some(thinking_text) = block.get("thinking").and_then(|t| t.as_str()) {
-                                        send_event(tx, serde_json::json!({
-                                            "type": "thinking",
-                                            "thinking": thinking_text
-                                        }));
-                                    }
-                                }
-                                "tool_use" => {
-                                    let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                    let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                    let input = block.get("input").cloned().unwrap_or(serde_json::Value::Null);
-                                    send_event(tx, serde_json::json!({
-                                        "type": "tool_call",
-                                        "id": id,
-                                        "name": name,
-                                        "input": input
-                                    }));
-                                }
-                                "text" => {
-                                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                        send_event(tx, serde_json::json!({
-                                            "type": "chunk",
-                                            "content": text
-                                        }));
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-            "user" => {
-                if let Some(message_obj) = event.get("message") {
-                    if let Some(content_arr) = message_obj.get("content").and_then(|c| c.as_array()) {
-                        for block in content_arr {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-                                let tool_use_id = block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
-                                let content = block.get("content").map(|c| {
-                                    if let Some(s) = c.as_str() { s.to_string() }
-                                    else { c.to_string() }
-                                }).unwrap_or_default();
-                                send_event(tx, serde_json::json!({
-                                    "type": "tool_result",
-                                    "id": tool_use_id,
-                                    "output": content
-                                }));
-                            }
-                        }
-                    }
-                }
-            }
-            "result" => {
-                let result_text = event.get("result").and_then(|r| r.as_str()).unwrap_or("");
-                let is_error = event.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-
-                if is_error {
-                    send_event(tx, serde_json::json!({
-                        "type": "error",
-                        "message": result_text
-                    }));
-                } else {
-                    send_event(tx, serde_json::json!({
-                        "type": "result",
-                        "content": result_text,
-                        "model": model
-                    }));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let _ = child.wait();
-}
-
-fn send_event(tx: Option<&broadcast::Sender<String>>, event: serde_json::Value) {
-    if let Some(tx) = tx {
-        let _ = tx.send(event.to_string());
-    }
 }
 
 pub async fn send_command(
@@ -661,6 +358,33 @@ pub async fn send_command(
     };
 
     match req.cmd_type.as_str() {
+        "save_message" => {
+            if let Some(content) = &req.message {
+                let assistant_message = Message {
+                    role: "assistant".to_string(),
+                    content: content.clone(),
+                    timestamp: Utc::now().timestamp_millis(),
+                    content_blocks: req.content_blocks.clone(),
+                };
+
+                if let Some(session) = data.sessions.lock().unwrap().get_mut(&session_id) {
+                    session.messages.push(assistant_message);
+                    session.updated_at = Utc::now();
+                }
+
+                crate::save_sessions_to_disk(&data.sessions.lock().unwrap());
+
+                HttpResponse::Ok().json(serde_json::json!({
+                    "success": true,
+                    "data": null
+                }))
+            } else {
+                HttpResponse::BadRequest().json(serde_json::json!({
+                    "success": false,
+                    "error": "Message is required"
+                }))
+            }
+        }
         "set_model" => {
             if let Some(model) = &req.model {
                 let mut registry = data.registry.lock().unwrap();
@@ -765,13 +489,11 @@ pub async fn events(
         }));
     }
 
-    // Subscribe to the broadcast channel for this session
     let mut rx = {
         let channels = data.events_tx.lock().unwrap();
         match channels.get(&session_id) {
             Some(tx) => tx.subscribe(),
             None => {
-                // Create a channel if it doesn't exist yet
                 drop(channels);
                 let (tx, _) = broadcast::channel::<String>(256);
                 let rx = tx.subscribe();
@@ -782,13 +504,11 @@ pub async fn events(
     };
 
     let stream = async_stream::stream! {
-        // Send connected event
         yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!(
             "data: {}\n\n",
             serde_json::json!({"type": "connected", "sessionId": session_id})
         )));
 
-        // Forward all events from broadcast channel
         loop {
             match rx.recv().await {
                 Ok(msg) => {

@@ -18,6 +18,50 @@ pub struct AppState {
     pub events_tx: Mutex<std::collections::HashMap<String, broadcast::Sender<String>>>,
 }
 
+/// Get the path to the sessions data file
+fn get_sessions_file_path() -> std::path::PathBuf {
+    let data_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".cc-web");
+    std::fs::create_dir_all(&data_dir).ok();
+    data_dir.join("sessions.json")
+}
+
+/// Load sessions from disk
+fn load_sessions_from_disk() -> std::collections::HashMap<String, models::Session> {
+    let path = get_sessions_file_path();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            match serde_json::from_str(&content) {
+                Ok(sessions) => {
+                    println!("📂 Loaded sessions from {}", path.display());
+                    sessions
+                }
+                Err(e) => {
+                    eprintln!("⚠️ Failed to parse sessions file: {}", e);
+                    std::collections::HashMap::new()
+                }
+            }
+        }
+        Err(_) => std::collections::HashMap::new(),
+    }
+}
+
+/// Save sessions to disk
+pub fn save_sessions_to_disk(sessions: &std::collections::HashMap<String, models::Session>) {
+    let path = get_sessions_file_path();
+    match serde_json::to_string_pretty(sessions) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(&path, content) {
+                eprintln!("⚠️ Failed to save sessions: {}", e);
+            }
+        }
+        Err(e) => {
+            eprintln!("⚠️ Failed to serialize sessions: {}", e);
+        }
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     println!("🚀 Starting CC-Web server...");
@@ -25,7 +69,7 @@ async fn main() -> std::io::Result<()> {
 
     // Initialize AI assistant registry
     let mut registry = AssistantRegistry::new();
-    
+
     // Register Claude Code assistant
     let claude = ClaudeAssistant::new();
     println!("✅ Claude Code registered (default model: {})", claude.default_model());
@@ -36,9 +80,16 @@ async fn main() -> std::io::Result<()> {
     println!("✅ Pi Agent registered (default model: {})", pi.default_model());
     registry.register(Box::new(pi));
 
+    // Load persisted sessions
+    let saved_sessions = load_sessions_from_disk();
+    let session_count = saved_sessions.len();
+    if session_count > 0 {
+        println!("📂 Restored {} session(s)", session_count);
+    }
+
     let data = web::Data::new(AppState {
         registry: Mutex::new(registry),
-        sessions: Mutex::new(std::collections::HashMap::new()),
+        sessions: Mutex::new(saved_sessions),
         events_tx: Mutex::new(std::collections::HashMap::new()),
     });
 

@@ -1,8 +1,10 @@
 use super::{AiAssistant, types::*};
+use super::streaming::{self, StreamResult};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::io::Write;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// Claude Code CLI assistant implementation
@@ -30,10 +32,9 @@ impl ClaudeAssistant {
     pub fn new() -> Self {
         let default_model = Self::read_default_model()
             .unwrap_or_else(|| "MiniMax-M2.7".to_string());
-        
+
         let git_bash_path = std::env::var("CLAUDE_CODE_GIT_BASH_PATH")
             .unwrap_or_else(|_| {
-                // Try common locations
                 let paths = vec![
                     r"D:\Downloads\Software\Git\bin\bash.exe",
                     r"C:\Program Files\Git\bin\bash.exe",
@@ -44,7 +45,7 @@ impl ClaudeAssistant {
                         return path.to_string();
                     }
                 }
-                "bash".to_string() // Fallback
+                "bash".to_string()
             });
 
         Self {
@@ -58,8 +59,7 @@ impl ClaudeAssistant {
         let settings_path = dirs::home_dir()?.join(".claude").join("settings.json");
         let content = std::fs::read_to_string(settings_path).ok()?;
         let settings: serde_json::Value = serde_json::from_str(&content).ok()?;
-        
-        // Try ANTHROPIC_MODEL first, then model field
+
         settings.get("env")
             .and_then(|e| e.get("ANTHROPIC_MODEL"))
             .and_then(|m| m.as_str())
@@ -69,52 +69,6 @@ impl ClaudeAssistant {
                     .and_then(|m| m.as_str())
                     .map(String::from)
             })
-    }
-
-    fn get_claude_args(&self, model: &str) -> Vec<String> {
-        vec![
-            "--print".to_string(),
-            "--output-format".to_string(),
-            "text".to_string(),
-            "--permission-mode".to_string(),
-            "bypassPermissions".to_string(),
-            "--model".to_string(),
-            model.to_string(),
-        ]
-    }
-
-    fn execute_claude_blocking(&self, cwd: &str, model: &str, message: &str) -> Result<String, String> {
-        let args = self.get_claude_args(model);
-        
-        let mut cmd = Command::new("claude");
-        cmd.args(&args)
-            .current_dir(cwd)
-            .env("CLAUDE_CODE_GIT_BASH_PATH", &self.git_bash_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let mut child = cmd.spawn()
-            .map_err(|e| format!("Failed to start Claude: {}", e))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            let msg = message.to_string();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(msg.as_bytes());
-            });
-        }
-
-        let output = child.wait_with_output()
-            .map_err(|e| format!("Claude process error: {}", e))?;
-
-        if output.status.success() {
-            String::from_utf8(output.stdout)
-                .map(|s| s.trim().to_string())
-                .map_err(|e| format!("Invalid UTF-8: {}", e))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("Claude error: {}", stderr))
-        }
     }
 }
 
@@ -140,7 +94,6 @@ impl AiAssistant for ClaudeAssistant {
             },
         ];
 
-        // Add standard Claude models if not already present
         let standard_models = vec![
             ("claude-sonnet-4-20250514", "Claude Sonnet 4"),
             ("claude-opus-4-20250514", "Claude Opus 4"),
@@ -189,7 +142,6 @@ impl AiAssistant for ClaudeAssistant {
         let message = message.to_string();
         let git_bash = self.git_bash_path.clone();
 
-        // Use spawn_blocking for the synchronous CLI call
         let result = tokio::task::spawn_blocking(move || {
             let args = vec![
                 "--print".to_string(),
@@ -259,7 +211,6 @@ impl AiAssistant for ClaudeAssistant {
         let model = session.model.clone();
         let git_bash = self.git_bash_path.clone();
 
-        // Fire start event
         callback(AiEvent {
             event_type: "start".to_string(),
             data: AiEventData::Start {
@@ -268,7 +219,6 @@ impl AiAssistant for ClaudeAssistant {
             },
         });
 
-        // Execute in background with stream-json output
         tokio::task::spawn_blocking(move || {
             let args = vec![
                 "--print".to_string(),
@@ -302,18 +252,14 @@ impl AiAssistant for ClaudeAssistant {
                 }
             };
 
-            // Write message to stdin
             if let Some(mut stdin) = child.stdin.take() {
                 let msg = message.clone();
                 let _ = stdin.write_all(msg.as_bytes());
             }
 
-            // Read stdout line by line and parse stream-json events
             let stdout = child.stdout.take().expect("stdout should be piped");
             let reader = std::io::BufReader::new(stdout);
             use std::io::BufRead;
-
-            let mut final_result = String::new();
 
             for line in reader.lines() {
                 let line = match line {
@@ -335,7 +281,6 @@ impl AiAssistant for ClaudeAssistant {
                 };
 
                 let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                let subtype = event.get("subtype").and_then(|s| s.as_str());
 
                 match event_type {
                     "assistant" => {
@@ -365,12 +310,11 @@ impl AiAssistant for ClaudeAssistant {
                                         }
                                         "text" => {
                                             if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                                final_result = text.to_string();
                                                 callback(AiEvent {
                                                     event_type: "chunk".to_string(),
                                                     data: AiEventData::Chunk {
                                                         content: text.to_string(),
-                                                        accumulated: final_result.clone(),
+                                                        accumulated: text.to_string(),
                                                     },
                                                 });
                                             }
@@ -402,14 +346,13 @@ impl AiAssistant for ClaudeAssistant {
                     }
                     "result" => {
                         let result_text = event.get("result").and_then(|r| r.as_str()).unwrap_or("");
-                        final_result = result_text.to_string();
                         let is_error = event.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
 
                         if is_error {
                             callback(AiEvent {
                                 event_type: "error".to_string(),
                                 data: AiEventData::Error {
-                                    message: final_result.clone(),
+                                    message: result_text.to_string(),
                                 },
                             });
                         } else {
@@ -417,7 +360,7 @@ impl AiAssistant for ClaudeAssistant {
                                 event_type: "end".to_string(),
                                 data: AiEventData::End {
                                     response: AiResponse {
-                                        content: final_result.clone(),
+                                        content: result_text.to_string(),
                                         model: model.clone(),
                                         usage: None,
                                         metadata: None,
@@ -430,7 +373,6 @@ impl AiAssistant for ClaudeAssistant {
                 }
             }
 
-            // Wait for process to finish
             let _ = child.wait();
         });
 
@@ -452,6 +394,81 @@ impl AiAssistant for ClaudeAssistant {
 
     fn delete_session(&mut self, session_id: &str) {
         self.sessions.remove(session_id);
+    }
+
+    fn stream_session(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        model: &str,
+        message: &str,
+        tx: Option<&broadcast::Sender<String>>,
+        existing_agent_session_id: Option<&str>,
+    ) -> StreamResult {
+        let git_bash = &self.git_bash_path;
+
+        let mut args = vec![
+            "--print".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+            "--permission-mode".to_string(),
+            "bypassPermissions".to_string(),
+            "--model".to_string(),
+            model.to_string(),
+        ];
+
+        // Use --resume to continue an existing Claude session
+        if let Some(resume_id) = existing_agent_session_id {
+            args.push("--resume".to_string());
+            args.push(resume_id.to_string());
+        }
+
+        let mut cmd = Command::new("claude");
+        cmd.args(&args)
+            .current_dir(cwd)
+            .env("CLAUDE_CODE_GIT_BASH_PATH", git_bash)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                streaming::send_event(tx, serde_json::json!({
+                    "type": "error",
+                    "message": format!("Failed to start Claude: {}", e)
+                }));
+                return StreamResult { agent_session_id: None };
+            }
+        };
+
+        // Write message to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(message.as_bytes());
+        }
+
+        // Read stdout line by line and parse events
+        let stdout = child.stdout.take().expect("stdout should be piped");
+        let reader = std::io::BufReader::new(stdout);
+        use std::io::BufRead;
+
+        let mut agent_session_id: Option<String> = None;
+
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => continue,
+            };
+
+            if let Some(sid) = streaming::process_stream_line(&line, session_id, model, tx) {
+                agent_session_id = Some(sid);
+            }
+        }
+
+        let _ = child.wait();
+
+        StreamResult { agent_session_id }
     }
 
     async fn is_available(&self) -> bool {
