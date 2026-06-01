@@ -5,19 +5,18 @@ use std::process::{Command, Stdio};
 use std::io::Write;
 use uuid::Uuid;
 
-/// Claude Code CLI assistant implementation
-pub struct ClaudeAssistant {
-    sessions: HashMap<String, ClaudeSession>,
+/// Pi Coding Agent assistant implementation
+pub struct PiAssistant {
+    sessions: HashMap<String, PiSession>,
     default_model: String,
-    git_bash_path: String,
 }
 
-struct ClaudeSession {
+struct PiSession {
     cwd: String,
     model: String,
 }
 
-impl Clone for ClaudeSession {
+impl Clone for PiSession {
     fn clone(&self) -> Self {
         Self {
             cwd: self.cwd.clone(),
@@ -26,141 +25,66 @@ impl Clone for ClaudeSession {
     }
 }
 
-impl ClaudeAssistant {
+impl PiAssistant {
     pub fn new() -> Self {
-        let default_model = Self::read_default_model()
-            .unwrap_or_else(|| "MiniMax-M2.7".to_string());
-        
-        let git_bash_path = std::env::var("CLAUDE_CODE_GIT_BASH_PATH")
-            .unwrap_or_else(|_| {
-                // Try common locations
-                let paths = vec![
-                    r"D:\Downloads\Software\Git\bin\bash.exe",
-                    r"C:\Program Files\Git\bin\bash.exe",
-                    r"C:\Program Files (x86)\Git\bin\bash.exe",
-                ];
-                for path in paths {
-                    if std::path::Path::new(path).exists() {
-                        return path.to_string();
-                    }
-                }
-                "bash".to_string() // Fallback
-            });
-
         Self {
             sessions: HashMap::new(),
-            default_model,
-            git_bash_path,
+            default_model: "anthropic/claude-sonnet-4-20250514".to_string(),
         }
     }
 
-    fn read_default_model() -> Option<String> {
-        let settings_path = dirs::home_dir()?.join(".claude").join("settings.json");
-        let content = std::fs::read_to_string(settings_path).ok()?;
-        let settings: serde_json::Value = serde_json::from_str(&content).ok()?;
-        
-        // Try ANTHROPIC_MODEL first, then model field
-        settings.get("env")
-            .and_then(|e| e.get("ANTHROPIC_MODEL"))
-            .and_then(|m| m.as_str())
-            .map(String::from)
-            .or_else(|| {
-                settings.get("model")
-                    .and_then(|m| m.as_str())
-                    .map(String::from)
-            })
-    }
-
-    fn get_claude_args(&self, model: &str) -> Vec<String> {
+    fn get_pi_args(&self, model: &str) -> Vec<String> {
         vec![
-            "--print".to_string(),
-            "--output-format".to_string(),
-            "text".to_string(),
-            "--permission-mode".to_string(),
-            "bypassPermissions".to_string(),
+            "@earendil-works/pi-coding-agent".to_string(),
             "--model".to_string(),
             model.to_string(),
+            "--print".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+            "--permission-mode".to_string(),
+            "bypassPermissions".to_string(),
         ]
-    }
-
-    fn execute_claude_blocking(&self, cwd: &str, model: &str, message: &str) -> Result<String, String> {
-        let args = self.get_claude_args(model);
-        
-        let mut cmd = Command::new("claude");
-        cmd.args(&args)
-            .current_dir(cwd)
-            .env("CLAUDE_CODE_GIT_BASH_PATH", &self.git_bash_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let mut child = cmd.spawn()
-            .map_err(|e| format!("Failed to start Claude: {}", e))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            let msg = message.to_string();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(msg.as_bytes());
-            });
-        }
-
-        let output = child.wait_with_output()
-            .map_err(|e| format!("Claude process error: {}", e))?;
-
-        if output.status.success() {
-            String::from_utf8(output.stdout)
-                .map(|s| s.trim().to_string())
-                .map_err(|e| format!("Invalid UTF-8: {}", e))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("Claude error: {}", stderr))
-        }
     }
 }
 
 #[async_trait]
-impl AiAssistant for ClaudeAssistant {
+impl AiAssistant for PiAssistant {
     fn name(&self) -> &str {
-        "claude"
+        "pi"
     }
 
     fn display_name(&self) -> &str {
-        "Claude Code"
+        "Pi Agent"
     }
 
     fn available_models(&self) -> Vec<ModelInfo> {
-        let mut models = vec![
+        vec![
             ModelInfo {
-                id: self.default_model.clone(),
-                name: self.default_model.clone(),
+                id: "anthropic/claude-sonnet-4-20250514".to_string(),
+                name: "Claude Sonnet 4".to_string(),
                 provider: "anthropic".to_string(),
                 max_tokens: Some(200000),
                 supports_streaming: true,
                 supports_tools: true,
             },
-        ];
-
-        // Add standard Claude models if not already present
-        let standard_models = vec![
-            ("claude-sonnet-4-20250514", "Claude Sonnet 4"),
-            ("claude-opus-4-20250514", "Claude Opus 4"),
-            ("claude-haiku-3-20240307", "Claude Haiku 3"),
-        ];
-
-        for (id, name) in standard_models {
-            if !models.iter().any(|m| m.id == id) {
-                models.push(ModelInfo {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    provider: "anthropic".to_string(),
-                    max_tokens: Some(200000),
-                    supports_streaming: true,
-                    supports_tools: true,
-                });
-            }
-        }
-
-        models
+            ModelInfo {
+                id: "anthropic/claude-opus-4-20250514".to_string(),
+                name: "Claude Opus 4".to_string(),
+                provider: "anthropic".to_string(),
+                max_tokens: Some(200000),
+                supports_streaming: true,
+                supports_tools: true,
+            },
+            ModelInfo {
+                id: "anthropic/claude-haiku-3-20240307".to_string(),
+                name: "Claude Haiku 3".to_string(),
+                provider: "anthropic".to_string(),
+                max_tokens: Some(200000),
+                supports_streaming: true,
+                supports_tools: true,
+            },
+        ]
     }
 
     fn default_model(&self) -> &str {
@@ -171,7 +95,7 @@ impl AiAssistant for ClaudeAssistant {
         let session_id = Uuid::new_v4().to_string();
         let model = model.unwrap_or_else(|| self.default_model.clone());
 
-        self.sessions.insert(session_id.clone(), ClaudeSession {
+        self.sessions.insert(session_id.clone(), PiSession {
             cwd,
             model,
         });
@@ -187,11 +111,10 @@ impl AiAssistant for ClaudeAssistant {
         let cwd = session.cwd.clone();
         let model = session.model.clone();
         let message = message.to_string();
-        let git_bash = self.git_bash_path.clone();
 
-        // Use spawn_blocking for the synchronous CLI call
         let result = tokio::task::spawn_blocking(move || {
             let args = vec![
+                "@earendil-works/pi-coding-agent".to_string(),
                 "--print".to_string(),
                 "--output-format".to_string(),
                 "text".to_string(),
@@ -201,16 +124,15 @@ impl AiAssistant for ClaudeAssistant {
                 model.clone(),
             ];
 
-            let mut cmd = Command::new("claude");
+            let mut cmd = Command::new("npx");
             cmd.args(&args)
                 .current_dir(&cwd)
-                .env("CLAUDE_CODE_GIT_BASH_PATH", &git_bash)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
             let mut child = cmd.spawn()
-                .map_err(|e| format!("Failed to start Claude: {}", e))?;
+                .map_err(|e| format!("Failed to start Pi Agent: {}", e))?;
 
             if let Some(mut stdin) = child.stdin.take() {
                 let msg = message.clone();
@@ -220,7 +142,7 @@ impl AiAssistant for ClaudeAssistant {
             }
 
             let output = child.wait_with_output()
-                .map_err(|e| format!("Claude process error: {}", e))?;
+                .map_err(|e| format!("Pi Agent process error: {}", e))?;
 
             if output.status.success() {
                 String::from_utf8(output.stdout)
@@ -228,7 +150,7 @@ impl AiAssistant for ClaudeAssistant {
                     .map_err(|e| format!("Invalid UTF-8: {}", e))
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(format!("Claude error: {}", stderr))
+                Err(format!("Pi Agent error: {}", stderr))
             }
         })
         .await
@@ -257,7 +179,6 @@ impl AiAssistant for ClaudeAssistant {
         let message = message.to_string();
         let cwd = session.cwd.clone();
         let model = session.model.clone();
-        let git_bash = self.git_bash_path.clone();
 
         // Fire start event
         callback(AiEvent {
@@ -271,6 +192,7 @@ impl AiAssistant for ClaudeAssistant {
         // Execute in background with stream-json output
         tokio::task::spawn_blocking(move || {
             let args = vec![
+                "@earendil-works/pi-coding-agent".to_string(),
                 "--print".to_string(),
                 "--output-format".to_string(),
                 "stream-json".to_string(),
@@ -281,10 +203,9 @@ impl AiAssistant for ClaudeAssistant {
                 model.clone(),
             ];
 
-            let mut cmd = Command::new("claude");
+            let mut cmd = Command::new("npx");
             cmd.args(&args)
                 .current_dir(&cwd)
-                .env("CLAUDE_CODE_GIT_BASH_PATH", &git_bash)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -295,7 +216,7 @@ impl AiAssistant for ClaudeAssistant {
                     callback(AiEvent {
                         event_type: "error".to_string(),
                         data: AiEventData::Error {
-                            message: format!("Failed to start Claude: {}", e),
+                            message: format!("Failed to start Pi Agent: {}", e),
                         },
                     });
                     return;
@@ -312,8 +233,6 @@ impl AiAssistant for ClaudeAssistant {
             let stdout = child.stdout.take().expect("stdout should be piped");
             let reader = std::io::BufReader::new(stdout);
             use std::io::BufRead;
-
-            let mut final_result = String::new();
 
             for line in reader.lines() {
                 let line = match line {
@@ -365,12 +284,11 @@ impl AiAssistant for ClaudeAssistant {
                                         }
                                         "text" => {
                                             if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                                final_result = text.to_string();
                                                 callback(AiEvent {
                                                     event_type: "chunk".to_string(),
                                                     data: AiEventData::Chunk {
                                                         content: text.to_string(),
-                                                        accumulated: final_result.clone(),
+                                                        accumulated: text.to_string(),
                                                     },
                                                 });
                                             }
@@ -402,14 +320,13 @@ impl AiAssistant for ClaudeAssistant {
                     }
                     "result" => {
                         let result_text = event.get("result").and_then(|r| r.as_str()).unwrap_or("");
-                        final_result = result_text.to_string();
                         let is_error = event.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
 
                         if is_error {
                             callback(AiEvent {
                                 event_type: "error".to_string(),
                                 data: AiEventData::Error {
-                                    message: final_result.clone(),
+                                    message: result_text.to_string(),
                                 },
                             });
                         } else {
@@ -417,7 +334,7 @@ impl AiAssistant for ClaudeAssistant {
                                 event_type: "end".to_string(),
                                 data: AiEventData::End {
                                     response: AiResponse {
-                                        content: final_result.clone(),
+                                        content: result_text.to_string(),
                                         model: model.clone(),
                                         usage: None,
                                         metadata: None,
@@ -455,16 +372,16 @@ impl AiAssistant for ClaudeAssistant {
     }
 
     async fn is_available(&self) -> bool {
-        Command::new("claude")
-            .args(&["--version"])
+        Command::new("npx")
+            .args(&["@earendil-works/pi-coding-agent", "--version"])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
 
     async fn version(&self) -> Option<String> {
-        Command::new("claude")
-            .args(&["--version"])
+        Command::new("npx")
+            .args(&["@earendil-works/pi-coding-agent", "--version"])
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())

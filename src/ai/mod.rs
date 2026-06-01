@@ -2,6 +2,7 @@
 // This module provides a trait-based abstraction for different AI coding assistants.
 
 pub mod claude;
+pub mod pi;
 pub mod types;
 
 use async_trait::async_trait;
@@ -25,10 +26,10 @@ pub trait AiAssistant: Send + Sync {
     
     /// Create a new session
     async fn create_session(&mut self, cwd: String, model: Option<String>) -> Result<String, String>;
-    
+
     /// Send a message and get a response
     async fn send_message(&self, session_id: &str, message: &str) -> Result<AiResponse, String>;
-    
+
     /// Send a message with streaming response
     async fn send_message_streaming(
         &self,
@@ -36,16 +37,16 @@ pub trait AiAssistant: Send + Sync {
         message: &str,
         callback: Box<dyn Fn(AiEvent) + Send>,
     ) -> Result<(), String>;
-    
+
     /// Set the model for a session
     fn set_model(&mut self, session_id: &str, model: &str) -> Result<(), String>;
-    
+
     /// Get the current model for a session
     fn get_model(&self, session_id: &str) -> Option<String>;
-    
+
     /// Delete a session
     fn delete_session(&mut self, session_id: &str);
-    
+
     /// Check if the assistant is available (e.g., CLI is installed)
     async fn is_available(&self) -> bool;
     

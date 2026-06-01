@@ -37,6 +37,10 @@ pub enum AiEventData {
         content: String,
         accumulated: String,
     },
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+    },
     #[serde(rename = "message")]
     Message {
         role: String,
@@ -92,3 +96,4 @@ pub struct Message {
     pub content: String,
     pub timestamp: i64,
 }
+

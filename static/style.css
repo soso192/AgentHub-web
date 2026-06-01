@@ -538,6 +538,53 @@ textarea:focus {
     cursor: not-allowed;
 }
 
+/* Switch assistant button */
+.switch-btn {
+    padding: 4px 10px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: background 0.2s;
+}
+
+.switch-btn:hover {
+    background: var(--accent-hover);
+}
+
+.switch-btn:disabled {
+    background: var(--bg-hover);
+    color: var(--text-dim);
+    cursor: not-allowed;
+}
+
+/* System messages (assistant switch notifications) */
+.message.system {
+    justify-content: center;
+    margin: 12px 0;
+}
+
+.system-content {
+    padding: 6px 16px;
+    background: #f0f4ff;
+    border: 1px solid #d0d8f0;
+    border-radius: 20px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.system-content strong {
+    color: var(--accent);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .sidebar {
@@ -548,17 +595,233 @@ textarea:focus {
         z-index: 100;
         width: 280px;
     }
-    
+
     .sidebar.closed {
         transform: translateX(-100%);
     }
-    
+
     .topbar-selector label {
         display: none;
     }
-    
+
     .assistant-cards {
         flex-direction: column;
         align-items: center;
     }
+}
+
+/* Streaming message */
+.message.streaming {
+    opacity: 0.9;
+}
+
+/* Thinking block */
+.thinking-block {
+    margin: 8px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #f0f4ff;
+}
+
+.thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.thinking-header:hover {
+    background: #e8eeff;
+}
+
+.thinking-icon {
+    font-size: 14px;
+}
+
+.thinking-label {
+    flex: 1;
+}
+
+.thinking-toggle {
+    font-size: 10px;
+    transition: transform 0.2s;
+}
+
+.thinking-block.expanded .thinking-toggle {
+    transform: rotate(90deg);
+}
+
+.thinking-content {
+    display: none;
+    padding: 8px 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+}
+
+.thinking-block.expanded .thinking-content {
+    display: block;
+}
+
+/* Tool call block */
+.tool-call-block {
+    margin: 8px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #f8fdf8;
+}
+
+.tool-call-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+}
+
+.tool-call-header:hover {
+    background: #f0faf0;
+}
+
+.tool-icon {
+    font-size: 14px;
+}
+
+.tool-name {
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: #059669;
+    font-size: 12px;
+}
+
+.tool-preview {
+    flex: 1;
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tool-toggle {
+    font-size: 10px;
+    color: var(--text-dim);
+    transition: transform 0.2s;
+}
+
+.tool-call-block.expanded .tool-toggle {
+    transform: rotate(90deg);
+}
+
+.tool-call-content {
+    display: none;
+    border-top: 1px solid var(--border);
+}
+
+.tool-call-block.expanded .tool-call-content {
+    display: block;
+}
+
+.tool-input {
+    margin: 0;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    background: #f0f0f0;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* Tool result */
+.tool-result-area {
+    border-top: 1px solid var(--border);
+}
+
+.tool-result-inline,
+.tool-result-block {
+    background: #fafafa;
+}
+
+.tool-result-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+}
+
+.tool-result-icon {
+    font-size: 12px;
+}
+
+.tool-result-content {
+    margin: 0;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    background: #fafafa;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* Error block */
+.error-block {
+    margin: 8px 0;
+    padding: 8px 12px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    color: var(--error);
+    font-size: 13px;
+}
+
+/* Text block */
+.text-block {
+    margin: 4px 0;
+    line-height: 1.6;
+}
+
+/* Typing indicator animation */
+.typing-indicator {
+    padding: 12px 0;
+    color: var(--text-muted);
+    font-size: 14px;
+}
+
+.typing-indicator .assistant-name {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.typing-indicator span {
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
 }
