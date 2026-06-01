@@ -25,6 +25,9 @@ pub struct Message {
     pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_blocks: Option<Vec<ContentBlock>>,
+    /// Which assistant generated this message (for correct labeling after switching)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assistant: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

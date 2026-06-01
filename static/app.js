@@ -11,6 +11,9 @@ let currentModel = null;
 let isStreaming = false;
 let pendingCwd = null;
 let currentEventSource = null;
+let messageQueue = [];
+let currentBrowsePath = null;
+let fileBrowserExpanded = false;
 
 // DOM Elements
 const sidebar = document.getElementById('sidebar');
@@ -35,6 +38,7 @@ const statusDisplay = document.getElementById('statusDisplay');
 const assistantStatus = document.getElementById('assistantStatus');
 const typingIndicator = document.getElementById('typingIndicator');
 const switchAssistantBtn = document.getElementById('switchAssistantBtn');
+const stopBtn = document.getElementById('stopBtn');
 
 // Assistant icons
 const ASSISTANT_ICONS = {
@@ -250,7 +254,7 @@ function renderSessionList() {
             <div class="meta">
                 <span class="assistant-badge">${session.assistant || 'claude'}</span>
                 <span>${session.messageCount || 0} msgs</span>
-                <span>${session.model || ''}</span>
+                <span class="cwd-label">📁 ${escapeHtml(session.cwd?.split(/[/\\]/).pop() || '')}</span>
             </div>
         `;
         div.onclick = (e) => {
@@ -266,6 +270,11 @@ function renderSessionList() {
 }
 
 async function selectSession(sessionId) {
+    // Reset any ongoing streaming state
+    resetStreamingState();
+    messageQueue = [];
+    updateQueueStatus();
+
     currentSessionId = sessionId;
     renderSessionList();
     try {
@@ -286,6 +295,16 @@ async function selectSession(sessionId) {
         inputArea.style.display = 'block';
         typingIndicator.style.display = 'none';
         updateSwitchButton();
+
+        // Load file browser for this session's cwd
+        if (data.cwd) {
+            currentBrowsePath = data.cwd;
+            // Auto-expand file browser
+            if (!fileBrowserExpanded) {
+                toggleFileBrowser();
+            }
+            loadFiles(data.cwd);
+        }
     } catch (e) {
         console.error('Failed to load session:', e);
     }
@@ -313,8 +332,10 @@ function renderMessages(messages, assistant) {
         div.className = `message ${msg.role}`;
         let html = '';
         if (msg.role === 'assistant') {
-            const icon = ASSISTANT_ICONS[assistant] || ASSISTANT_ICONS.default;
-            html += `<div class="assistant-label">${icon} ${assistant || 'Assistant'}</div>`;
+            // Use the message's own assistant label, fallback to session's assistant
+            const msgAssistant = msg.assistant || assistant;
+            const icon = ASSISTANT_ICONS[msgAssistant] || ASSISTANT_ICONS.default;
+            html += `<div class="assistant-label">${icon} ${msgAssistant || 'Assistant'}</div>`;
         }
         // Render content blocks if available, otherwise plain content
         if (msg.content_blocks && msg.content_blocks.length > 0) {
@@ -358,9 +379,12 @@ function addMessage(role, content, assistant) {
 function createStreamingMessage() {
     const div = document.createElement('div');
     div.className = 'message assistant streaming';
-    const icon = ASSISTANT_ICONS[currentAssistant] || ASSISTANT_ICONS.default;
+    // Use the session's actual assistant, not the dropdown selection
+    const session = sessions.find(s => s.id === currentSessionId);
+    const streamAssistant = session ? session.assistant : currentAssistant;
+    const icon = ASSISTANT_ICONS[streamAssistant] || ASSISTANT_ICONS.default;
     div.innerHTML = `
-        <div class="assistant-label">${icon} ${currentAssistant}</div>
+        <div class="assistant-label">${icon} ${streamAssistant}</div>
         <div class="message-content"></div>
     `;
     messagesContainer.appendChild(div);
@@ -534,7 +558,8 @@ function connectSSE(sessionId, message, onDone) {
     // Collect content blocks for persistence
     const contentBlocks = [];
     const toolCallMap = {}; // id -> {name, input} for matching results
-    let promptSent = false; // Prevent duplicate prompt sends on reconnect
+    let promptSent = false;
+    let finished = false; // Guard against double-finish
 
     es.onmessage = (e) => {
         try {
@@ -546,16 +571,26 @@ function connectSSE(sessionId, message, onDone) {
     };
 
     es.onerror = () => {
-        // Only reconnect if we haven't sent the prompt yet (first connection)
-        // If prompt was sent, the stream will close naturally when done
-        if (isStreaming && !promptSent) {
+        if (!isStreaming || finished) return;
+        if (!promptSent) {
+            // First connection failed, retry once
             setTimeout(() => {
-                if (isStreaming && es.readyState === EventSource.CLOSED && !promptSent) {
+                if (isStreaming && !finished && es.readyState === EventSource.CLOSED && !promptSent) {
                     connectSSE(sessionId, message, onDone);
                 }
             }, 1000);
         }
+        // Note: if prompt was sent, we wait for the stream to end naturally
+        // The safety timeout below will handle the case where it never ends
     };
+
+    // Safety timeout: if streaming doesn't finish in 120 seconds, force finish
+    const safetyTimeout = setTimeout(() => {
+        if (!finished) {
+            console.warn('[SSE] Safety timeout reached, forcing finish');
+            finishStreaming();
+        }
+    }, 120000);
 
     function handleStreamEvent(event) {
         switch (event.type) {
@@ -689,16 +724,24 @@ function connectSSE(sessionId, message, onDone) {
     }
 
     function finishStreaming() {
+        if (finished) return;
+        finished = true;
+        clearTimeout(safetyTimeout);
+
         es.close();
         currentEventSource = null;
         isStreaming = false;
-        sendBtn.disabled = false;
+        // Always re-enable send button
+        setTimeout(() => {
+            document.getElementById('sendBtn').disabled = false;
+        }, 0);
+        stopBtn.style.display = 'none';
         typingIndicator.style.display = 'none';
         if (streamingDiv) {
             streamingDiv.classList.remove('streaming');
         }
 
-        // Save assistant response to backend for persistence (with full content blocks)
+        // Save assistant response to backend for persistence
         if ((finalResult || contentBlocks.length > 0) && sessionId) {
             fetch(`${API_BASE}/api/agent/${sessionId}`, {
                 method: 'POST',
@@ -713,6 +756,9 @@ function connectSSE(sessionId, message, onDone) {
 
         loadSessions().then(() => renderSessionList());
         if (onDone) onDone();
+
+        // Process next queued message
+        setTimeout(processQueue, 500);
     }
 }
 
@@ -735,7 +781,16 @@ async function sendStartPrompt(sessionId, message) {
 
 async function sendMessage() {
     const message = messageInput.value.trim();
-    if (!message || isStreaming) return;
+    if (!message) return;
+
+    // If streaming, queue the message
+    if (isStreaming) {
+        messageQueue.push(message);
+        messageInput.value = '';
+        messageInput.style.height = 'auto';
+        updateQueueStatus();
+        return;
+    }
 
     if (!currentSessionId) {
         if (pendingCwd) {
@@ -746,6 +801,64 @@ async function sendMessage() {
         }
     } else {
         await sendToSession(message);
+    }
+}
+
+// Force reset streaming state (when connection drops or session switches)
+function resetStreamingState() {
+    if (currentEventSource) {
+        currentEventSource.close();
+        currentEventSource = null;
+    }
+    isStreaming = false;
+    // Always re-enable send button - use setTimeout to ensure DOM update
+    setTimeout(() => {
+        document.getElementById('sendBtn').disabled = false;
+    }, 0);
+    stopBtn.style.display = 'none';
+    stopBtn.disabled = false;
+    typingIndicator.style.display = 'none';
+    const streamingMsg = document.querySelector('.message.streaming');
+    if (streamingMsg) streamingMsg.classList.remove('streaming');
+}
+
+// Abort running session
+async function abortSession() {
+    if (!currentSessionId) return;
+    try {
+        await fetch(`${API_BASE}/api/agent/${currentSessionId}/abort`, {
+            method: 'POST'
+        });
+    } catch (e) {
+        console.error('Abort failed:', e);
+    }
+    resetStreamingState();
+    loadSessions().then(() => renderSessionList());
+    setTimeout(processQueue, 500);
+}
+
+// Update queue status display
+function updateQueueStatus() {
+    const existing = document.getElementById('queueStatus');
+    if (messageQueue.length > 0) {
+        if (!existing) {
+            const div = document.createElement('div');
+            div.id = 'queueStatus';
+            div.className = 'queue-status';
+            typingIndicator.parentNode.insertBefore(div, typingIndicator);
+        }
+        document.getElementById('queueStatus').textContent = `📨 ${messageQueue.length} message(s) queued`;
+    } else if (existing) {
+        existing.remove();
+    }
+}
+
+// Process next message from queue
+function processQueue() {
+    if (messageQueue.length > 0 && !isStreaming && currentSessionId) {
+        const nextMsg = messageQueue.shift();
+        updateQueueStatus();
+        sendToSession(nextMsg);
     }
 }
 
@@ -796,6 +909,7 @@ async function createSessionWithMessage(cwd, message) {
         messagesContainer.innerHTML = '';
 
         addMessage('user', message, assistant);
+        stopBtn.style.display = 'inline-flex';
         typingIndicator.style.display = 'block';
         typingIndicator.querySelector('.assistant-name').textContent = assistant;
 
@@ -843,6 +957,7 @@ async function sendToSession(message) {
         addMessage('user', message);
         typingIndicator.style.display = 'block';
         typingIndicator.querySelector('.assistant-name').textContent = currentAssistant;
+        stopBtn.style.display = 'inline-flex';
 
         // Refresh sessions to update message count in sidebar
         await loadSessions();
@@ -855,6 +970,135 @@ async function sendToSession(message) {
         sendBtn.disabled = false;
         typingIndicator.style.display = 'none';
     }
+}
+
+// File Browser
+function toggleFileBrowser() {
+    fileBrowserExpanded = !fileBrowserExpanded;
+    const content = document.getElementById('fileBrowserContent');
+    const toggle = document.getElementById('fileBrowserToggle');
+    content.style.display = fileBrowserExpanded ? 'block' : 'none';
+    toggle.textContent = fileBrowserExpanded ? '▼' : '▶';
+    if (fileBrowserExpanded && currentBrowsePath) {
+        loadFiles(currentBrowsePath);
+    }
+}
+
+async function loadFiles(dirPath) {
+    currentBrowsePath = dirPath;
+    const fileList = document.getElementById('fileList');
+    const pathDisplay = document.getElementById('fileBrowserPath');
+
+    // Show short path
+    const shortPath = dirPath.split(/[/\\]/).slice(-2).join('/');
+    pathDisplay.textContent = shortPath;
+
+    try {
+        const res = await fetch(`${API_BASE}/api/files?path=${encodeURIComponent(dirPath)}`);
+        const data = await res.json();
+
+        if (!data.success) {
+            fileList.innerHTML = `<div class="file-error">${escapeHtml(data.error)}</div>`;
+            return;
+        }
+
+        // Clear and rebuild using DOM (not innerHTML with onclick)
+        fileList.innerHTML = '';
+
+        // Parent directory link
+        if (data.parent) {
+            const parentItem = createFileItem('⬆️', '..', '', true);
+            parentItem.onclick = () => loadFiles(data.parent);
+            parentItem.classList.add('file-parent');
+            fileList.appendChild(parentItem);
+        }
+
+        // Files and directories
+        data.files.forEach(f => {
+            const icon = f.is_dir ? '📁' : getFileIcon(f.name);
+            const sizeStr = f.is_dir ? '' : formatFileSize(f.size);
+            const item = createFileItem(icon, f.name, sizeStr, f.is_dir);
+            item.onclick = () => {
+                if (f.is_dir) {
+                    loadFiles(f.path);
+                } else {
+                    viewFile(f.path);
+                }
+            };
+            fileList.appendChild(item);
+        });
+
+        if (fileList.children.length === 0) {
+            fileList.innerHTML = '<div class="file-empty">Empty directory</div>';
+        }
+    } catch (e) {
+        fileList.innerHTML = `<div class="file-error">Failed to load</div>`;
+    }
+}
+
+function createFileItem(icon, name, size, isDir) {
+    const div = document.createElement('div');
+    div.className = `file-item ${isDir ? 'is-dir' : 'is-file'}`;
+    div.innerHTML = `
+        <span class="file-icon">${icon}</span>
+        <span class="file-name">${escapeHtml(name)}</span>
+        <span class="file-size">${size}</span>
+    `;
+    return div;
+}
+
+function getFileIcon(name) {
+    const ext = name.split('.').pop()?.toLowerCase();
+    const icons = {
+        'rs': '🦀', 'js': '📜', 'ts': '📘', 'py': '🐍', 'go': '🔵',
+        'html': '🌐', 'css': '🎨', 'json': '📋', 'toml': '⚙️', 'yaml': '⚙️',
+        'yml': '⚙️', 'md': '📝', 'txt': '📄', 'log': '📃',
+        'png': '🖼️', 'jpg': '🖼️', 'gif': '🖼️', 'svg': '🖼️',
+        'sh': '💻', 'bat': '💻', 'cmd': '💻', 'ps1': '💻',
+        'exe': '⚙️', 'dll': '⚙️', 'so': '⚙️',
+        'zip': '📦', 'tar': '📦', 'gz': '📦',
+        'lock': '🔒', 'env': '🔐',
+    };
+    return icons[ext] || '📄';
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '';
+    if (bytes < 1024) return bytes + 'B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'K';
+    return (bytes / (1024 * 1024)).toFixed(1) + 'M';
+}
+
+async function viewFile(filePath) {
+    try {
+        const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filePath)}`);
+        const data = await res.json();
+        if (data.success) {
+            // Show file content in a simple overlay or in the chat area
+            showFileContent(filePath, data.content);
+        } else {
+            alert(data.error);
+        }
+    } catch (e) {
+        alert('Failed to read file');
+    }
+}
+
+function showFileContent(filePath, content) {
+    const fileName = filePath.split(/[/\\]/).pop();
+    const overlay = document.createElement('div');
+    overlay.className = 'file-overlay';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    overlay.innerHTML = `
+        <div class="file-viewer">
+            <div class="file-viewer-header">
+                <span class="file-viewer-name">📄 ${escapeHtml(fileName)}</span>
+                <button class="file-viewer-close" onclick="this.closest('.file-overlay').remove()">×</button>
+            </div>
+            <pre class="file-viewer-content">${escapeHtml(content)}</pre>
+        </div>
+    `;
+    document.body.appendChild(overlay);
 }
 
 function setupEventListeners() {
@@ -886,6 +1130,7 @@ function setupEventListeners() {
 
     assistantSelector.onchange = (e) => selectAssistant(e.target.value);
     switchAssistantBtn.onclick = switchAssistant;
+    stopBtn.onclick = abortSession;
 
     modelSelector.onchange = async (e) => {
         currentModel = e.target.value;
@@ -907,5 +1152,13 @@ function setupEventListeners() {
         if (e.key === 'Enter') createSession();
     };
 }
+
+// Safety net: re-enable send button if not streaming
+setInterval(() => {
+    if (!isStreaming && document.getElementById('sendBtn').disabled) {
+        document.getElementById('sendBtn').disabled = false;
+        stopBtn.style.display = 'none';
+    }
+}, 2000);
 
 init();

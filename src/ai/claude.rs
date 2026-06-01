@@ -405,6 +405,7 @@ impl AiAssistant for ClaudeAssistant {
         tx: Option<&broadcast::Sender<String>>,
         existing_agent_session_id: Option<&str>,
     ) -> StreamResult {
+        eprintln!("[claude] stream_session: session={}, model={}, resume={:?}", session_id, model, existing_agent_session_id);
         let git_bash = &self.git_bash_path;
 
         let mut args = vec![
@@ -439,14 +440,18 @@ impl AiAssistant for ClaudeAssistant {
                     "type": "error",
                     "message": format!("Failed to start Claude: {}", e)
                 }));
-                return StreamResult { agent_session_id: None };
+                return StreamResult { agent_session_id: None, pid: None };
             }
         };
 
-        // Write message to stdin
+        let pid = child.id();
+
+        // Write message to stdin and close it (Claude CLI needs EOF to start processing)
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(message.as_bytes());
+            let _ = stdin.flush();
         }
+        eprintln!("[claude] message written, pid={}", pid);
 
         // Read stdout line by line and parse events
         let stdout = child.stdout.take().expect("stdout should be piped");
@@ -454,21 +459,27 @@ impl AiAssistant for ClaudeAssistant {
         use std::io::BufRead;
 
         let mut agent_session_id: Option<String> = None;
+        let mut line_count = 0;
 
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("[claude] read error: {}", e);
+                    continue;
+                }
             };
+            line_count += 1;
 
             if let Some(sid) = streaming::process_stream_line(&line, session_id, model, tx) {
                 agent_session_id = Some(sid);
             }
         }
 
-        let _ = child.wait();
+        let exit_status = child.wait();
+        eprintln!("[claude] stream loop ended, {} lines, exit={:?}", line_count, exit_status);
 
-        StreamResult { agent_session_id }
+        StreamResult { agent_session_id, pid: Some(pid) }
     }
 
     async fn is_available(&self) -> bool {

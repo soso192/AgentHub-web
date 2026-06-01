@@ -47,6 +47,7 @@ pub async fn new_session(
             content: msg.clone(),
             timestamp: now.timestamp_millis(),
             content_blocks: None,
+            assistant: None,
         });
     }
 
@@ -97,12 +98,16 @@ pub async fn start_prompt(
         }
     };
 
+    eprintln!("[start_prompt] session={}, assistant={}, model={}, agent_session_id={:?}",
+        session_id, assistant_name, model, existing_agent_session_id);
+
     // Store user message
     let user_message = Message {
         role: "user".to_string(),
         content: req.message.clone(),
         timestamp: Utc::now().timestamp_millis(),
         content_blocks: None,
+        assistant: None,
     };
 
     if let Some(session) = data.sessions.lock().unwrap().get_mut(&session_id) {
@@ -112,8 +117,21 @@ pub async fn start_prompt(
 
     crate::save_sessions_to_disk(&data.sessions.lock().unwrap());
 
-    // Get the broadcast sender for this session
-    let tx = data.events_tx.lock().unwrap().get(&session_id).cloned();
+    // Get or create the broadcast sender for this session
+    let tx: Option<broadcast::Sender<String>> = {
+        let mut channels = data.events_tx.lock().unwrap();
+        if let Some(tx) = channels.get(&session_id) {
+            eprintln!("[start_prompt] using existing events_tx channel");
+            Some(tx.clone())
+        } else {
+            eprintln!("[start_prompt] creating new events_tx channel");
+            let (tx, _) = broadcast::channel::<String>(256);
+            channels.insert(session_id.clone(), tx.clone());
+            Some(tx)
+        }
+    };
+
+    eprintln!("[start_prompt] tx is_some={}", tx.is_some());
 
     // Read and clear history context (set by switch_assistant)
     let history_context = {
@@ -175,25 +193,38 @@ pub async fn start_prompt(
     let data_clone2 = data.clone();
 
     // Dispatch streaming through the trait
+    eprintln!("[start_prompt] spawning streaming task for session={}", session_id);
     tokio::spawn(async move {
         let assistant_name_clone = assistant_name.clone();
+        eprintln!("[start_prompt] inside spawned task, calling spawn_blocking");
         let result = tokio::task::spawn_blocking(move || {
+            eprintln!("[start_prompt] inside spawn_blocking, acquiring registry lock");
             let registry = data_clone.registry.lock().unwrap();
+            eprintln!("[start_prompt] registry locked, looking up assistant: {}", assistant_name_clone);
             match registry.get(&assistant_name_clone) {
-                Some(assistant) => assistant.stream_session(
-                    &session_id_clone,
-                    &cwd,
-                    &model,
-                    &message,
-                    tx.as_ref(),
-                    existing_agent_session_id.as_deref(),
-                ),
-                None => crate::ai::streaming::StreamResult { agent_session_id: None },
+                Some(assistant) => {
+                    eprintln!("[start_prompt] calling stream_session");
+                    assistant.stream_session(
+                        &session_id_clone,
+                        &cwd,
+                        &model,
+                        &message,
+                        tx.as_ref(),
+                        existing_agent_session_id.as_deref(),
+                    )
+                }
+                None => crate::ai::streaming::StreamResult { agent_session_id: None, pid: None },
             }
         }).await;
 
         match result {
             Ok(stream_result) => {
+                eprintln!("[start_prompt] stream_session completed, agent_session_id={:?}, pid={:?}",
+                    stream_result.agent_session_id, stream_result.pid);
+                // Store PID for abort support
+                if let Some(pid) = stream_result.pid {
+                    data_clone2.running_pids.lock().unwrap().insert(session_id_for_save.clone(), pid);
+                }
                 // Save agent session ID for session continuity (--resume)
                 if let Some(sid) = stream_result.agent_session_id {
                     if let Some(session) = data_clone2.sessions.lock().unwrap().get_mut(&session_id_for_save) {
@@ -202,9 +233,12 @@ pub async fn start_prompt(
                     crate::save_sessions_to_disk(&data_clone2.sessions.lock().unwrap());
                 }
             }
-            Err(e) => eprintln!("Streaming task error: {}", e),
+            Err(e) => eprintln!("[start_prompt] Streaming task error: {}", e),
         }
 
+        // Clean up PID and event channel
+        eprintln!("[start_prompt] cleaning up session={}", session_id_for_cleanup);
+        data_clone2.running_pids.lock().unwrap().remove(&session_id_for_cleanup);
         data_clone2.events_tx.lock().unwrap().remove(&session_id_for_cleanup);
     });
 
@@ -311,6 +345,7 @@ pub async fn switch_assistant(
                 ),
                 timestamp: Utc::now().timestamp_millis(),
                 content_blocks: None,
+                assistant: None,
             });
         }
     }
@@ -334,6 +369,49 @@ pub async fn switch_assistant(
         "model": current_model,
         "message": format!("Switched to {}", new_assistant_name)
     }))
+}
+
+pub async fn abort_session(
+    data: web::Data<AppState>,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let session_id = path.into_inner();
+
+    // Get and remove the PID
+    let pid = data.running_pids.lock().unwrap().remove(&session_id);
+
+    if let Some(pid) = pid {
+        // Kill the process tree
+        #[cfg(target_os = "windows")]
+        {
+            use std::process::Command;
+            let _ = Command::new("taskkill")
+                .args(&["/F", "/T", "/PID", &pid.to_string()])
+                .output();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+
+        // Close the event channel so SSE connection closes and frontend resets
+        data.events_tx.lock().unwrap().remove(&session_id);
+
+        HttpResponse::Ok().json(serde_json::json!({
+            "success": true,
+            "message": "Process killed"
+        }))
+    } else {
+        // Also clean up event channel even if no PID
+        data.events_tx.lock().unwrap().remove(&session_id);
+
+        HttpResponse::Ok().json(serde_json::json!({
+            "success": true,
+            "message": "No running process found"
+        }))
+    }
 }
 
 pub async fn send_command(
@@ -365,6 +443,7 @@ pub async fn send_command(
                     content: content.clone(),
                     timestamp: Utc::now().timestamp_millis(),
                     content_blocks: req.content_blocks.clone(),
+                    assistant: Some(assistant_name.clone()),
                 };
 
                 if let Some(session) = data.sessions.lock().unwrap().get_mut(&session_id) {

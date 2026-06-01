@@ -10,12 +10,15 @@ mod static_files;
 
 use ai::{AssistantRegistry, AiAssistant};
 use ai::claude::ClaudeAssistant;
+use ai::codex::CodexAssistant;
 use ai::pi::PiAssistant;
 
 pub struct AppState {
     pub registry: Mutex<AssistantRegistry>,
     pub sessions: Mutex<std::collections::HashMap<String, models::Session>>,
     pub events_tx: Mutex<std::collections::HashMap<String, broadcast::Sender<String>>>,
+    /// Running child process IDs for abort support (session_id → pid)
+    pub running_pids: Mutex<std::collections::HashMap<String, u32>>,
 }
 
 /// Get the path to the sessions data file
@@ -80,6 +83,11 @@ async fn main() -> std::io::Result<()> {
     println!("✅ Pi Agent registered (default model: {})", pi.default_model());
     registry.register(Box::new(pi));
 
+    // Register Codex assistant
+    let codex = CodexAssistant::new();
+    println!("✅ Codex registered (default model: {})", codex.default_model());
+    registry.register(Box::new(codex));
+
     // Load persisted sessions
     let saved_sessions = load_sessions_from_disk();
     let session_count = saved_sessions.len();
@@ -91,6 +99,7 @@ async fn main() -> std::io::Result<()> {
         registry: Mutex::new(registry),
         sessions: Mutex::new(saved_sessions),
         events_tx: Mutex::new(std::collections::HashMap::new()),
+        running_pids: Mutex::new(std::collections::HashMap::new()),
     });
 
     HttpServer::new(move || {
@@ -112,10 +121,13 @@ async fn main() -> std::io::Result<()> {
             .route("/api/sessions/{id}", web::delete().to(api::sessions::delete_session))
             .route("/api/agent/new", web::post().to(api::agent::new_session))
             .route("/api/agent/{id}/start", web::post().to(api::agent::start_prompt))
+            .route("/api/agent/{id}/abort", web::post().to(api::agent::abort_session))
             .route("/api/agent/{id}/switch", web::post().to(api::agent::switch_assistant))
             .route("/api/agent/{id}", web::post().to(api::agent::send_command))
             .route("/api/agent/{id}", web::get().to(api::agent::get_state))
             .route("/api/agent/{id}/events", web::get().to(api::agent::events))
+            .route("/api/files", web::get().to(api::files::list_files))
+            .route("/api/files/{path:.*}", web::get().to(api::files::read_file))
             // Static files (fallback)
             .default_service(web::route().to(static_files::serve))
     })

@@ -2,6 +2,7 @@
 // This module provides a trait-based abstraction for different AI coding assistants.
 
 pub mod claude;
+pub mod codex;
 pub mod pi;
 pub mod streaming;
 pub mod types;
@@ -61,7 +62,7 @@ pub trait AiAssistant: Send + Sync {
         _tx: Option<&broadcast::Sender<String>>,
         _agent_session_id: Option<&str>,
     ) -> StreamResult {
-        StreamResult { agent_session_id: None }
+        StreamResult { agent_session_id: None, pid: None }
     }
 
     /// Check if the assistant is available (e.g., CLI is installed)

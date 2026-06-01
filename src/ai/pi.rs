@@ -34,8 +34,6 @@ impl Clone for PiSession {
 impl PiAssistant {
     fn create_pi_command(&self) -> Command {
         if self.pi_cmd.starts_with("node:") {
-            // Extract base path from: node:<base>/node_modules/.../cli.js
-            // Handle both forward and back slashes
             let cli_js = &self.pi_cmd[5..];
             let sep = if cli_js.contains('\\') { "\\node_modules\\" } else { "/node_modules/" };
             if let Some(idx) = cli_js.find(sep) {
@@ -49,7 +47,6 @@ impl PiAssistant {
                 }
                 eprintln!("[pi] node.exe not found at: {}", node_exe);
             }
-            // Fallback: try system node
             eprintln!("[pi] falling back to system node");
             let mut cmd = Command::new("node");
             cmd.arg(cli_js);
@@ -384,7 +381,7 @@ impl AiAssistant for PiAssistant {
 
         let mut child = match cmd.spawn() {
             Ok(c) => {
-                eprintln!("[pi] process spawned successfully");
+                eprintln!("[pi] process spawned successfully, pid={:?}", c.id());
                 c
             }
             Err(e) => {
@@ -393,10 +390,11 @@ impl AiAssistant for PiAssistant {
                     "type": "error",
                     "message": format!("Failed to start Pi Agent: {}", e)
                 }));
-                return StreamResult { agent_session_id: None };
+                return StreamResult { agent_session_id: None, pid: None };
             }
         };
 
+        let pid = child.id();
         // Close stdin
         if let Some(stdin) = child.stdin.take() {
             drop(stdin);
@@ -534,8 +532,22 @@ impl AiAssistant for PiAssistant {
                     }));
                 }
                 "turn_end" => {
-                    // Fallback: if no text_end was received, extract from turn_end
-                    // (text_end normally sends the result)
+                    // Fallback: extract final text from turn_end if text_end wasn't received
+                    if let Some(msg) = event.get("message") {
+                        if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
+                            for block in content_arr {
+                                if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                        send_pi_event(tx, serde_json::json!({
+                                            "type": "result",
+                                            "content": text,
+                                            "model": model
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 "agent_end" => {
                     // Agent finished
@@ -557,6 +569,7 @@ impl AiAssistant for PiAssistant {
 
         StreamResult {
             agent_session_id: session_path,
+            pid: Some(pid),
         }
     }
 

@@ -36,6 +36,20 @@
                 </div>
             </div>
             <div id="sessionList" class="session-list"></div>
+
+            <!-- File Browser -->
+            <div id="fileBrowser" class="file-browser">
+                <div class="file-browser-header" onclick="toggleFileBrowser()">
+                    <span class="file-browser-icon">📁</span>
+                    <span class="file-browser-title">Files</span>
+                    <span id="fileBrowserPath" class="file-browser-path"></span>
+                    <span id="fileBrowserToggle" class="file-browser-toggle">▶</span>
+                </div>
+                <div id="fileBrowserContent" class="file-browser-content" style="display:none;">
+                    <div id="fileList" class="file-list"></div>
+                </div>
+            </div>
+
             <div class="sidebar-footer">
                 <div class="assistant-status" id="assistantStatus">
                     <!-- Shows available assistants -->
@@ -93,6 +107,7 @@
                 <div class="input-wrapper">
                     <textarea id="messageInput" placeholder="Message..." rows="1"></textarea>
                     <button id="sendBtn" class="send-btn">Send</button>
+                    <button id="stopBtn" class="stop-btn" style="display:none;">⏹ Stop</button>
                 </div>
             </div>
         </div>

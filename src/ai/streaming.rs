@@ -8,6 +8,8 @@ use serde_json::Value;
 pub struct StreamResult {
     /// The agent's internal session ID (for --resume / session continuity)
     pub agent_session_id: Option<String>,
+    /// The child process ID (for abort support)
+    pub pid: Option<u32>,
 }
 
 /// Process one line of stream-json output and broadcast the corresponding SSE event.
