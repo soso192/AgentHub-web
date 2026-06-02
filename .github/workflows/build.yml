@@ -23,7 +23,7 @@ jobs:
             target: aarch64-apple-darwin
             artifact: cc-web
             archive: cc-web-macos-arm64.tar.gz
-          - os: macos-13              # 修复：用 Intel runner
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact: cc-web
             archive: cc-web-macos-x64.tar.gz
@@ -73,12 +73,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: cc-web-*        # 明确匹配，避免嵌套目录问题
+          pattern: cc-web-*
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |                  # 修复：用多行字符串
+          files: |
             artifacts/**/*.zip
             artifacts/**/*.tar.gz
           generate_release_notes: true
