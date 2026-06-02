@@ -194,6 +194,11 @@ body {
 .assistant-card .icon { font-size: 32px; margin-bottom: 8px; }
 .assistant-card .name { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
 .assistant-card .desc { font-size: 12px; color: var(--text-muted); }
+.assistant-card.unavailable { opacity: 0.5; cursor: not-allowed; }
+.assistant-card.unavailable:hover { transform: none; box-shadow: none; border-color: var(--border); }
+.card-status { font-size: 10px; margin-top: 6px; font-weight: 600; }
+.card-status.available { color: var(--success); }
+.card-status.unavailable { color: var(--warning); }
 .welcome-screen ol { text-align: left; font-size: 14px; line-height: 2; }
 
 /* ===== Messages ===== */

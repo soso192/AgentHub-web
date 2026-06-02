@@ -39,15 +39,12 @@ impl PiAssistant {
             if let Some(idx) = cli_js.find(sep) {
                 let base_path = &cli_js[..idx];
                 let node_exe = format!("{}{}node.exe", base_path, if cli_js.contains('\\') { "\\" } else { "/" });
-                eprintln!("[pi] resolved node.exe: {}", node_exe);
                 if std::path::Path::new(&node_exe).exists() {
                     let mut cmd = Command::new(&node_exe);
                     cmd.arg(cli_js);
                     return cmd;
                 }
-                eprintln!("[pi] node.exe not found at: {}", node_exe);
             }
-            eprintln!("[pi] falling back to system node");
             let mut cmd = Command::new("node");
             cmd.arg(cli_js);
             cmd

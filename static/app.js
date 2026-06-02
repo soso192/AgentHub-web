@@ -116,7 +116,10 @@ function updateAssistantSelectors() {
         assistants.forEach(a => {
             const opt = document.createElement('option');
             opt.value = a.name;
-            opt.textContent = `${ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default} ${a.display_name}`;
+            const status = a.available ? '' : ' ⚠️未安装';
+            const version = a.version ? ` v${a.version}` : '';
+            opt.textContent = `${ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default} ${a.display_name}${version}${status}`;
+            if (!a.available) opt.style.color = '#999';
             if (a.name === currentAssistant) opt.selected = true;
             select.appendChild(opt);
         });
@@ -142,13 +145,21 @@ function renderAssistantCards() {
     assistantCards.innerHTML = '';
     assistants.forEach(a => {
         const card = document.createElement('div');
-        card.className = `assistant-card ${a.name === currentAssistant ? 'selected' : ''}`;
+        card.className = `assistant-card ${a.name === currentAssistant ? 'selected' : ''} ${!a.available ? 'unavailable' : ''}`;
+        const statusBadge = a.available
+            ? `<div class="card-status available">✅ 已安装${a.version ? ' v' + a.version : ''}</div>`
+            : '<div class="card-status unavailable">⚠️ 未安装</div>';
         card.innerHTML = `
             <div class="icon">${ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default}</div>
             <div class="name">${a.display_name}</div>
             <div class="desc">${ASSISTANT_DESCS[a.name] || ASSISTANT_DESCS.default}</div>
+            ${statusBadge}
         `;
-        card.onclick = () => selectAssistant(a.name);
+        if (a.available) {
+            card.onclick = () => selectAssistant(a.name);
+        } else {
+            card.onclick = () => alert(`⚠️ ${a.display_name} 未在本地安装，请先安装对应的 CLI 工具。`);
+        }
         assistantCards.appendChild(card);
     });
 }
@@ -196,6 +207,13 @@ async function switchAssistant() {
     const newAssistant = assistantSelector.value;
     const session = sessions.find(s => s.id === currentSessionId);
     if (!session || session.assistant === newAssistant) return;
+
+    // Check if the new assistant is available
+    const assistantInfo = assistants.find(a => a.name === newAssistant);
+    if (assistantInfo && !assistantInfo.available) {
+        alert(`⚠️ ${assistantInfo.display_name} 未在本地安装，无法切换。\n\n请先安装对应的 CLI 工具。`);
+        return;
+    }
 
     const newModel = modelSelector.value;
 
