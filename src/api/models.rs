@@ -3,36 +3,21 @@ use std::collections::HashMap;
 use crate::models::{ModelsResponse, ModelInfo, DefaultModel};
 use crate::AppState;
 
-pub async fn get_models(_data: web::Data<AppState>) -> HttpResponse {
-    let mut models = HashMap::new();
+/// Get available models from the default assistant
+pub async fn get_models(data: web::Data<AppState>) -> HttpResponse {
+    let registry = data.registry.lock().unwrap();
+    let assistant = registry.get_default();
     
-    // Try to read Claude settings
-    let settings = dirs::home_dir()
-        .map(|h| h.join(".claude").join("settings.json"))
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-
-    let default_model = if let Some(ref settings) = settings {
-        settings.get("env")
-            .and_then(|e| e.get("ANTHROPIC_MODEL"))
-            .and_then(|m| m.as_str())
-            .unwrap_or("MiniMax-M2.7")
-            .to_string()
-    } else {
-        "MiniMax-M2.7".to_string()
-    };
-
-    // Add models
-    models.insert(default_model.clone(), default_model.clone());
-    models.insert("claude-sonnet-4-20250514".to_string(), "Claude Sonnet 4".to_string());
-    models.insert("claude-opus-4-20250514".to_string(), "Claude Opus 4".to_string());
-    models.insert("claude-haiku-3-20240307".to_string(), "Claude Haiku 3".to_string());
-
-    let model_list: Vec<ModelInfo> = models.iter().map(|(id, name)| {
+    let models_list = assistant.available_models();
+    let default_model_id = assistant.default_model().to_string();
+    
+    let mut models = HashMap::new();
+    let model_list: Vec<ModelInfo> = models_list.iter().map(|m| {
+        models.insert(m.id.clone(), m.name.clone());
         ModelInfo {
-            id: id.clone(),
-            name: name.clone(),
-            provider: "anthropic".to_string(),
+            id: m.id.clone(),
+            name: m.name.clone(),
+            provider: m.provider.clone(),
         }
     }).collect();
 
@@ -41,9 +26,19 @@ pub async fn get_models(_data: web::Data<AppState>) -> HttpResponse {
         model_list,
         default_model: DefaultModel {
             provider: "anthropic".to_string(),
-            model_id: default_model,
+            model_id: default_model_id,
         },
     };
 
     HttpResponse::Ok().json(response)
+}
+
+/// List all registered assistants
+pub async fn list_assistants(data: web::Data<AppState>) -> HttpResponse {
+    let registry = data.registry.lock().unwrap();
+    let assistants = registry.list();
+    
+    HttpResponse::Ok().json(serde_json::json!({
+        "assistants": assistants
+    }))
 }
