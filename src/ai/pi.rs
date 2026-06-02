@@ -451,6 +451,11 @@ impl AiAssistant for PiAssistant {
                 }
             };
 
+            // Debug: log every event type
+            let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+            let subtype = event.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+            eprintln!("[pi] event #{}: type={}, subtype={}", line_count, event_type, subtype);
+
             let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
             match event_type {
