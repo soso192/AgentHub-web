@@ -1,5 +1,4 @@
 use actix_web::{HttpRequest, HttpResponse, http::header};
-use mime_guess::from_path;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const STYLE_CSS: &str = include_str!("../static/style.css");
