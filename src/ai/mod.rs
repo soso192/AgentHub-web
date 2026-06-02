@@ -76,6 +76,8 @@ pub trait AiAssistant: Send + Sync {
 pub struct AssistantRegistry {
     assistants: Vec<Box<dyn AiAssistant>>,
     default_index: usize,
+    /// Cached availability results (name -> (available, version))
+    availability_cache: std::collections::HashMap<String, (bool, Option<String>)>,
 }
 
 impl AssistantRegistry {
@@ -83,6 +85,7 @@ impl AssistantRegistry {
         Self {
             assistants: Vec::new(),
             default_index: 0,
+            availability_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -121,15 +124,41 @@ impl AssistantRegistry {
         self.assistants.iter_mut().find(|a| a.name() == name)
     }
 
-    /// List all available assistants
+    /// List all registered assistants (without availability check)
     pub fn list(&self) -> Vec<AssistantInfo> {
         self.assistants.iter().enumerate().map(|(i, a)| {
             AssistantInfo {
                 name: a.name().to_string(),
                 display_name: a.display_name().to_string(),
                 is_default: i == self.default_index,
+                available: false, // will be filled by list_available
+                version: None,
             }
         }).collect()
+    }
+
+    /// List all assistants with availability check (cached)
+    pub async fn list_available(&mut self) -> Vec<AssistantInfo> {
+        let mut result = Vec::new();
+        for (i, a) in self.assistants.iter().enumerate() {
+            let name = a.name().to_string();
+            let (available, version) = if let Some(cached) = self.availability_cache.get(&name) {
+                cached.clone()
+            } else {
+                let avail = a.is_available().await;
+                let ver = if avail { a.version().await } else { None };
+                self.availability_cache.insert(name.clone(), (avail, ver.clone()));
+                (avail, ver)
+            };
+            result.push(AssistantInfo {
+                name,
+                display_name: a.display_name().to_string(),
+                is_default: i == self.default_index,
+                available,
+                version,
+            });
+        }
+        result
     }
 }
 
@@ -138,4 +167,6 @@ pub struct AssistantInfo {
     pub name: String,
     pub display_name: String,
     pub is_default: bool,
+    pub available: bool,
+    pub version: Option<String>,
 }
