@@ -254,7 +254,7 @@ function renderSessionList() {
             <div class="meta">
                 <span class="assistant-badge">${session.assistant || 'claude'}</span>
                 <span>${session.messageCount || 0} msgs</span>
-                <span class="cwd-label">📁 ${escapeHtml(session.cwd?.split(/[/\\]/).pop() || '')}</span>
+                <span class="cwd-label" title="${escapeHtml(session.cwd || '')}">📁 ${escapeHtml(session.cwd || '')}</span>
             </div>
         `;
         div.onclick = (e) => {

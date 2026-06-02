@@ -96,6 +96,8 @@ impl PiAssistant {
         let content = std::fs::read_to_string(models_path).ok()?;
         let config: serde_json::Value = serde_json::from_str(&content).ok()?;
         let providers = config.get("providers")?.as_object()?;
+
+        // First try: find the exact model in a provider
         for (provider_name, provider_config) in providers {
             if let Some(models) = provider_config.get("models").and_then(|m| m.as_array()) {
                 for m in models {
@@ -105,6 +107,15 @@ impl PiAssistant {
                 }
             }
         }
+
+        // Fallback: use the first provider that has an API key configured
+        for (provider_name, provider_config) in providers {
+            if provider_config.get("apiKey").and_then(|k| k.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+                eprintln!("[pi] model '{}' not found, falling back to provider '{}'", model, provider_name);
+                return Some(provider_name.clone());
+            }
+        }
+
         None
     }
 
@@ -419,8 +430,8 @@ impl AiAssistant for PiAssistant {
         use std::io::BufRead;
 
         let mut pi_session_id: Option<String> = None;
-
         let mut line_count = 0;
+        let mut got_result = false;
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
@@ -488,6 +499,7 @@ impl AiAssistant for PiAssistant {
                                         "content": content,
                                         "model": model
                                     }));
+                                    got_result = true;
                                 } else {
                                     eprintln!("[pi] text_end: no content field in ame");
                                 }
@@ -543,6 +555,7 @@ impl AiAssistant for PiAssistant {
                                             "content": text,
                                             "model": model
                                         }));
+                                        got_result = true;
                                     }
                                 }
                             }
@@ -550,14 +563,28 @@ impl AiAssistant for PiAssistant {
                     }
                 }
                 "agent_end" => {
-                    // Agent finished
+                    got_result = true;
                 }
                 _ => {}
             }
         }
 
-        let _ = child.wait();
-        eprintln!("[pi] stream loop ended, {} lines processed", line_count);
+        let exit_status = child.wait();
+        eprintln!("[pi] stream loop ended, {} lines processed, exit={:?}", line_count, exit_status);
+
+        // If no result was received, send an error so frontend doesn't hang
+        if !got_result {
+            let error_msg = if line_count <= 1 {
+                "Pi Agent exited without producing output. Check API key and model configuration.".to_string()
+            } else {
+                format!("Pi Agent exited unexpectedly ({} lines processed)", line_count)
+            };
+            eprintln!("[pi] no result received, sending error: {}", error_msg);
+            send_pi_event(tx, serde_json::json!({
+                "type": "error",
+                "message": error_msg
+            }));
+        }
 
         // Convert UUID to full file path for --session
         let session_path = pi_session_id.and_then(|uuid| {
