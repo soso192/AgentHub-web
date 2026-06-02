@@ -73,10 +73,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: cc-web-*
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.zip
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.zip
+            artifacts/**/*.tar.gz
           generate_release_notes: true

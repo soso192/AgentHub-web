@@ -3,7 +3,6 @@ use super::streaming::StreamResult;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
-use std::io::Write;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 

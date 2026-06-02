@@ -19,6 +19,7 @@ dirs = "5"
 encoding_rs = "0.8"
 async-stream = "0.3"
 async-trait = "0.1"
+libc = "0.2"
 
 [build-dependencies]
 embed-resource = "2"

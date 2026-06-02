@@ -396,6 +396,7 @@ dependencies = [
  "embed-resource",
  "encoding_rs",
  "futures",
+ "libc",
  "mime_guess",
  "serde",
  "serde_json",
