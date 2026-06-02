@@ -322,10 +322,12 @@ pub async fn switch_assistant(
         }
     };
 
+    // Always use the new assistant's default model when switching
+    // Don't carry over the old assistant's model
     let current_model = {
         let registry = data.registry.lock().unwrap();
         let assistant = registry.get(&new_assistant_name).unwrap();
-        new_model.clone().unwrap_or_else(|| assistant.default_model().to_string())
+        assistant.default_model().to_string()
     };
 
     {

@@ -897,7 +897,9 @@ async function createSession() {
 
 async function createSessionWithMessage(cwd, message) {
     const assistant = currentAssistant || assistantSelect.value;
-    const model = currentModel || modelSelectNew.value;
+    // Don't send model - let the backend use the assistant's default model
+    // This prevents using Claude's model with Pi Agent or vice versa
+    const model = null;
 
     try {
         isStreaming = true;
