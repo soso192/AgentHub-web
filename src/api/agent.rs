@@ -11,17 +11,22 @@ pub async fn new_session(
     let assistant_name = req.assistant.clone().unwrap_or_else(|| "claude".to_string());
     let model = req.model.clone();
 
-    let mut registry = data.registry.lock().unwrap();
-
-    let assistant = match registry.get_mut(&assistant_name) {
-        Some(a) => a,
-        None => {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "success": false,
-                "error": format!("Assistant '{}' not found", assistant_name)
-            }));
+    // Get assistant handle, then release registry lock
+    let handle = {
+        let registry = data.registry.read().unwrap();
+        match registry.get_handle(&assistant_name) {
+            Some(h) => h,
+            None => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "success": false,
+                    "error": format!("Assistant '{}' not found", assistant_name)
+                }));
+            }
         }
     };
+
+    // Lock only this assistant (other assistants are unaffected)
+    let mut assistant = handle.write().unwrap();
 
     let session_id = match assistant.create_session(req.cwd.clone(), model.clone()).await {
         Ok(id) => id,
@@ -35,8 +40,6 @@ pub async fn new_session(
 
     let current_model = assistant.get_model(&session_id)
         .unwrap_or_else(|| assistant.default_model().to_string());
-
-    drop(registry);
 
     let now = Utc::now();
 
@@ -63,11 +66,11 @@ pub async fn new_session(
         agent_session_id: None,
     };
 
-    data.sessions.lock().unwrap().insert(session_id.clone(), session);
-    crate::save_sessions_to_disk(&data.sessions.lock().unwrap());
+    data.sessions.write().unwrap().insert(session_id.clone(), session);
+    crate::save_sessions_to_disk(&data.sessions.read().unwrap());
 
     let (tx, _) = broadcast::channel::<String>(256);
-    data.events_tx.lock().unwrap().insert(session_id.clone(), tx);
+    data.events_tx.write().unwrap().insert(session_id.clone(), tx);
 
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
@@ -86,7 +89,7 @@ pub async fn start_prompt(
 
     // Get session info
     let (assistant_name, cwd, model, existing_agent_session_id) = {
-        let sessions = data.sessions.lock().unwrap();
+        let sessions = data.sessions.read().unwrap();
         match sessions.get(&session_id) {
             Some(s) => (s.assistant.clone(), s.cwd.clone(), s.model.clone(), s.agent_session_id.clone()),
             None => {
@@ -110,16 +113,16 @@ pub async fn start_prompt(
         assistant: None,
     };
 
-    if let Some(session) = data.sessions.lock().unwrap().get_mut(&session_id) {
+    if let Some(session) = data.sessions.write().unwrap().get_mut(&session_id) {
         session.messages.push(user_message);
         session.updated_at = Utc::now();
     }
 
-    crate::save_sessions_to_disk(&data.sessions.lock().unwrap());
+    crate::save_sessions_to_disk(&data.sessions.read().unwrap());
 
     // Get or create the broadcast sender for this session
     let tx: Option<broadcast::Sender<String>> = {
-        let mut channels = data.events_tx.lock().unwrap();
+        let mut channels = data.events_tx.write().unwrap();
         if let Some(tx) = channels.get(&session_id) {
             eprintln!("[start_prompt] using existing events_tx channel");
             Some(tx.clone())
@@ -135,7 +138,7 @@ pub async fn start_prompt(
 
     // Read and clear history context (set by switch_assistant)
     let history_context = {
-        let mut sessions = data.sessions.lock().unwrap();
+        let mut sessions = data.sessions.write().unwrap();
         if let Some(session) = sessions.get_mut(&session_id) {
             session.history_context.take()
         } else {
@@ -146,7 +149,7 @@ pub async fn start_prompt(
     // If no explicit history_context and no agent session ID (restart scenario),
     // build history from previous messages for agents without native persistence
     let auto_history = if history_context.is_none() && existing_agent_session_id.is_none() {
-        let sessions = data.sessions.lock().unwrap();
+        let sessions = data.sessions.read().unwrap();
         if let Some(session) = sessions.get(&session_id) {
             // Only inject if there are previous messages (more than the one we just added)
             if session.messages.len() > 1 {
@@ -189,32 +192,41 @@ pub async fn start_prompt(
     let session_id_clone = session_id.clone();
     let session_id_for_save = session_id.clone();
     let session_id_for_cleanup = session_id.clone();
-    let data_clone = data.clone();
     let data_clone2 = data.clone();
 
-    // Dispatch streaming through the trait
+    // Get assistant handle from registry, then release registry lock immediately.
+    // The handle is an Arc<RwLock<>> so we can lock the assistant independently.
+    let assistant_handle = {
+        let registry = data.registry.read().unwrap();
+        registry.get_handle(&assistant_name)
+    };
+
+    // Mark session as actively streaming
+    data.streaming_sessions.write().unwrap().insert(session_id.clone());
+
     eprintln!("[start_prompt] spawning streaming task for session={}", session_id);
     tokio::spawn(async move {
-        let assistant_name_clone = assistant_name.clone();
-        eprintln!("[start_prompt] inside spawned task, calling spawn_blocking");
-        let result = tokio::task::spawn_blocking(move || {
-            eprintln!("[start_prompt] inside spawn_blocking, acquiring registry lock");
-            let registry = data_clone.registry.lock().unwrap();
-            eprintln!("[start_prompt] registry locked, looking up assistant: {}", assistant_name_clone);
-            match registry.get(&assistant_name_clone) {
-                Some(assistant) => {
-                    eprintln!("[start_prompt] calling stream_session");
-                    assistant.stream_session(
-                        &session_id_clone,
-                        &cwd,
-                        &model,
-                        &message,
-                        tx.as_ref(),
-                        existing_agent_session_id.as_deref(),
-                    )
-                }
-                None => crate::ai::streaming::StreamResult { agent_session_id: None, pid: None },
+        let handle = match assistant_handle {
+            Some(h) => h,
+            None => {
+                eprintln!("[start_prompt] assistant not found: {}", assistant_name);
+                return;
             }
+        };
+
+        eprintln!("[start_prompt] calling spawn_blocking for stream_session");
+        let result = tokio::task::spawn_blocking(move || {
+            // Lock ONLY this assistant — other assistants are free to operate
+            let assistant = handle.read().unwrap();
+            eprintln!("[start_prompt] calling stream_session");
+            assistant.stream_session(
+                &session_id_clone,
+                &cwd,
+                &model,
+                &message,
+                tx.as_ref(),
+                existing_agent_session_id.as_deref(),
+            )
         }).await;
 
         match result {
@@ -223,23 +235,24 @@ pub async fn start_prompt(
                     stream_result.agent_session_id, stream_result.pid);
                 // Store PID for abort support
                 if let Some(pid) = stream_result.pid {
-                    data_clone2.running_pids.lock().unwrap().insert(session_id_for_save.clone(), pid);
+                    data_clone2.running_pids.write().unwrap().insert(session_id_for_save.clone(), pid);
                 }
                 // Save agent session ID for session continuity (--resume)
                 if let Some(sid) = stream_result.agent_session_id {
-                    if let Some(session) = data_clone2.sessions.lock().unwrap().get_mut(&session_id_for_save) {
+                    if let Some(session) = data_clone2.sessions.write().unwrap().get_mut(&session_id_for_save) {
                         session.agent_session_id = Some(sid);
                     }
-                    crate::save_sessions_to_disk(&data_clone2.sessions.lock().unwrap());
+                    crate::save_sessions_to_disk(&data_clone2.sessions.read().unwrap());
                 }
             }
             Err(e) => eprintln!("[start_prompt] Streaming task error: {}", e),
         }
 
-        // Clean up PID and event channel
+        // Clean up PID, event channel, and streaming status
         eprintln!("[start_prompt] cleaning up session={}", session_id_for_cleanup);
-        data_clone2.running_pids.lock().unwrap().remove(&session_id_for_cleanup);
-        data_clone2.events_tx.lock().unwrap().remove(&session_id_for_cleanup);
+        data_clone2.running_pids.write().unwrap().remove(&session_id_for_cleanup);
+        data_clone2.events_tx.write().unwrap().remove(&session_id_for_cleanup);
+        data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_cleanup);
     });
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -258,7 +271,7 @@ pub async fn switch_assistant(
     let new_model = req.model.clone();
 
     let (old_assistant_name, cwd, existing_messages) = {
-        let sessions = data.sessions.lock().unwrap();
+        let sessions = data.sessions.read().unwrap();
         match sessions.get(&session_id) {
             Some(s) => (s.assistant.clone(), s.cwd.clone(), s.messages.clone()),
             None => {
@@ -279,8 +292,8 @@ pub async fn switch_assistant(
     }
 
     {
-        let registry = data.registry.lock().unwrap();
-        if registry.get(&new_assistant_name).is_none() {
+        let registry = data.registry.read().unwrap();
+        if !registry.has(&new_assistant_name) {
             return HttpResponse::BadRequest().json(serde_json::json!({
                 "success": false,
                 "error": format!("Assistant '{}' not found", new_assistant_name)
@@ -310,28 +323,36 @@ pub async fn switch_assistant(
         None
     };
 
-    {
-        let mut registry = data.registry.lock().unwrap();
-        if let Some(assistant) = registry.get_mut(&new_assistant_name) {
-            if let Err(e) = assistant.create_session(cwd.clone(), new_model.clone()).await {
-                return HttpResponse::InternalServerError().json(serde_json::json!({
-                    "success": false,
-                    "error": e
-                }));
-            }
+    // Create session with new assistant (lock only this assistant)
+    let new_handle = {
+        let registry = data.registry.read().unwrap();
+        registry.get_handle(&new_assistant_name)
+    };
+    if let Some(ref handle) = new_handle {
+        let mut assistant = handle.write().unwrap();
+        if let Err(e) = assistant.create_session(cwd.clone(), new_model.clone()).await {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "error": e
+            }));
+        }
+    }
+
+    // Get default model from the new assistant
+    let current_model = {
+        if let Some(ref handle) = new_handle {
+            let assistant = handle.read().unwrap();
+            assistant.default_model().to_string()
+        } else {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "error": format!("Assistant '{}' not available", new_assistant_name)
+            }));
         }
     };
 
-    // Always use the new assistant's default model when switching
-    // Don't carry over the old assistant's model
-    let current_model = {
-        let registry = data.registry.lock().unwrap();
-        let assistant = registry.get(&new_assistant_name).unwrap();
-        assistant.default_model().to_string()
-    };
-
     {
-        let mut sessions = data.sessions.lock().unwrap();
+        let mut sessions = data.sessions.write().unwrap();
         if let Some(session) = sessions.get_mut(&session_id) {
             session.assistant = new_assistant_name.clone();
             session.model = current_model.clone();
@@ -352,17 +373,18 @@ pub async fn switch_assistant(
         }
     }
 
-    crate::save_sessions_to_disk(&data.sessions.lock().unwrap());
+    crate::save_sessions_to_disk(&data.sessions.read().unwrap());
 
     {
-        let mut registry = data.registry.lock().unwrap();
-        if let Some(old_assistant) = registry.get_mut(&old_assistant_name) {
-            old_assistant.delete_session(&session_id);
+        let registry = data.registry.read().unwrap();
+        if let Some(handle) = registry.get_handle(&old_assistant_name) {
+            let mut assistant = handle.write().unwrap();
+            assistant.delete_session(&session_id);
         }
     }
 
     let (tx, _) = broadcast::channel::<String>(256);
-    data.events_tx.lock().unwrap().insert(session_id.clone(), tx);
+    data.events_tx.write().unwrap().insert(session_id.clone(), tx);
 
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
@@ -380,7 +402,7 @@ pub async fn abort_session(
     let session_id = path.into_inner();
 
     // Get and remove the PID
-    let pid = data.running_pids.lock().unwrap().remove(&session_id);
+    let pid = data.running_pids.write().unwrap().remove(&session_id);
 
     if let Some(pid) = pid {
         // Kill the process tree
@@ -399,7 +421,8 @@ pub async fn abort_session(
         }
 
         // Close the event channel so SSE connection closes and frontend resets
-        data.events_tx.lock().unwrap().remove(&session_id);
+        data.events_tx.write().unwrap().remove(&session_id);
+        data.streaming_sessions.write().unwrap().remove(&session_id);
 
         HttpResponse::Ok().json(serde_json::json!({
             "success": true,
@@ -407,7 +430,8 @@ pub async fn abort_session(
         }))
     } else {
         // Also clean up event channel even if no PID
-        data.events_tx.lock().unwrap().remove(&session_id);
+        data.events_tx.write().unwrap().remove(&session_id);
+        data.streaming_sessions.write().unwrap().remove(&session_id);
 
         HttpResponse::Ok().json(serde_json::json!({
             "success": true,
@@ -423,7 +447,7 @@ pub async fn send_command(
 ) -> HttpResponse {
     let session_id = path.into_inner();
 
-    let session_info = data.sessions.lock().unwrap()
+    let session_info = data.sessions.read().unwrap()
         .get(&session_id)
         .map(|s| (s.assistant.clone(), s.model.clone()));
 
@@ -448,12 +472,12 @@ pub async fn send_command(
                     assistant: Some(assistant_name.clone()),
                 };
 
-                if let Some(session) = data.sessions.lock().unwrap().get_mut(&session_id) {
+                if let Some(session) = data.sessions.write().unwrap().get_mut(&session_id) {
                     session.messages.push(assistant_message);
                     session.updated_at = Utc::now();
                 }
 
-                crate::save_sessions_to_disk(&data.sessions.lock().unwrap());
+                crate::save_sessions_to_disk(&data.sessions.read().unwrap());
 
                 HttpResponse::Ok().json(serde_json::json!({
                     "success": true,
@@ -468,9 +492,12 @@ pub async fn send_command(
         }
         "set_model" => {
             if let Some(model) = &req.model {
-                let mut registry = data.registry.lock().unwrap();
-                let assistant = match registry.get_mut(&assistant_name) {
-                    Some(a) => a,
+                let handle = {
+                    let registry = data.registry.read().unwrap();
+                    registry.get_handle(&assistant_name)
+                };
+                let handle = match handle {
+                    Some(h) => h,
                     None => {
                         return HttpResponse::InternalServerError().json(serde_json::json!({
                             "success": false,
@@ -478,6 +505,7 @@ pub async fn send_command(
                         }));
                     }
                 };
+                let mut assistant = handle.write().unwrap();
 
                 if let Err(e) = assistant.set_model(&session_id, model) {
                     return HttpResponse::InternalServerError().json(serde_json::json!({
@@ -486,7 +514,7 @@ pub async fn send_command(
                     }));
                 }
 
-                if let Some(session) = data.sessions.lock().unwrap().get_mut(&session_id) {
+                if let Some(session) = data.sessions.write().unwrap().get_mut(&session_id) {
                     session.model = model.clone();
                     session.updated_at = Utc::now();
                 }
@@ -503,7 +531,7 @@ pub async fn send_command(
             }
         }
         "get_state" => {
-            let sessions = data.sessions.lock().unwrap();
+            let sessions = data.sessions.read().unwrap();
             if let Some(session) = sessions.get(&session_id) {
                 HttpResponse::Ok().json(serde_json::json!({
                     "success": true,
@@ -513,7 +541,7 @@ pub async fn send_command(
                         "model": session.model,
                         "messageCount": session.messages.len(),
                         "cwd": session.cwd,
-                        "isStreaming": false
+                        "isStreaming": data.streaming_sessions.read().unwrap().contains(&session_id)
                     }
                 }))
             } else {
@@ -535,9 +563,10 @@ pub async fn get_state(
     path: web::Path<String>,
 ) -> HttpResponse {
     let session_id = path.into_inner();
-    let sessions = data.sessions.lock().unwrap();
+    let sessions = data.sessions.read().unwrap();
 
     if let Some(session) = sessions.get(&session_id) {
+        let is_streaming = data.streaming_sessions.read().unwrap().contains(&session_id);
         HttpResponse::Ok().json(serde_json::json!({
             "running": true,
             "state": {
@@ -546,7 +575,7 @@ pub async fn get_state(
                 "model": session.model,
                 "messageCount": session.messages.len(),
                 "cwd": session.cwd,
-                "isStreaming": false
+                "isStreaming": is_streaming
             }
         }))
     } else {
@@ -563,7 +592,7 @@ pub async fn events(
 ) -> HttpResponse {
     let session_id = path.into_inner();
 
-    let exists = data.sessions.lock().unwrap().contains_key(&session_id);
+    let exists = data.sessions.read().unwrap().contains_key(&session_id);
     if !exists {
         return HttpResponse::NotFound().json(serde_json::json!({
             "error": "Session not found"
@@ -571,14 +600,14 @@ pub async fn events(
     }
 
     let mut rx = {
-        let channels = data.events_tx.lock().unwrap();
+        let channels = data.events_tx.read().unwrap();
         match channels.get(&session_id) {
             Some(tx) => tx.subscribe(),
             None => {
                 drop(channels);
                 let (tx, _) = broadcast::channel::<String>(256);
                 let rx = tx.subscribe();
-                data.events_tx.lock().unwrap().insert(session_id.clone(), tx);
+                data.events_tx.write().unwrap().insert(session_id.clone(), tx);
                 rx
             }
         }

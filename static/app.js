@@ -1,21 +1,25 @@
-// CC-Web Frontend - AI Coding Assistant Hub
+// CC-Web Frontend - Concurrent Multi-Session Architecture
 const API_BASE = '';
 
-// State
+// ===== Global State =====
 let currentSessionId = null;
 let sessions = [];
 let assistants = [];
 let models = [];
 let currentAssistant = 'claude';
 let currentModel = null;
-let isStreaming = false;
 let pendingCwd = null;
-let currentEventSource = null;
-let messageQueue = [];
 let currentBrowsePath = null;
 let fileBrowserExpanded = false;
 
-// DOM Elements
+// Per-session streaming: sessionId → { eventSource, streamingDiv, contentDiv, contentBlocks, toolCallMap, hasContent, finalResult, finished, safetyTimeout }
+const streamingSessions = new Map();
+// Per-session message queues: sessionId → [message, ...]
+const messageQueues = new Map();
+// Per-session DOM containers: sessionId → .session-view div
+const sessionViews = new Map();
+
+// ===== DOM References =====
 const sidebar = document.getElementById('sidebar');
 const toggleSidebar = document.getElementById('toggleSidebar');
 const newSessionBtn = document.getElementById('newSessionBtn');
@@ -26,8 +30,8 @@ const modelSelectNew = document.getElementById('modelSelectNew');
 const createSessionBtn = document.getElementById('createSessionBtn');
 const cancelSessionBtn = document.getElementById('cancelSessionBtn');
 const sessionList = document.getElementById('sessionList');
-const messagesContainer = document.getElementById('messages');
 const welcomeScreen = document.getElementById('welcomeScreen');
+const chatContainer = document.getElementById('chatContainer');
 const assistantCards = document.getElementById('assistantCards');
 const inputArea = document.getElementById('inputArea');
 const messageInput = document.getElementById('messageInput');
@@ -40,27 +44,34 @@ const typingIndicator = document.getElementById('typingIndicator');
 const switchAssistantBtn = document.getElementById('switchAssistantBtn');
 const stopBtn = document.getElementById('stopBtn');
 
-// Assistant icons
-const ASSISTANT_ICONS = {
-    'claude': '🤖',
-    'codex': '⚡',
-    'pi': 'π',
-    'cursor': '📝',
-    'default': '🔧'
-};
+// ===== Constants =====
+const ASSISTANT_ICONS = { 'claude': '🤖', 'codex': '⚡', 'pi': 'π', 'cursor': '📝', 'default': '🔧' };
+const ASSISTANT_DESCS = { 'claude': 'Anthropic Claude Code CLI', 'codex': 'OpenAI Codex CLI', 'pi': 'Pi Coding Agent', 'cursor': 'Cursor AI Editor', 'default': 'AI Assistant' };
+const TOOL_ICONS = { 'Bash': '💻', 'bash': '💻', 'Read': '📖', 'read': '📖', 'Write': '✏️', 'write': '✏️', 'Edit': '📝', 'edit': '📝', 'Glob': '🔍', 'glob': '🔍', 'Grep': '🔎', 'grep': '🔎', 'WebFetch': '🌐', 'WebSearch': '🔎', 'Agent': '🤖', 'default': '🔧' };
 
-const ASSISTANT_DESCS = {
-    'claude': 'Anthropic Claude Code CLI',
-    'codex': 'OpenAI Codex CLI',
-    'pi': 'Pi Coding Agent',
-    'cursor': 'Cursor AI Editor',
-    'default': 'AI Assistant'
-};
+// ===== Session View Management =====
 
-// Streaming state
-let streamingMessages = {};
+// Get or create a session's own DOM container inside chatContainer
+function getSessionView(sessionId) {
+    if (sessionViews.has(sessionId)) return sessionViews.get(sessionId);
+    const view = document.createElement('div');
+    view.className = 'session-view';
+    view.dataset.sessionId = sessionId;
+    // Insert before typingIndicator so indicator stays at bottom
+    chatContainer.insertBefore(view, typingIndicator);
+    sessionViews.set(sessionId, view);
+    return view;
+}
 
-// Initialize
+// Show only the given session's view, hide all others
+function showSessionView(sessionId) {
+    for (const [sid, view] of sessionViews) {
+        view.style.display = sid === sessionId ? 'block' : 'none';
+    }
+}
+
+// ===== Initialization =====
+
 async function init() {
     await loadAssistants();
     await loadModels();
@@ -75,8 +86,8 @@ async function loadAssistants() {
         const res = await fetch(`${API_BASE}/api/assistants`);
         const data = await res.json();
         assistants = data.assistants || [];
-        const defaultAssistant = assistants.find(a => a.is_default);
-        if (defaultAssistant) currentAssistant = defaultAssistant.name;
+        const def = assistants.find(a => a.is_default);
+        if (def) currentAssistant = def.name;
         updateAssistantSelectors();
     } catch (e) {
         console.error('Failed to load assistants:', e);
@@ -109,9 +120,10 @@ async function loadSessions() {
     }
 }
 
+// ===== UI Updates =====
+
 function updateAssistantSelectors() {
-    const selectors = [assistantSelect, assistantSelector];
-    selectors.forEach(select => {
+    [assistantSelect, assistantSelector].forEach(select => {
         select.innerHTML = '';
         assistants.forEach(a => {
             const opt = document.createElement('option');
@@ -127,8 +139,7 @@ function updateAssistantSelectors() {
 }
 
 function updateModelSelectors() {
-    const selectors = [modelSelectNew, modelSelector];
-    selectors.forEach(select => {
+    [modelSelectNew, modelSelector].forEach(select => {
         select.innerHTML = '';
         models.forEach(m => {
             const opt = document.createElement('option');
@@ -146,20 +157,15 @@ function renderAssistantCards() {
     assistants.forEach(a => {
         const card = document.createElement('div');
         card.className = `assistant-card ${a.name === currentAssistant ? 'selected' : ''} ${!a.available ? 'unavailable' : ''}`;
-        const statusBadge = a.available
+        const badge = a.available
             ? `<div class="card-status available">✅ 已安装${a.version ? ' v' + a.version : ''}</div>`
             : '<div class="card-status unavailable">⚠️ 未安装</div>';
         card.innerHTML = `
             <div class="icon">${ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default}</div>
             <div class="name">${a.display_name}</div>
             <div class="desc">${ASSISTANT_DESCS[a.name] || ASSISTANT_DESCS.default}</div>
-            ${statusBadge}
-        `;
-        if (a.available) {
-            card.onclick = () => selectAssistant(a.name);
-        } else {
-            card.onclick = () => alert(`⚠️ ${a.display_name} 未在本地安装，请先安装对应的 CLI 工具。`);
-        }
+            ${badge}`;
+        card.onclick = a.available ? () => selectAssistant(a.name) : () => alert(`⚠️ ${a.display_name} 未在本地安装，请先安装对应的 CLI 工具。`);
         assistantCards.appendChild(card);
     });
 }
@@ -185,101 +191,45 @@ function selectAssistant(name) {
     updateSwitchButton();
 }
 
-// Show/hide switch button based on whether session assistant differs from selector
 function updateSwitchButton() {
-    if (!currentSessionId) {
-        switchAssistantBtn.style.display = 'none';
-        return;
-    }
-    // Find current session's assistant
+    if (!currentSessionId) { switchAssistantBtn.style.display = 'none'; return; }
     const session = sessions.find(s => s.id === currentSessionId);
-    if (session && session.assistant !== currentAssistant) {
-        switchAssistantBtn.style.display = 'inline-flex';
+    switchAssistantBtn.style.display = (session && session.assistant !== currentAssistant) ? 'inline-flex' : 'none';
+}
+
+function updateSendButtonState() {
+    if (currentSessionId && streamingSessions.has(currentSessionId)) {
+        sendBtn.classList.add('streaming');
+        stopBtn.style.display = 'inline-flex';
     } else {
-        switchAssistantBtn.style.display = 'none';
+        sendBtn.classList.remove('streaming');
+        stopBtn.style.display = 'none';
     }
 }
 
-// Switch assistant while preserving context
-async function switchAssistant() {
-    if (!currentSessionId || isStreaming) return;
-
-    const newAssistant = assistantSelector.value;
-    const session = sessions.find(s => s.id === currentSessionId);
-    if (!session || session.assistant === newAssistant) return;
-
-    // Check if the new assistant is available
-    const assistantInfo = assistants.find(a => a.name === newAssistant);
-    if (assistantInfo && !assistantInfo.available) {
-        alert(`⚠️ ${assistantInfo.display_name} 未在本地安装，无法切换。\n\n请先安装对应的 CLI 工具。`);
-        return;
-    }
-
-    const newModel = modelSelector.value;
-
-    try {
-        switchAssistantBtn.disabled = true;
-        switchAssistantBtn.textContent = '⏳ Switching...';
-
-        const res = await fetch(`${API_BASE}/api/agent/${currentSessionId}/switch`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ assistant: newAssistant, model: newModel })
-        });
-
-        const data = await res.json();
-
-        if (data.success) {
-            currentAssistant = data.assistant;
-            currentModel = data.model;
-            assistantSelector.value = data.assistant;
-            modelSelector.value = data.model;
-            statusDisplay.textContent = data.model;
-
-            // Add system message to chat
-            const sysDiv = document.createElement('div');
-            sysDiv.className = 'message system';
-            sysDiv.innerHTML = `<div class="system-content">🔄 Switched to <strong>${ASSISTANT_ICONS[data.assistant] || ASSISTANT_ICONS.default} ${data.assistant}</strong> — conversation history preserved</div>`;
-            messagesContainer.appendChild(sysDiv);
-            scrollToBottom();
-
-            // Reload sessions to update sidebar
-            await loadSessions();
-            renderSessionList();
-            updateSwitchButton();
-        } else {
-            alert('Switch failed: ' + (data.error || 'Unknown error'));
-        }
-    } catch (e) {
-        alert('Switch error: ' + e.message);
-    } finally {
-        switchAssistantBtn.disabled = false;
-        switchAssistantBtn.textContent = '🔄 Switch';
-    }
-}
+// ===== Session List =====
 
 function renderSessionList() {
     sessionList.innerHTML = '';
     sessions.forEach(session => {
         const div = document.createElement('div');
-        div.className = `session-item ${session.id === currentSessionId ? 'active' : ''}`;
+        // Show streaming indicator if either frontend or backend says it's streaming
+        const isLive = streamingSessions.has(session.id) || session.isStreaming;
+        div.className = `session-item ${session.id === currentSessionId ? 'active' : ''} ${isLive ? 'streaming' : ''}`;
         const icon = ASSISTANT_ICONS[session.assistant] || ASSISTANT_ICONS.default;
+        const live = isLive ? '<span class="session-streaming-badge">🔴 LIVE</span>' : '';
         div.innerHTML = `
             <div class="header">
-                <div class="name">${icon} ${escapeHtml(session.firstMessage?.slice(0, 40) || 'Untitled')}</div>
+                <div class="name">${icon} ${escapeHtml(session.firstMessage?.slice(0, 40) || 'Untitled')} ${live}</div>
                 <button class="delete-btn" data-id="${session.id}">×</button>
             </div>
             <div class="meta">
                 <span class="assistant-badge">${session.assistant || 'claude'}</span>
                 <span>${session.messageCount || 0} msgs</span>
                 <span class="cwd-label" title="${escapeHtml(session.cwd || '')}">📁 ${escapeHtml(session.cwd || '')}</span>
-            </div>
-        `;
-        div.onclick = (e) => {
-            if (!e.target.classList.contains('delete-btn')) selectSession(session.id);
-        };
-        const deleteBtn = div.querySelector('.delete-btn');
-        deleteBtn.onclick = async (e) => {
+            </div>`;
+        div.onclick = (e) => { if (!e.target.classList.contains('delete-btn')) selectSession(session.id); };
+        div.querySelector('.delete-btn').onclick = async (e) => {
             e.stopPropagation();
             if (confirm('Delete this session?')) await deleteSession(session.id);
         };
@@ -287,99 +237,149 @@ function renderSessionList() {
     });
 }
 
+// ===== Select Session =====
+
 async function selectSession(sessionId) {
-    // Reset any ongoing streaming state
-    resetStreamingState();
-    messageQueue = [];
-    updateQueueStatus();
-
     currentSessionId = sessionId;
-    renderSessionList();
-    try {
-        const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`);
-        const data = await res.json();
-        if (data.messages) renderMessages(data.messages, data.assistant);
-        if (data.assistant) {
-            currentAssistant = data.assistant;
-            assistantSelector.value = data.assistant;
-        }
-        if (data.model) {
-            currentModel = data.model;
-            modelSelector.value = data.model;
-            statusDisplay.textContent = data.model;
-        }
-        welcomeScreen.style.display = 'none';
-        messagesContainer.style.display = 'block';
-        inputArea.style.display = 'block';
-        typingIndicator.style.display = 'none';
-        updateSwitchButton();
 
-        // Load file browser for this session's cwd
-        if (data.cwd) {
-            currentBrowsePath = data.cwd;
-            // Auto-expand file browser
-            if (!fileBrowserExpanded) {
-                toggleFileBrowser();
+    // Reload sessions to get fresh isStreaming status from backend
+    await loadSessions();
+    renderSessionList();
+
+    // Get or create this session's view
+    const view = getSessionView(sessionId);
+
+    // Load messages from backend if view is empty (first time viewing, e.g. after page refresh)
+    if (view.children.length === 0) {
+        try {
+            const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`);
+            const data = await res.json();
+            if (data.messages) renderMessagesInto(view, data.messages, data.assistant);
+            if (data.assistant) { currentAssistant = data.assistant; assistantSelector.value = data.assistant; }
+            if (data.model) { currentModel = data.model; modelSelector.value = data.model; statusDisplay.textContent = data.model; }
+            if (data.cwd) {
+                currentBrowsePath = data.cwd;
+                if (!fileBrowserExpanded) toggleFileBrowser();
+                loadFiles(data.cwd);
             }
-            loadFiles(data.cwd);
-        }
-    } catch (e) {
-        console.error('Failed to load session:', e);
+        } catch (e) { console.error('Failed to load session:', e); }
     }
+
+    // Show this session's view, hide all others
+    showSessionView(sessionId);
+    welcomeScreen.style.display = 'none';
+    chatContainer.style.display = 'flex'; chatContainer.style.flexDirection = 'column';
+    inputArea.style.display = 'block';
+
+    // If backend says this session is still streaming but frontend has no connection, reconnect
+    const sessionInfo = sessions.find(s => s.id === sessionId);
+    if (sessionInfo?.isStreaming && !streamingSessions.has(sessionId)) {
+        connectSSE(sessionId, null); // null message = don't send start prompt
+    }
+
+    updateSwitchButton();
+    updateQueueUI();
+    updateSendButtonState();
+
+    if (streamingSessions.has(sessionId)) {
+        typingIndicator.style.display = 'block';
+        typingIndicator.querySelector('.assistant-name').textContent = currentAssistant;
+    } else {
+        typingIndicator.style.display = 'none';
+    }
+
+    scrollToBottom();
 }
 
+// ===== Delete Session =====
+
 async function deleteSession(sessionId) {
+    cleanupSessionStreaming(sessionId);
+    messageQueues.delete(sessionId);
+    // Remove session view from DOM
+    const view = sessionViews.get(sessionId);
+    if (view) { view.remove(); sessionViews.delete(sessionId); }
+    updateQueueUI();
+
     try {
         await fetch(`${API_BASE}/api/sessions/${sessionId}`, { method: 'DELETE' });
         if (currentSessionId === sessionId) {
             currentSessionId = null;
             welcomeScreen.style.display = 'flex';
-            messagesContainer.style.display = 'none';
+            chatContainer.style.display = 'none';
             inputArea.style.display = 'none';
         }
         await loadSessions();
-    } catch (e) {
-        console.error('Failed to delete session:', e);
-    }
+    } catch (e) { console.error('Failed to delete session:', e); }
 }
 
-function renderMessages(messages, assistant) {
-    messagesContainer.innerHTML = '';
+// ===== Switch Assistant =====
+
+async function switchAssistant() {
+    if (!currentSessionId || streamingSessions.has(currentSessionId)) return;
+    const newAssistant = assistantSelector.value;
+    const session = sessions.find(s => s.id === currentSessionId);
+    if (!session || session.assistant === newAssistant) return;
+    const info = assistants.find(a => a.name === newAssistant);
+    if (info && !info.available) { alert(`⚠️ ${info.display_name} 未在本地安装，无法切换。`); return; }
+
+    try {
+        switchAssistantBtn.disabled = true;
+        switchAssistantBtn.textContent = '⏳ Switching...';
+        const res = await fetch(`${API_BASE}/api/agent/${currentSessionId}/switch`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ assistant: newAssistant, model: modelSelector.value })
+        });
+        const data = await res.json();
+        if (data.success) {
+            currentAssistant = data.assistant; currentModel = data.model;
+            assistantSelector.value = data.assistant; modelSelector.value = data.model;
+            statusDisplay.textContent = data.model;
+            const view = getSessionView(currentSessionId);
+            const sysDiv = document.createElement('div');
+            sysDiv.className = 'message system';
+            sysDiv.innerHTML = `<div class="system-content">🔄 Switched to <strong>${ASSISTANT_ICONS[data.assistant] || ASSISTANT_ICONS.default} ${data.assistant}</strong> — conversation history preserved</div>`;
+            view.appendChild(sysDiv);
+            scrollToBottom();
+            await loadSessions(); renderSessionList(); updateSwitchButton();
+        } else { alert('Switch failed: ' + (data.error || 'Unknown error')); }
+    } catch (e) { alert('Switch error: ' + e.message); }
+    finally { switchAssistantBtn.disabled = false; switchAssistantBtn.textContent = '🔄 Switch'; }
+}
+
+// ===== Render Messages =====
+
+function renderMessagesInto(view, messages, assistant) {
     messages.forEach(msg => {
         const div = document.createElement('div');
         div.className = `message ${msg.role}`;
         let html = '';
         if (msg.role === 'assistant') {
-            // Use the message's own assistant label, fallback to session's assistant
-            const msgAssistant = msg.assistant || assistant;
-            const icon = ASSISTANT_ICONS[msgAssistant] || ASSISTANT_ICONS.default;
-            html += `<div class="assistant-label">${icon} ${msgAssistant || 'Assistant'}</div>`;
+            const a = msg.assistant || assistant;
+            html += `<div class="assistant-label">${ASSISTANT_ICONS[a] || ASSISTANT_ICONS.default} ${a || 'Assistant'}</div>`;
         }
-        // Render content blocks if available, otherwise plain content
         if (msg.content_blocks && msg.content_blocks.length > 0) {
             html += '<div class="message-content">';
             msg.content_blocks.forEach(block => {
-                if (block.type === 'thinking') {
-                    html += renderThinkingBlock(block.thinking);
-                } else if (block.type === 'tool_use') {
-                    html += renderToolCallBlock(block.id, block.name, block.input);
-                } else if (block.type === 'tool_result') {
-                    html += renderToolResultBlock(block.content);
-                } else if (block.type === 'text') {
-                    html += `<div class="text-block">${renderMarkdown(block.text)}</div>`;
-                }
+                if (block.type === 'thinking') html += renderThinkingBlock(block.thinking);
+                else if (block.type === 'tool_use') html += renderToolCallBlock(block.id, block.name, block.input);
+                else if (block.type === 'tool_result') html += renderToolResultBlock(block.content);
+                else if (block.type === 'text') html += `<div class="text-block">${renderMarkdown(block.text)}</div>`;
             });
             html += '</div>';
         } else {
             html += `<div class="message-content">${msg.role === 'assistant' ? renderMarkdown(msg.content) : escapeHtml(msg.content)}</div>`;
         }
         div.innerHTML = html;
-        messagesContainer.appendChild(div);
+        view.appendChild(div);
     });
     scrollToBottom();
 }
 
-function addMessage(role, content, assistant) {
+function addMessage(role, content, assistant, sessionId) {
+    sessionId = sessionId || currentSessionId;
+    if (!sessionId) return;
+    const view = getSessionView(sessionId);
     const div = document.createElement('div');
     div.className = `message ${role}`;
     let html = '';
@@ -389,111 +389,67 @@ function addMessage(role, content, assistant) {
     }
     html += `<div class="message-content">${escapeHtml(content)}</div>`;
     div.innerHTML = html;
-    messagesContainer.appendChild(div);
-    scrollToBottom();
+    view.appendChild(div);
+    if (sessionId === currentSessionId) scrollToBottom();
 }
 
-// Create streaming assistant message container
-function createStreamingMessage() {
+function createStreamingMessage(sessionId) {
+    const view = getSessionView(sessionId);
     const div = document.createElement('div');
     div.className = 'message assistant streaming';
-    // Use the session's actual assistant, not the dropdown selection
-    const session = sessions.find(s => s.id === currentSessionId);
+    const session = sessions.find(s => s.id === sessionId);
     const streamAssistant = session ? session.assistant : currentAssistant;
     const icon = ASSISTANT_ICONS[streamAssistant] || ASSISTANT_ICONS.default;
-    div.innerHTML = `
-        <div class="assistant-label">${icon} ${streamAssistant}</div>
-        <div class="message-content"></div>
-    `;
-    messagesContainer.appendChild(div);
-    scrollToBottom();
+    div.innerHTML = `<div class="assistant-label">${icon} ${streamAssistant}</div><div class="message-content"></div>`;
+    view.appendChild(div);
+    if (sessionId === currentSessionId) scrollToBottom();
     return div;
 }
 
-// Render thinking block (collapsible)
+// ===== Rendering Helpers =====
+
 function renderThinkingBlock(thinking) {
     return `<div class="thinking-block">
         <div class="thinking-header" onclick="this.parentElement.classList.toggle('expanded')">
-            <span class="thinking-icon">💭</span>
-            <span class="thinking-label">Thinking</span>
-            <span class="thinking-toggle">▶</span>
+            <span class="thinking-icon">💭</span><span class="thinking-label">Thinking</span><span class="thinking-toggle">▶</span>
         </div>
-        <div class="thinking-content">${escapeHtml(thinking)}</div>
-    </div>`;
+        <div class="thinking-content">${escapeHtml(thinking)}</div></div>`;
 }
 
-// Tool type icons
-const TOOL_ICONS = {
-    'Bash': '💻', 'bash': '💻',
-    'Read': '📖', 'read': '📖',
-    'Write': '✏️', 'write': '✏️',
-    'Edit': '📝', 'edit': '📝',
-    'Glob': '🔍', 'glob': '🔍',
-    'Grep': '🔎', 'grep': '🔎',
-    'WebFetch': '🌐', 'WebSearch': '🔎',
-    'Agent': '🤖',
-    'default': '🔧'
-};
-
-// Get tool preview text
 function getToolPreview(name, input) {
     if (!input || typeof input !== 'object') return '';
     if (name === 'Bash' || name === 'bash') return input.command || '';
-    if (name === 'Read' || name === 'read') return input.file_path || input.path || '';
-    if (name === 'Write' || name === 'write') return input.file_path || input.path || '';
-    if (name === 'Edit' || name === 'edit') return input.file_path || input.path || '';
-    if (name === 'Glob' || name === 'glob') return input.pattern || '';
-    if (name === 'Grep' || name === 'grep') return input.pattern || input.query || '';
+    if (['Read','read','Write','write','Edit','edit'].includes(name)) return input.file_path || input.path || '';
+    if (['Glob','glob'].includes(name)) return input.pattern || '';
+    if (['Grep','grep'].includes(name)) return input.pattern || input.query || '';
     if (name === 'WebFetch') return input.url || '';
     if (name === 'WebSearch') return input.query || '';
     return input.command || input.path || input.file_path || input.pattern || input.query || '';
 }
 
-// Render tool call block (collapsible)
 function renderToolCallBlock(id, name, input) {
     const icon = TOOL_ICONS[name] || TOOL_ICONS.default;
     let preview = getToolPreview(name, input);
     if (typeof preview === 'object') preview = JSON.stringify(preview);
     if (preview.length > 100) preview = preview.slice(0, 100) + '...';
-
-    // Format input for display
-    let inputDisplay;
-    if (name === 'Bash' || name === 'bash') {
-        // For Bash, show just the command prominently
-        inputDisplay = input.command ? escapeHtml(input.command) : escapeHtml(JSON.stringify(input, null, 2));
-    } else {
-        inputDisplay = escapeHtml(JSON.stringify(input, null, 2));
-    }
-
+    const inputDisplay = (name === 'Bash' || name === 'bash')
+        ? (input.command ? escapeHtml(input.command) : escapeHtml(JSON.stringify(input, null, 2)))
+        : escapeHtml(JSON.stringify(input, null, 2));
     return `<div class="tool-call-block" data-tool-id="${id}">
         <div class="tool-call-header" onclick="this.parentElement.classList.toggle('expanded')">
-            <span class="tool-icon">${icon}</span>
-            <span class="tool-name">${escapeHtml(name)}</span>
-            <span class="tool-preview">${escapeHtml(preview)}</span>
-            <span class="tool-toggle">▶</span>
-        </div>
-        <div class="tool-call-content">
-            <pre class="tool-input">${inputDisplay}</pre>
-            <div class="tool-result-area" data-tool-id="${id}"></div>
-        </div>
-    </div>`;
+            <span class="tool-icon">${icon}</span><span class="tool-name">${escapeHtml(name)}</span>
+            <span class="tool-preview">${escapeHtml(preview)}</span><span class="tool-toggle">▶</span></div>
+        <div class="tool-call-content"><pre class="tool-input">${inputDisplay}</pre>
+            <div class="tool-result-area" data-tool-id="${id}"></div></div></div>`;
 }
 
-// Render tool result block
 function renderToolResultBlock(content) {
     return `<div class="tool-result-block">
-        <div class="tool-result-header">
-            <span class="tool-result-icon">📋</span>
-            <span class="tool-result-label">Result</span>
-        </div>
-        <pre class="tool-result-content">${escapeHtml(content)}</pre>
-    </div>`;
+        <div class="tool-result-header"><span class="tool-result-icon">📋</span><span class="tool-result-label">Result</span></div>
+        <pre class="tool-result-content">${escapeHtml(content)}</pre></div>`;
 }
 
-function scrollToBottom() {
-    const container = document.getElementById('chatContainer');
-    container.scrollTop = container.scrollHeight;
-}
+function scrollToBottom() { chatContainer.scrollTop = chatContainer.scrollHeight; }
 
 function escapeHtml(text) {
     if (typeof text !== 'string') text = String(text || '');
@@ -502,444 +458,302 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Basic markdown rendering for text blocks
 function renderMarkdown(text) {
     if (!text) return '';
     let html = escapeHtml(text);
-
-    // Code blocks (```...```)
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-        return `<pre><code>${code}</code></pre>`;
-    });
-
-    // Inline code (`...`)
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${code}</code></pre>`);
     html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-
-    // Bold (**...**)
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-
-    // Italic (*...*)
     html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
-
-    // Headings (### ... at start of line)
     html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
     html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
     html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-
-    // Blockquote (> ...)
     html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-
-    // Horizontal rule (---)
     html = html.replace(/^---$/gm, '<hr>');
-
-    // Unordered list (- ... or * ...)
     html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
-
-    // Ordered list (1. ...)
     html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
-
-    // Wrap consecutive <li> in <ul>
     html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
-
-    // Links [text](url)
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-
-    // Paragraphs: double newline → paragraph break
     html = html.replace(/\n\n/g, '</p><p>');
-    // Single newline → <br>
     html = html.replace(/\n/g, '<br>');
-
-    // Wrap in paragraph if not already structured
-    if (!html.startsWith('<')) {
-        html = '<p>' + html + '</p>';
-    }
-
+    if (!html.startsWith('<')) html = '<p>' + html + '</p>';
     return html;
 }
 
-// Connect to SSE and handle streaming events
+// ===== Per-Session SSE Streaming =====
+
 function connectSSE(sessionId, message, onDone) {
-    // Close any existing SSE connection first
-    if (currentEventSource) {
-        currentEventSource.close();
-        currentEventSource = null;
-    }
+    const state = {
+        eventSource: null, streamingDiv: null, contentDiv: null,
+        contentBlocks: [], toolCallMap: {},
+        hasContent: false, finalResult: '', promptSent: false, finished: false, safetyTimeout: null,
+        _message: message, _onDone: onDone,
+    };
+    streamingSessions.set(sessionId, state);
+
     const es = new EventSource(`${API_BASE}/api/agent/${sessionId}/events`);
-    currentEventSource = es;
-
-    let streamingDiv = null;
-    let contentDiv = null;
-    let hasContent = false;
-    let finalResult = '';
-
-    // Collect content blocks for persistence
-    const contentBlocks = [];
-    const toolCallMap = {}; // id -> {name, input} for matching results
-    let promptSent = false;
-    let finished = false; // Guard against double-finish
+    state.eventSource = es;
 
     es.onmessage = (e) => {
-        try {
-            const event = JSON.parse(e.data);
-            handleStreamEvent(event);
-        } catch (err) {
-            console.error('SSE parse error:', err);
-        }
+        try { handleStreamEvent(sessionId, JSON.parse(e.data)); }
+        catch (err) { console.error('SSE parse error:', err); }
     };
 
     es.onerror = () => {
-        if (!isStreaming || finished) return;
-        if (!promptSent) {
-            // First connection failed, retry once
+        const st = streamingSessions.get(sessionId);
+        if (!st || st.finished) return;
+        if (!st.promptSent) {
             setTimeout(() => {
-                if (isStreaming && !finished && es.readyState === EventSource.CLOSED && !promptSent) {
+                const st2 = streamingSessions.get(sessionId);
+                if (st2 && !st2.finished && es.readyState === EventSource.CLOSED && !st2.promptSent) {
                     connectSSE(sessionId, message, onDone);
                 }
             }, 1000);
         }
-        // Note: if prompt was sent, we wait for the stream to end naturally
-        // The safety timeout below will handle the case where it never ends
     };
 
-    // Safety timeout: if streaming doesn't finish in 120 seconds, force finish
-    const safetyTimeout = setTimeout(() => {
-        if (!finished) {
-            console.warn('[SSE] Safety timeout reached, forcing finish');
-            finishStreaming();
-        }
+    state.safetyTimeout = setTimeout(() => {
+        const st = streamingSessions.get(sessionId);
+        if (st && !st.finished) { console.warn(`[SSE] Safety timeout for ${sessionId}`); finishStreaming(sessionId); }
     }, 120000);
 
-    function handleStreamEvent(event) {
-        switch (event.type) {
-            case 'connected':
-                if (message && !promptSent) {
-                    promptSent = true;
-                    sendStartPrompt(sessionId, message);
-                }
-                break;
+    renderSessionList(); // Update sidebar indicators
 
-            case 'start':
-                typingIndicator.style.display = 'block';
-                typingIndicator.querySelector('.assistant-name').textContent = currentAssistant;
-                break;
+    return state;
+}
 
-            case 'thinking':
-                if (!streamingDiv) {
-                    streamingDiv = createStreamingMessage();
-                    contentDiv = streamingDiv.querySelector('.message-content');
-                }
-                const thinkingEl = document.createElement('div');
-                thinkingEl.innerHTML = renderThinkingBlock(event.thinking);
-                contentDiv.appendChild(thinkingEl.firstElementChild);
-                hasContent = true;
-                // Collect for persistence
-                contentBlocks.push({ type: 'thinking', thinking: event.thinking });
-                scrollToBottom();
-                break;
+function handleStreamEvent(sessionId, event) {
+    const st = streamingSessions.get(sessionId);
+    if (!st || st.finished) return;
+    const isCurrent = sessionId === currentSessionId;
 
-            case 'tool_call':
-                if (!streamingDiv) {
-                    streamingDiv = createStreamingMessage();
-                    contentDiv = streamingDiv.querySelector('.message-content');
-                }
-                const toolEl = document.createElement('div');
-                toolEl.innerHTML = renderToolCallBlock(event.id, event.name, event.input);
-                contentDiv.appendChild(toolEl.firstElementChild);
-                hasContent = true;
-                // Track tool call and collect for persistence
-                toolCallMap[event.id] = { name: event.name, input: event.input };
-                contentBlocks.push({ type: 'tool_use', id: event.id, name: event.name, input: event.input });
-                scrollToBottom();
-                break;
-
-            case 'tool_result':
-                const toolResultArea = contentDiv?.querySelector(`.tool-result-area[data-tool-id="${event.id}"]`);
-                if (toolResultArea) {
-                    toolResultArea.innerHTML = `<div class="tool-result-inline">
-                        <div class="tool-result-header">
-                            <span class="tool-result-icon">📋</span>
-                            <span class="tool-result-label">Output</span>
-                        </div>
-                        <pre class="tool-result-content">${escapeHtml(event.output)}</pre>
-                    </div>`;
-                } else {
-                    if (!streamingDiv) {
-                        streamingDiv = createStreamingMessage();
-                        contentDiv = streamingDiv.querySelector('.message-content');
-                    }
-                    const resultEl = document.createElement('div');
-                    resultEl.innerHTML = renderToolResultBlock(event.output);
-                    contentDiv.appendChild(resultEl.firstElementChild);
-                }
-                // Collect for persistence
-                contentBlocks.push({ type: 'tool_result', tool_use_id: event.id, content: event.output });
-                scrollToBottom();
-                break;
-
-            case 'chunk':
-                if (!streamingDiv) {
-                    streamingDiv = createStreamingMessage();
-                    contentDiv = streamingDiv.querySelector('.message-content');
-                }
-                let textBlock = contentDiv.querySelector('.text-block:last-child');
-                if (!textBlock || textBlock.dataset.finalized === 'true') {
-                    textBlock = document.createElement('div');
-                    textBlock.className = 'text-block';
-                    contentDiv.appendChild(textBlock);
-                }
-                textBlock.textContent = (textBlock.textContent || '') + event.content;
-                hasContent = true;
-                finalResult += event.content;
-                // Collect text chunk
-                const lastBlock = contentBlocks[contentBlocks.length - 1];
-                if (lastBlock && lastBlock.type === 'text') {
-                    lastBlock.text += event.content;
-                } else {
-                    contentBlocks.push({ type: 'text', text: event.content });
-                }
-                scrollToBottom();
-                break;
-
-            case 'result':
-                if (!streamingDiv) {
-                    streamingDiv = createStreamingMessage();
-                    contentDiv = streamingDiv.querySelector('.message-content');
-                }
-                if (event.content && !hasContent) {
-                    let lastText = contentDiv.querySelector('.text-block:last-child');
-                    if (!lastText) {
-                        lastText = document.createElement('div');
-                        lastText.className = 'text-block';
-                        contentDiv.appendChild(lastText);
-                    }
-                    lastText.textContent = event.content;
-                    lastText.dataset.finalized = 'true';
-                    finalResult = event.content;
-                    // If no text blocks collected yet, add this
-                    if (!contentBlocks.some(b => b.type === 'text')) {
-                        contentBlocks.push({ type: 'text', text: event.content });
-                    }
-                } else if (event.content && !finalResult) {
-                    finalResult = event.content;
-                }
-                // Mark streaming as done
-                finishStreaming();
-                break;
-
-            case 'error':
-                if (!streamingDiv) {
-                    streamingDiv = createStreamingMessage();
-                    contentDiv = streamingDiv.querySelector('.message-content');
-                }
-                const errorEl = document.createElement('div');
-                errorEl.className = 'error-block';
-                errorEl.textContent = `Error: ${event.message}`;
-                contentDiv.appendChild(errorEl);
-                finishStreaming();
-                break;
+    function ensureDiv() {
+        if (!st.streamingDiv) {
+            st.streamingDiv = createStreamingMessage(sessionId);
+            st.contentDiv = st.streamingDiv.querySelector('.message-content');
         }
     }
 
-    function finishStreaming() {
-        if (finished) return;
-        finished = true;
-        clearTimeout(safetyTimeout);
-
-        es.close();
-        currentEventSource = null;
-        isStreaming = false;
-        // Always re-enable send button
-        setTimeout(() => {
-            document.getElementById('sendBtn').disabled = false;
-        }, 0);
-        stopBtn.style.display = 'none';
-        typingIndicator.style.display = 'none';
-        if (streamingDiv) {
-            streamingDiv.classList.remove('streaming');
-        }
-
-        // Save assistant response to backend for persistence
-        if ((finalResult || contentBlocks.length > 0) && sessionId) {
-            fetch(`${API_BASE}/api/agent/${sessionId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    type: 'save_message',
-                    message: finalResult || '',
-                    content_blocks: contentBlocks.length > 0 ? contentBlocks : undefined
-                })
-            }).catch(e => console.error('Failed to save response:', e));
-        }
-
-        loadSessions().then(() => renderSessionList());
-        if (onDone) onDone();
-
-        // Process next queued message
-        setTimeout(processQueue, 500);
+    switch (event.type) {
+        case 'connected':
+            if (st._message && !st.promptSent) { st.promptSent = true; sendStartPrompt(sessionId, st._message); }
+            break;
+        case 'start':
+            if (isCurrent) {
+                typingIndicator.style.display = 'block';
+                typingIndicator.querySelector('.assistant-name').textContent =
+                    (sessions.find(s => s.id === sessionId) || {}).assistant || currentAssistant;
+            }
+            renderSessionList();
+            break;
+        case 'thinking':
+            ensureDiv();
+            const te = document.createElement('div');
+            te.innerHTML = renderThinkingBlock(event.thinking);
+            st.contentDiv.appendChild(te.firstElementChild);
+            st.hasContent = true;
+            st.contentBlocks.push({ type: 'thinking', thinking: event.thinking });
+            if (isCurrent) scrollToBottom();
+            break;
+        case 'tool_call':
+            ensureDiv();
+            const tce = document.createElement('div');
+            tce.innerHTML = renderToolCallBlock(event.id, event.name, event.input);
+            st.contentDiv.appendChild(tce.firstElementChild);
+            st.hasContent = true;
+            st.toolCallMap[event.id] = { name: event.name, input: event.input };
+            st.contentBlocks.push({ type: 'tool_use', id: event.id, name: event.name, input: event.input });
+            if (isCurrent) scrollToBottom();
+            break;
+        case 'tool_result':
+            ensureDiv();
+            const area = st.contentDiv.querySelector(`.tool-result-area[data-tool-id="${event.id}"]`);
+            if (area) {
+                area.innerHTML = `<div class="tool-result-inline"><div class="tool-result-header"><span class="tool-result-icon">📋</span><span class="tool-result-label">Output</span></div><pre class="tool-result-content">${escapeHtml(event.output)}</pre></div>`;
+            } else {
+                const re = document.createElement('div');
+                re.innerHTML = renderToolResultBlock(event.output);
+                st.contentDiv.appendChild(re.firstElementChild);
+            }
+            st.contentBlocks.push({ type: 'tool_result', tool_use_id: event.id, content: event.output });
+            if (isCurrent) scrollToBottom();
+            break;
+        case 'chunk':
+            ensureDiv();
+            let tb = st.contentDiv.querySelector('.text-block:last-child');
+            if (!tb || tb.dataset.finalized === 'true') {
+                tb = document.createElement('div'); tb.className = 'text-block';
+                tb.dataset.rawText = ''; st.contentDiv.appendChild(tb);
+            }
+            tb.dataset.rawText = (tb.dataset.rawText || '') + event.content;
+            tb.innerHTML = renderMarkdown(tb.dataset.rawText);
+            st.hasContent = true; st.finalResult += event.content;
+            const lb = st.contentBlocks[st.contentBlocks.length - 1];
+            if (lb && lb.type === 'text') lb.text += event.content;
+            else st.contentBlocks.push({ type: 'text', text: event.content });
+            if (isCurrent) scrollToBottom();
+            break;
+        case 'result':
+            ensureDiv();
+            if (event.content && !st.hasContent) {
+                let lt = st.contentDiv.querySelector('.text-block:last-child');
+                if (!lt) { lt = document.createElement('div'); lt.className = 'text-block'; st.contentDiv.appendChild(lt); }
+                lt.textContent = event.content; lt.dataset.finalized = 'true';
+                st.finalResult = event.content;
+                if (!st.contentBlocks.some(b => b.type === 'text')) st.contentBlocks.push({ type: 'text', text: event.content });
+            } else if (event.content && !st.finalResult) { st.finalResult = event.content; }
+            finishStreaming(sessionId);
+            break;
+        case 'error':
+            ensureDiv();
+            const ee = document.createElement('div');
+            ee.className = 'error-block'; ee.textContent = `Error: ${event.message}`;
+            st.contentDiv.appendChild(ee);
+            finishStreaming(sessionId);
+            break;
     }
 }
 
-// Send start prompt request
-async function sendStartPrompt(sessionId, message) {
+function finishStreaming(sessionId) {
+    const st = streamingSessions.get(sessionId);
+    if (!st || st.finished) return;
+    st.finished = true;
+    if (st.safetyTimeout) clearTimeout(st.safetyTimeout);
+    if (st.eventSource) st.eventSource.close();
+    streamingSessions.delete(sessionId);
+
+    const isCurrent = sessionId === currentSessionId;
+    if (isCurrent) {
+        sendBtn.classList.remove('streaming');
+        stopBtn.style.display = 'none';
+        typingIndicator.style.display = 'none';
+    }
+    if (st.streamingDiv) st.streamingDiv.classList.remove('streaming');
+
+    // Save response to backend
+    if ((st.finalResult || st.contentBlocks.length > 0) && sessionId) {
+        fetch(`${API_BASE}/api/agent/${sessionId}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'save_message', message: st.finalResult || '', content_blocks: st.contentBlocks.length > 0 ? st.contentBlocks : undefined })
+        }).catch(e => console.error('Failed to save response:', e));
+    }
+
+    loadSessions().then(() => renderSessionList());
+    if (st._onDone) st._onDone();
+    // Process queue for this session
+    setTimeout(() => processSessionQueue(sessionId), 500);
+}
+
+function cleanupSessionStreaming(sessionId) {
+    const st = streamingSessions.get(sessionId);
+    if (st) {
+        st.finished = true;
+        if (st.safetyTimeout) clearTimeout(st.safetyTimeout);
+        if (st.eventSource) st.eventSource.close();
+        streamingSessions.delete(sessionId);
+    }
+}
+
+// ===== Per-Session Queue =====
+
+function processSessionQueue(sessionId) {
+    const queue = messageQueues.get(sessionId);
+    if (!queue || queue.length === 0) { messageQueues.delete(sessionId); updateQueueUI(); return; }
+    if (streamingSessions.has(sessionId)) return;
+    const nextMsg = queue.shift();
+    updateQueueUI();
+    if (sessionId === currentSessionId) { sendToSession(nextMsg); }
+    else { sendToBackgroundSession(sessionId, nextMsg); }
+}
+
+async function sendToBackgroundSession(sessionId, message) {
     try {
         const res = await fetch(`${API_BASE}/api/agent/${sessionId}/start`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message })
         });
         const data = await res.json();
-        if (!data.success) {
-            console.error('Start prompt failed:', data.error);
+        if (data.success) {
+            const st = connectSSE(sessionId, null);
+            st._message = null; // Already sent via start endpoint
         }
-    } catch (e) {
-        console.error('Start prompt error:', e);
-    }
+    } catch (e) { console.error('Background send error:', e); }
+}
+
+function updateQueueUI() {
+    const existing = document.getElementById('queueStatus');
+    const queue = currentSessionId ? messageQueues.get(currentSessionId) : null;
+    if (queue && queue.length > 0) {
+        let html = `<div class="queue-header">📨 ${queue.length} message(s) queued <button class="queue-clear-btn" onclick="clearCurrentQueue()">Clear</button></div>`;
+        queue.forEach((msg, i) => {
+            const preview = msg.length > 50 ? msg.slice(0, 50) + '...' : msg;
+            html += `<div class="queue-item" onclick="removeFromCurrentQueue(${i})" title="Click to remove"><span class="queue-item-text">${escapeHtml(preview)}</span><span class="queue-item-remove">×</span></div>`;
+        });
+        if (existing) { existing.innerHTML = html; }
+        else {
+            const div = document.createElement('div'); div.id = 'queueStatus'; div.className = 'queue-status'; div.innerHTML = html;
+            chatContainer.appendChild(div);
+        }
+    } else if (existing) { existing.remove(); }
+}
+
+function removeFromCurrentQueue(index) {
+    if (!currentSessionId) return;
+    const queue = messageQueues.get(currentSessionId);
+    if (queue) { queue.splice(index, 1); if (queue.length === 0) messageQueues.delete(currentSessionId); updateQueueUI(); }
+}
+function clearCurrentQueue() { if (currentSessionId) { messageQueues.delete(currentSessionId); updateQueueUI(); } }
+
+// ===== Send Messages =====
+
+async function sendStartPrompt(sessionId, message) {
+    try {
+        const res = await fetch(`${API_BASE}/api/agent/${sessionId}/start`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message })
+        });
+        const data = await res.json();
+        if (!data.success) console.error('Start prompt failed:', data.error);
+    } catch (e) { console.error('Start prompt error:', e); }
 }
 
 async function sendMessage() {
     const message = messageInput.value.trim();
     if (!message) return;
 
-    // If streaming, queue the message
-    if (isStreaming) {
-        messageQueue.push(message);
-        messageInput.value = '';
-        messageInput.style.height = 'auto';
-        updateQueueStatus();
-        return;
-    }
-
     if (!currentSessionId) {
-        if (pendingCwd) {
-            await createSessionWithMessage(pendingCwd, message);
-        } else {
-            newSessionForm.style.display = 'block';
-            cwdInput.focus();
-        }
-    } else {
-        await sendToSession(message);
-    }
-}
-
-// Force reset streaming state (when connection drops or session switches)
-function resetStreamingState() {
-    if (currentEventSource) {
-        currentEventSource.close();
-        currentEventSource = null;
-    }
-    isStreaming = false;
-    // Always re-enable send button - use setTimeout to ensure DOM update
-    setTimeout(() => {
-        document.getElementById('sendBtn').disabled = false;
-    }, 0);
-    stopBtn.style.display = 'none';
-    stopBtn.disabled = false;
-    typingIndicator.style.display = 'none';
-    const streamingMsg = document.querySelector('.message.streaming');
-    if (streamingMsg) streamingMsg.classList.remove('streaming');
-}
-
-// Abort running session
-async function abortSession() {
-    if (!currentSessionId) return;
-    try {
-        await fetch(`${API_BASE}/api/agent/${currentSessionId}/abort`, {
-            method: 'POST'
-        });
-    } catch (e) {
-        console.error('Abort failed:', e);
-    }
-    resetStreamingState();
-    loadSessions().then(() => renderSessionList());
-    setTimeout(processQueue, 500);
-}
-
-// Update queue status display
-function updateQueueStatus() {
-    const existing = document.getElementById('queueStatus');
-    if (messageQueue.length > 0) {
-        if (!existing) {
-            const div = document.createElement('div');
-            div.id = 'queueStatus';
-            div.className = 'queue-status';
-            typingIndicator.parentNode.insertBefore(div, typingIndicator);
-        }
-        document.getElementById('queueStatus').textContent = `📨 ${messageQueue.length} message(s) queued`;
-    } else if (existing) {
-        existing.remove();
-    }
-}
-
-// Process next message from queue
-function processQueue() {
-    if (messageQueue.length > 0 && !isStreaming && currentSessionId) {
-        const nextMsg = messageQueue.shift();
-        updateQueueStatus();
-        sendToSession(nextMsg);
-    }
-}
-
-async function createSession() {
-    const cwd = cwdInput.value.trim();
-    if (!cwd) {
-        alert('Please enter a working directory');
+        if (pendingCwd) { await createSessionWithMessage(pendingCwd, message); }
+        else { newSessionForm.style.display = 'block'; cwdInput.focus(); }
         return;
     }
-    const assistant = assistantSelect.value;
-    const model = modelSelectNew.value;
-    newSessionForm.style.display = 'none';
-    cwdInput.value = '';
 
-    try {
-        welcomeScreen.style.display = 'none';
-        messagesContainer.style.display = 'block';
-        inputArea.style.display = 'block';
-        // Clear previous messages and reset session state
-        messagesContainer.innerHTML = '';
-        currentSessionId = null;  // Detach from any old session
-        currentAssistant = assistant;
-        currentModel = model;
-        pendingCwd = cwd;
-        assistantSelector.value = assistant;
-        modelSelector.value = model;
-        statusDisplay.textContent = model;
-        // Update sidebar highlight
-        renderSessionList();
-        messageInput.focus();
-    } catch (e) {
-        console.error('Failed to create session:', e);
-        alert('Failed to create session: ' + e.message);
+    // If current session is streaming, queue the message
+    if (streamingSessions.has(currentSessionId)) {
+        if (!messageQueues.has(currentSessionId)) messageQueues.set(currentSessionId, []);
+        messageQueues.get(currentSessionId).push(message);
+        messageInput.value = ''; messageInput.style.height = 'auto';
+        sendBtn.classList.add('streaming');
+        updateQueueUI();
+        return;
     }
+
+    await sendToSession(message);
 }
 
 async function createSessionWithMessage(cwd, message) {
     const assistant = currentAssistant || assistantSelect.value;
-    // Don't send model - let the backend use the assistant's default model
-    // This prevents using Claude's model with Pi Agent or vice versa
-    const model = null;
-
     try {
-        isStreaming = true;
-        sendBtn.disabled = true;
-        messageInput.value = '';
-        messageInput.style.height = 'auto';
-
-        // Clear previous messages for the new session
-        messagesContainer.innerHTML = '';
-
-        addMessage('user', message, assistant);
+        sendBtn.classList.add('streaming');
+        messageInput.value = ''; messageInput.style.height = 'auto';
         stopBtn.style.display = 'inline-flex';
         typingIndicator.style.display = 'block';
         typingIndicator.querySelector('.assistant-name').textContent = assistant;
 
-        // Step 1: Create session (no message sent yet)
         const res = await fetch(`${API_BASE}/api/agent/new`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cwd, model, assistant })
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cwd, model: null, assistant })
         });
-
         const data = await res.json();
 
         if (data.success) {
@@ -947,138 +761,121 @@ async function createSessionWithMessage(cwd, message) {
             currentAssistant = data.assistant || assistant;
             pendingCwd = null;
 
-            // Refresh session list to show the new session in sidebar
-            await loadSessions();
-            renderSessionList();
+            // Show chat container, hide welcome, create session view
+            welcomeScreen.style.display = 'none';
+            chatContainer.style.display = 'flex'; chatContainer.style.flexDirection = 'column';
+            showSessionView(data.sessionId);
+            addMessage('user', message, assistant, data.sessionId);
 
-            // Step 2: Connect SSE, which will trigger step 3 (start prompt) on connect
+            await loadSessions(); renderSessionList();
+
+            // Connect SSE — message is passed to connectSSE and stored in state
             connectSSE(data.sessionId, message);
         } else {
-            addMessage('assistant', `Error: ${data.error}`, assistant);
-            isStreaming = false;
-            sendBtn.disabled = false;
-            typingIndicator.style.display = 'none';
+            addMessage('assistant', `Error: ${data.error}`, assistant, '__error__');
+            sendBtn.classList.remove('streaming'); typingIndicator.style.display = 'none';
         }
     } catch (e) {
-        addMessage('assistant', `Error: ${e.message}`, assistant);
-        isStreaming = false;
-        sendBtn.disabled = false;
-        typingIndicator.style.display = 'none';
+        addMessage('assistant', `Error: ${e.message}`, assistant, '__error__');
+        sendBtn.classList.remove('streaming'); typingIndicator.style.display = 'none';
     }
 }
 
 async function sendToSession(message) {
     try {
-        isStreaming = true;
-        sendBtn.disabled = true;
-        messageInput.value = '';
-        messageInput.style.height = 'auto';
-
-        addMessage('user', message);
+        sendBtn.classList.add('streaming');
+        messageInput.value = ''; messageInput.style.height = 'auto';
+        addMessage('user', message, null, currentSessionId);
         typingIndicator.style.display = 'block';
         typingIndicator.querySelector('.assistant-name').textContent = currentAssistant;
         stopBtn.style.display = 'inline-flex';
-
-        // Refresh sessions to update message count in sidebar
         await loadSessions();
 
-        // Connect SSE, which will trigger start prompt on connect
         connectSSE(currentSessionId, message);
     } catch (e) {
-        addMessage('assistant', `Error: ${e.message}`, currentAssistant);
-        isStreaming = false;
-        sendBtn.disabled = false;
-        typingIndicator.style.display = 'none';
+        addMessage('assistant', `Error: ${e.message}`, currentAssistant, currentSessionId);
+        sendBtn.classList.remove('streaming'); typingIndicator.style.display = 'none';
     }
 }
 
-// File Browser
+// ===== Abort =====
+
+async function abortSession(sessionId) {
+    sessionId = sessionId || currentSessionId;
+    if (!sessionId) return;
+    try { await fetch(`${API_BASE}/api/agent/${sessionId}/abort`, { method: 'POST' }); } catch (e) { console.error('Abort failed:', e); }
+    cleanupSessionStreaming(sessionId);
+    if (sessionId === currentSessionId) {
+        sendBtn.classList.remove('streaming'); stopBtn.style.display = 'none'; typingIndicator.style.display = 'none';
+        const sm = getSessionView(sessionId).querySelector('.message.streaming');
+        if (sm) sm.classList.remove('streaming');
+    }
+    loadSessions().then(() => renderSessionList());
+    setTimeout(() => processSessionQueue(sessionId), 500);
+}
+
+// ===== Create Session (form) =====
+
+async function createSession() {
+    const cwd = cwdInput.value.trim();
+    if (!cwd) { alert('Please enter a working directory'); return; }
+    const assistant = assistantSelect.value;
+    const model = modelSelectNew.value;
+    newSessionForm.style.display = 'none'; cwdInput.value = '';
+
+    // Show welcome screen, hide chat container
+    welcomeScreen.style.display = 'flex';
+    chatContainer.style.display = 'none';
+    inputArea.style.display = 'block';
+
+    currentSessionId = null;
+    currentAssistant = assistant; currentModel = model; pendingCwd = cwd;
+    assistantSelector.value = assistant; modelSelector.value = model; statusDisplay.textContent = model;
+    sendBtn.classList.remove('streaming'); stopBtn.style.display = 'none'; typingIndicator.style.display = 'none';
+    renderSessionList(); messageInput.focus();
+}
+
+// ===== File Browser =====
+
 function toggleFileBrowser() {
     fileBrowserExpanded = !fileBrowserExpanded;
-    const content = document.getElementById('fileBrowserContent');
-    const toggle = document.getElementById('fileBrowserToggle');
-    content.style.display = fileBrowserExpanded ? 'block' : 'none';
-    toggle.textContent = fileBrowserExpanded ? '▼' : '▶';
-    if (fileBrowserExpanded && currentBrowsePath) {
-        loadFiles(currentBrowsePath);
-    }
+    document.getElementById('fileBrowserContent').style.display = fileBrowserExpanded ? 'block' : 'none';
+    document.getElementById('fileBrowserToggle').textContent = fileBrowserExpanded ? '▼' : '▶';
+    if (fileBrowserExpanded && currentBrowsePath) loadFiles(currentBrowsePath);
 }
 
 async function loadFiles(dirPath) {
     currentBrowsePath = dirPath;
     const fileList = document.getElementById('fileList');
-    const pathDisplay = document.getElementById('fileBrowserPath');
-
-    // Show short path
-    const shortPath = dirPath.split(/[/\\]/).slice(-2).join('/');
-    pathDisplay.textContent = shortPath;
-
+    document.getElementById('fileBrowserPath').textContent = dirPath.split(/[/\\]/).slice(-2).join('/');
     try {
         const res = await fetch(`${API_BASE}/api/files?path=${encodeURIComponent(dirPath)}`);
         const data = await res.json();
-
-        if (!data.success) {
-            fileList.innerHTML = `<div class="file-error">${escapeHtml(data.error)}</div>`;
-            return;
-        }
-
-        // Clear and rebuild using DOM (not innerHTML with onclick)
+        if (!data.success) { fileList.innerHTML = `<div class="file-error">${escapeHtml(data.error)}</div>`; return; }
         fileList.innerHTML = '';
-
-        // Parent directory link
         if (data.parent) {
-            const parentItem = createFileItem('⬆️', '..', '', true);
-            parentItem.onclick = () => loadFiles(data.parent);
-            parentItem.classList.add('file-parent');
-            fileList.appendChild(parentItem);
+            const p = createFileItem('⬆️', '..', '', true); p.onclick = () => loadFiles(data.parent); p.classList.add('file-parent'); fileList.appendChild(p);
         }
-
-        // Files and directories
         data.files.forEach(f => {
             const icon = f.is_dir ? '📁' : getFileIcon(f.name);
-            const sizeStr = f.is_dir ? '' : formatFileSize(f.size);
-            const item = createFileItem(icon, f.name, sizeStr, f.is_dir);
-            item.onclick = () => {
-                if (f.is_dir) {
-                    loadFiles(f.path);
-                } else {
-                    viewFile(f.path);
-                }
-            };
+            const item = createFileItem(icon, f.name, f.is_dir ? '' : formatFileSize(f.size), f.is_dir);
+            item.onclick = () => f.is_dir ? loadFiles(f.path) : viewFile(f.path);
             fileList.appendChild(item);
         });
-
-        if (fileList.children.length === 0) {
-            fileList.innerHTML = '<div class="file-empty">Empty directory</div>';
-        }
-    } catch (e) {
-        fileList.innerHTML = `<div class="file-error">Failed to load</div>`;
-    }
+        if (fileList.children.length === 0) fileList.innerHTML = '<div class="file-empty">Empty directory</div>';
+    } catch (e) { fileList.innerHTML = `<div class="file-error">Failed to load</div>`; }
 }
 
 function createFileItem(icon, name, size, isDir) {
     const div = document.createElement('div');
     div.className = `file-item ${isDir ? 'is-dir' : 'is-file'}`;
-    div.innerHTML = `
-        <span class="file-icon">${icon}</span>
-        <span class="file-name">${escapeHtml(name)}</span>
-        <span class="file-size">${size}</span>
-    `;
+    div.innerHTML = `<span class="file-icon">${icon}</span><span class="file-name">${escapeHtml(name)}</span><span class="file-size">${size}</span>`;
     return div;
 }
 
 function getFileIcon(name) {
     const ext = name.split('.').pop()?.toLowerCase();
-    const icons = {
-        'rs': '🦀', 'js': '📜', 'ts': '📘', 'py': '🐍', 'go': '🔵',
-        'html': '🌐', 'css': '🎨', 'json': '📋', 'toml': '⚙️', 'yaml': '⚙️',
-        'yml': '⚙️', 'md': '📝', 'txt': '📄', 'log': '📃',
-        'png': '🖼️', 'jpg': '🖼️', 'gif': '🖼️', 'svg': '🖼️',
-        'sh': '💻', 'bat': '💻', 'cmd': '💻', 'ps1': '💻',
-        'exe': '⚙️', 'dll': '⚙️', 'so': '⚙️',
-        'zip': '📦', 'tar': '📦', 'gz': '📦',
-        'lock': '🔒', 'env': '🔐',
-    };
+    const icons = { 'rs':'🦀','js':'📜','ts':'📘','py':'🐍','go':'🔵','html':'🌐','css':'🎨','json':'📋','toml':'⚙️','yaml':'⚙️','yml':'⚙️','md':'📝','txt':'📄','log':'📃','png':'🖼️','jpg':'🖼️','gif':'🖼️','svg':'🖼️','sh':'💻','bat':'💻','cmd':'💻','ps1':'💻','exe':'⚙️','dll':'⚙️','so':'⚙️','zip':'📦','tar':'📦','gz':'📦','lock':'🔒','env':'🔐' };
     return icons[ext] || '📄';
 }
 
@@ -1093,15 +890,8 @@ async function viewFile(filePath) {
     try {
         const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filePath)}`);
         const data = await res.json();
-        if (data.success) {
-            // Show file content in a simple overlay or in the chat area
-            showFileContent(filePath, data.content);
-        } else {
-            alert(data.error);
-        }
-    } catch (e) {
-        alert('Failed to read file');
-    }
+        if (data.success) showFileContent(filePath, data.content); else alert(data.error);
+    } catch (e) { alert('Failed to read file'); }
 }
 
 function showFileContent(filePath, content) {
@@ -1109,76 +899,31 @@ function showFileContent(filePath, content) {
     const overlay = document.createElement('div');
     overlay.className = 'file-overlay';
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-    overlay.innerHTML = `
-        <div class="file-viewer">
-            <div class="file-viewer-header">
-                <span class="file-viewer-name">📄 ${escapeHtml(fileName)}</span>
-                <button class="file-viewer-close" onclick="this.closest('.file-overlay').remove()">×</button>
-            </div>
-            <pre class="file-viewer-content">${escapeHtml(content)}</pre>
-        </div>
-    `;
+    overlay.innerHTML = `<div class="file-viewer"><div class="file-viewer-header"><span class="file-viewer-name">📄 ${escapeHtml(fileName)}</span><button class="file-viewer-close" onclick="this.closest('.file-overlay').remove()">×</button></div><pre class="file-viewer-content">${escapeHtml(content)}</pre></div>`;
     document.body.appendChild(overlay);
 }
 
+// ===== Event Listeners =====
+
 function setupEventListeners() {
     toggleSidebar.onclick = () => sidebar.classList.toggle('closed');
-
-    newSessionBtn.onclick = () => {
-        newSessionForm.style.display = newSessionForm.style.display === 'none' ? 'block' : 'none';
-    };
-
-    cancelSessionBtn.onclick = () => {
-        newSessionForm.style.display = 'none';
-        cwdInput.value = '';
-    };
-
+    newSessionBtn.onclick = () => { newSessionForm.style.display = newSessionForm.style.display === 'none' ? 'block' : 'none'; };
+    cancelSessionBtn.onclick = () => { newSessionForm.style.display = 'none'; cwdInput.value = ''; };
     createSessionBtn.onclick = createSession;
     sendBtn.onclick = sendMessage;
-
-    messageInput.onkeydown = (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-        }
-    };
-
-    messageInput.oninput = () => {
-        messageInput.style.height = 'auto';
-        messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
-    };
-
+    messageInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+    messageInput.oninput = () => { messageInput.style.height = 'auto'; messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px'; };
     assistantSelector.onchange = (e) => selectAssistant(e.target.value);
     switchAssistantBtn.onclick = switchAssistant;
-    stopBtn.onclick = abortSession;
-
+    stopBtn.onclick = () => abortSession(currentSessionId);
     modelSelector.onchange = async (e) => {
-        currentModel = e.target.value;
-        statusDisplay.textContent = currentModel;
+        currentModel = e.target.value; statusDisplay.textContent = currentModel;
         if (currentSessionId) {
-            try {
-                await fetch(`${API_BASE}/api/agent/${currentSessionId}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ type: 'set_model', model: currentModel })
-                });
-            } catch (e) {
-                console.error('Failed to set model:', e);
-            }
+            try { await fetch(`${API_BASE}/api/agent/${currentSessionId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'set_model', model: currentModel }) }); }
+            catch (e) { console.error('Failed to set model:', e); }
         }
     };
-
-    cwdInput.onkeydown = (e) => {
-        if (e.key === 'Enter') createSession();
-    };
+    cwdInput.onkeydown = (e) => { if (e.key === 'Enter') createSession(); };
 }
-
-// Safety net: re-enable send button if not streaming
-setInterval(() => {
-    if (!isStreaming && document.getElementById('sendBtn').disabled) {
-        document.getElementById('sendBtn').disabled = false;
-        stopBtn.style.display = 'none';
-    }
-}, 2000);
 
 init();

@@ -5,9 +5,16 @@ use crate::AppState;
 
 /// Get available models from the default assistant
 pub async fn get_models(data: web::Data<AppState>) -> HttpResponse {
-    let registry = data.registry.lock().unwrap();
-    let assistant = registry.get_default();
-    
+    let handle = {
+        let registry = data.registry.read().unwrap();
+        registry.get_default_handle()
+    };
+    let handle = match handle {
+        Some(h) => h,
+        None => return HttpResponse::InternalServerError().json(serde_json::json!({"error": "No default assistant"})),
+    };
+    let assistant = handle.read().unwrap();
+
     let models_list = assistant.available_models();
     let default_model_id = assistant.default_model().to_string();
     
@@ -35,7 +42,7 @@ pub async fn get_models(data: web::Data<AppState>) -> HttpResponse {
 
 /// List all registered assistants with availability status
 pub async fn list_assistants(data: web::Data<AppState>) -> HttpResponse {
-    let mut registry = data.registry.lock().unwrap();
+    let mut registry = data.registry.write().unwrap();
     let assistants = registry.list_available().await;
 
     HttpResponse::Ok().json(serde_json::json!({
