@@ -210,7 +210,7 @@ body {
 .welcome-screen ol { text-align: left; font-size: 14px; line-height: 2; }
 
 /* ===== Messages ===== */
-.session-view { max-width: 860px; margin: 0 auto; padding: 20px 0; display: none; }
+.session-view { width: 100%; max-width: 860px; margin: 0 auto; padding: 20px 0; display: none; }
 
 .message {
     margin-bottom: 20px;

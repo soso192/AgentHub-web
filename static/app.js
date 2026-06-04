@@ -24,9 +24,8 @@ const sidebar = document.getElementById('sidebar');
 const toggleSidebar = document.getElementById('toggleSidebar');
 const newSessionBtn = document.getElementById('newSessionBtn');
 const newSessionForm = document.getElementById('newSessionForm');
-const assistantSelect = document.getElementById('assistantSelect');
-const cwdInput = document.getElementById('cwdInput');
 const modelSelectNew = document.getElementById('modelSelectNew');
+const cwdInput = document.getElementById('cwdInput');
 const createSessionBtn = document.getElementById('createSessionBtn');
 const cancelSessionBtn = document.getElementById('cancelSessionBtn');
 const sessionList = document.getElementById('sessionList');
@@ -99,7 +98,10 @@ async function loadAssistants() {
 
 async function loadModels() {
     try {
-        const res = await fetch(`${API_BASE}/api/models`);
+        const url = currentAssistant
+            ? `${API_BASE}/api/models?assistant=${encodeURIComponent(currentAssistant)}`
+            : `${API_BASE}/api/models`;
+        const res = await fetch(url);
         const data = await res.json();
         models = data.model_list || [];
         currentModel = data.default_model?.model_id;
@@ -123,18 +125,16 @@ async function loadSessions() {
 // ===== UI Updates =====
 
 function updateAssistantSelectors() {
-    [assistantSelect, assistantSelector].forEach(select => {
-        select.innerHTML = '';
-        assistants.forEach(a => {
-            const opt = document.createElement('option');
-            opt.value = a.name;
-            const status = a.available ? '' : ' ⚠️未安装';
-            const version = a.version ? ` v${a.version}` : '';
-            opt.textContent = `${ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default} ${a.display_name}${version}${status}`;
-            if (!a.available) opt.style.color = '#999';
-            if (a.name === currentAssistant) opt.selected = true;
-            select.appendChild(opt);
-        });
+    assistantSelector.innerHTML = '';
+    assistants.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.name;
+        const status = a.available ? '' : ' ⚠️未安装';
+        const version = a.version ? ` v${a.version}` : '';
+        opt.textContent = `${ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default} ${a.display_name}${version}${status}`;
+        if (!a.available) opt.style.color = '#999';
+        if (a.name === currentAssistant) opt.selected = true;
+        assistantSelector.appendChild(opt);
     });
 }
 
@@ -183,7 +183,6 @@ function renderAssistantStatus() {
 
 function selectAssistant(name) {
     currentAssistant = name;
-    assistantSelect.value = name;
     assistantSelector.value = name;
     renderAssistantCards();
     renderAssistantStatus();
@@ -246,6 +245,16 @@ async function selectSession(sessionId) {
     await loadSessions();
     renderSessionList();
 
+    // Always sync the topbar assistant/model selectors with this session
+    const sessionInfo = sessions.find(s => s.id === sessionId);
+    if (sessionInfo) {
+        if (sessionInfo.assistant) { currentAssistant = sessionInfo.assistant; assistantSelector.value = sessionInfo.assistant; }
+        if (sessionInfo.model) { currentModel = sessionInfo.model; modelSelector.value = sessionInfo.model; statusDisplay.textContent = sessionInfo.model; }
+        // Reload model list for the new assistant, then restore this session's model
+        await loadModels();
+        if (sessionInfo.model) { currentModel = sessionInfo.model; modelSelector.value = sessionInfo.model; statusDisplay.textContent = sessionInfo.model; }
+    }
+
     // Get or create this session's view
     const view = getSessionView(sessionId);
 
@@ -255,8 +264,6 @@ async function selectSession(sessionId) {
             const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`);
             const data = await res.json();
             if (data.messages) renderMessagesInto(view, data.messages, data.assistant);
-            if (data.assistant) { currentAssistant = data.assistant; assistantSelector.value = data.assistant; }
-            if (data.model) { currentModel = data.model; modelSelector.value = data.model; statusDisplay.textContent = data.model; }
             if (data.cwd) {
                 currentBrowsePath = data.cwd;
                 if (!fileBrowserExpanded) toggleFileBrowser();
@@ -272,7 +279,6 @@ async function selectSession(sessionId) {
     inputArea.style.display = 'block';
 
     // If backend says this session is still streaming but frontend has no connection, reconnect
-    const sessionInfo = sessions.find(s => s.id === sessionId);
     if (sessionInfo?.isStreaming && !streamingSessions.has(sessionId)) {
         connectSSE(sessionId, null); // null message = don't send start prompt
     }
@@ -332,15 +338,24 @@ async function switchAssistant() {
         });
         const data = await res.json();
         if (data.success) {
-            currentAssistant = data.assistant; currentModel = data.model;
-            assistantSelector.value = data.assistant; modelSelector.value = data.model;
+            const fromName = session.assistant;
+            const toName = data.assistant;
+            currentAssistant = toName; currentModel = data.model;
+            assistantSelector.value = toName; modelSelector.value = data.model;
             statusDisplay.textContent = data.model;
+
+            // The backend has already sent the conversation history to the new
+            // assistant and is streaming the response via SSE. Connect to receive it.
             const view = getSessionView(currentSessionId);
-            const sysDiv = document.createElement('div');
-            sysDiv.className = 'message system';
-            sysDiv.innerHTML = `<div class="system-content">🔄 Switched to <strong>${ASSISTANT_ICONS[data.assistant] || ASSISTANT_ICONS.default} ${data.assistant}</strong> — conversation history preserved</div>`;
-            view.appendChild(sysDiv);
-            scrollToBottom();
+            connectSSE(currentSessionId, null, () => {
+                // After the new assistant responds, show the switch message
+                const sysDiv = document.createElement('div');
+                sysDiv.className = 'message system';
+                sysDiv.innerHTML = `<div class="system-content">🔄 Switched from <strong>${ASSISTANT_ICONS[fromName] || ASSISTANT_ICONS.default} ${fromName}</strong> to <strong>${ASSISTANT_ICONS[toName] || ASSISTANT_ICONS.default} ${toName}</strong></div>`;
+                view.appendChild(sysDiv);
+                scrollToBottom();
+            });
+
             await loadSessions(); renderSessionList(); updateSwitchButton();
         } else { alert('Switch failed: ' + (data.error || 'Unknown error')); }
     } catch (e) { alert('Switch error: ' + e.message); }
@@ -639,10 +654,16 @@ function finishStreaming(sessionId) {
         }).catch(e => console.error('Failed to save response:', e));
     }
 
-    loadSessions().then(() => renderSessionList());
-    if (st._onDone) st._onDone();
-    // Process queue for this session
-    setTimeout(() => processSessionQueue(sessionId), 500);
+    // Delay loadSessions to let the backend clean up streaming_sessions first.
+    // There is a race: the frontend receives the 'result' SSE event before the
+    // backend's stream_session() returns and clears isStreaming. A short delay
+    // ensures the backend has time to finish, so isStreaming is false by the
+    // time we fetch the session list. This prevents a stale LIVE badge.
+    setTimeout(() => {
+        loadSessions().then(() => renderSessionList());
+        if (st._onDone) st._onDone();
+        processSessionQueue(sessionId);
+    }, 300);
 }
 
 function cleanupSessionStreaming(sessionId) {
@@ -742,7 +763,7 @@ async function sendMessage() {
 }
 
 async function createSessionWithMessage(cwd, message) {
-    const assistant = currentAssistant || assistantSelect.value;
+    const assistant = currentAssistant;
     try {
         sendBtn.classList.add('streaming');
         messageInput.value = ''; messageInput.style.height = 'auto';
@@ -764,8 +785,8 @@ async function createSessionWithMessage(cwd, message) {
             // Show chat container, hide welcome, create session view
             welcomeScreen.style.display = 'none';
             chatContainer.style.display = 'flex'; chatContainer.style.flexDirection = 'column';
-            showSessionView(data.sessionId);
             addMessage('user', message, assistant, data.sessionId);
+            showSessionView(data.sessionId);
 
             await loadSessions(); renderSessionList();
 
@@ -781,7 +802,7 @@ async function createSessionWithMessage(cwd, message) {
     }
 }
 
-async function sendToSession(message) {
+async function sendToSession(message, onDone) {
     try {
         sendBtn.classList.add('streaming');
         messageInput.value = ''; messageInput.style.height = 'auto';
@@ -791,7 +812,7 @@ async function sendToSession(message) {
         stopBtn.style.display = 'inline-flex';
         await loadSessions();
 
-        connectSSE(currentSessionId, message);
+        connectSSE(currentSessionId, message, onDone);
     } catch (e) {
         addMessage('assistant', `Error: ${e.message}`, currentAssistant, currentSessionId);
         sendBtn.classList.remove('streaming'); typingIndicator.style.display = 'none';
@@ -819,7 +840,6 @@ async function abortSession(sessionId) {
 async function createSession() {
     const cwd = cwdInput.value.trim();
     if (!cwd) { alert('Please enter a working directory'); return; }
-    const assistant = assistantSelect.value;
     const model = modelSelectNew.value;
     newSessionForm.style.display = 'none'; cwdInput.value = '';
 
@@ -829,8 +849,8 @@ async function createSession() {
     inputArea.style.display = 'block';
 
     currentSessionId = null;
-    currentAssistant = assistant; currentModel = model; pendingCwd = cwd;
-    assistantSelector.value = assistant; modelSelector.value = model; statusDisplay.textContent = model;
+    currentModel = model; pendingCwd = cwd;
+    modelSelector.value = model; statusDisplay.textContent = model;
     sendBtn.classList.remove('streaming'); stopBtn.style.display = 'none'; typingIndicator.style.display = 'none';
     renderSessionList(); messageInput.focus();
 }

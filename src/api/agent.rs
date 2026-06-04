@@ -233,6 +233,15 @@ pub async fn start_prompt(
             Ok(stream_result) => {
                 eprintln!("[start_prompt] stream_session completed, agent_session_id={:?}, pid={:?}",
                     stream_result.agent_session_id, stream_result.pid);
+
+                // Remove streaming status IMMEDIATELY after stream_session returns.
+                // The frontend receives the 'result' SSE event before this point, and its
+                // finishStreaming() calls loadSessions() shortly after. By clearing isStreaming
+                // now (inside the Ok branch, before any further async work), the backend's
+                // list_sessions API already reports isStreaming:false when the frontend fetches,
+                // preventing a stale LIVE badge in the sidebar.
+                data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+
                 // Store PID for abort support
                 if let Some(pid) = stream_result.pid {
                     data_clone2.running_pids.write().unwrap().insert(session_id_for_save.clone(), pid);
@@ -248,11 +257,10 @@ pub async fn start_prompt(
             Err(e) => eprintln!("[start_prompt] Streaming task error: {}", e),
         }
 
-        // Clean up PID, event channel, and streaming status
+        // Clean up PID and event channel
         eprintln!("[start_prompt] cleaning up session={}", session_id_for_cleanup);
         data_clone2.running_pids.write().unwrap().remove(&session_id_for_cleanup);
         data_clone2.events_tx.write().unwrap().remove(&session_id_for_cleanup);
-        data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_cleanup);
     });
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -282,6 +290,15 @@ pub async fn switch_assistant(
             }
         }
     };
+
+    // Log existing_messages before executing subsequent logic
+    eprintln!("[switch] session={}, old={}, new={}, msg_count={}",
+        session_id, old_assistant_name, new_assistant_name, existing_messages.len());
+    for (i, msg) in existing_messages.iter().enumerate() {
+        let preview: String = msg.content.chars().take(200).collect();
+        eprintln!("[switch]   msg[{}]: role={}, assistant={:?}, content_len={}, preview={:?}",
+            i, msg.role, msg.assistant, msg.content.len(), preview);
+    }
 
     if old_assistant_name == new_assistant_name {
         return HttpResponse::Ok().json(serde_json::json!({
@@ -357,7 +374,10 @@ pub async fn switch_assistant(
             session.assistant = new_assistant_name.clone();
             session.model = current_model.clone();
             session.updated_at = Utc::now();
-            session.history_context = history_context;
+            // Don't store history_context — it's already been sent to the new
+            // assistant via stream_session above. Setting it here would cause
+            // start_prompt to prepend it again on the user's first question.
+            session.history_context = None;
             session.agent_session_id = None;
 
             session.messages.push(Message {
@@ -384,7 +404,69 @@ pub async fn switch_assistant(
     }
 
     let (tx, _) = broadcast::channel::<String>(256);
-    data.events_tx.write().unwrap().insert(session_id.clone(), tx);
+    data.events_tx.write().unwrap().insert(session_id.clone(), tx.clone());
+
+    // Build the context message to send to the new assistant.
+    // Format: conversation history + acknowledgment prompt.
+    let context_message = if let Some(ref ctx) = history_context {
+        format!("{}\n\n---\n\nPlease review the conversation history above, acknowledge that you have the context, and await my next instruction.", ctx)
+    } else {
+        "No previous conversation history. Please introduce yourself and await instructions.".to_string()
+    };
+
+    eprintln!("[switch] context_message (len={}): {:?}",
+        context_message.len(),
+        context_message.chars().take(500).collect::<String>());
+
+    // Spawn a task to stream the new assistant's response.
+    let session_id_clone = session_id.clone();
+    let session_id_for_save = session_id.clone();
+    let session_id_for_cleanup = session_id.clone();
+    let cwd_clone = cwd.clone();
+    let model_clone = current_model.clone();
+    let data_clone = data.clone();
+
+    let new_handle_for_stream = {
+        let registry = data.registry.read().unwrap();
+        registry.get_handle(&new_assistant_name)
+    };
+
+    data.streaming_sessions.write().unwrap().insert(session_id.clone());
+
+    tokio::spawn(async move {
+        let handle = match new_handle_for_stream {
+            Some(h) => h,
+            None => return,
+        };
+
+        let result = tokio::task::spawn_blocking(move || {
+            let assistant = handle.read().unwrap();
+            assistant.stream_session(
+                &session_id_clone,
+                &cwd_clone,
+                &model_clone,
+                &context_message,
+                Some(&tx),
+                None,
+            )
+        }).await;
+
+        match result {
+            Ok(stream_result) => {
+                data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                if let Some(sid) = stream_result.agent_session_id {
+                    if let Some(session) = data_clone.sessions.write().unwrap().get_mut(&session_id_for_save) {
+                        session.agent_session_id = Some(sid);
+                    }
+                    crate::save_sessions_to_disk(&data_clone.sessions.read().unwrap());
+                }
+            }
+            Err(e) => eprintln!("[switch] Streaming task error: {}", e),
+        }
+
+        data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_cleanup);
+        data_clone.events_tx.write().unwrap().remove(&session_id_for_cleanup);
+    });
 
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
