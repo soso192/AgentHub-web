@@ -72,10 +72,16 @@ pub trait AiAssistant: Send + Sync {
     async fn version(&self) -> Option<String>;
 }
 
-/// Registry for managing multiple AI assistants
+/// Type alias for a shared, individually-locked assistant
+type AssistantHandle = std::sync::Arc<std::sync::RwLock<Box<dyn AiAssistant>>>;
+
+/// Registry for managing multiple AI assistants.
+/// Each assistant is wrapped in Arc<RwLock<>> so it can be locked independently —
+/// streaming on one assistant does not block creation or streaming on another.
 pub struct AssistantRegistry {
-    assistants: Vec<Box<dyn AiAssistant>>,
-    default_index: usize,
+    /// name → assistant handle (each independently lockable)
+    assistants: std::collections::HashMap<String, AssistantHandle>,
+    default_name: String,
     /// Cached availability results (name -> (available, version))
     availability_cache: std::collections::HashMap<String, (bool, Option<String>)>,
 }
@@ -83,55 +89,60 @@ pub struct AssistantRegistry {
 impl AssistantRegistry {
     pub fn new() -> Self {
         Self {
-            assistants: Vec::new(),
-            default_index: 0,
+            assistants: std::collections::HashMap::new(),
+            default_name: String::new(),
             availability_cache: std::collections::HashMap::new(),
         }
     }
 
     /// Register a new assistant
     pub fn register(&mut self, assistant: Box<dyn AiAssistant>) {
-        self.assistants.push(assistant);
+        let name = assistant.name().to_string();
+        if self.default_name.is_empty() {
+            self.default_name = name.clone();
+        }
+        self.assistants.insert(name, std::sync::Arc::new(std::sync::RwLock::new(assistant)));
     }
 
     /// Set the default assistant by name
     pub fn set_default(&mut self, name: &str) -> Result<(), String> {
-        if let Some(index) = self.assistants.iter().position(|a| a.name() == name) {
-            self.default_index = index;
+        if self.assistants.contains_key(name) {
+            self.default_name = name.to_string();
             Ok(())
         } else {
             Err(format!("Assistant '{}' not found", name))
         }
     }
 
-    /// Get the default assistant
-    pub fn get_default(&self) -> &dyn AiAssistant {
-        self.assistants[self.default_index].as_ref()
+    /// Get the default assistant's name
+    pub fn default_name(&self) -> &str {
+        &self.default_name
     }
 
-    /// Get the default assistant (mutable)
-    pub fn get_default_mut(&mut self) -> &mut dyn AiAssistant {
-        self.assistants[self.default_index].as_mut()
+    /// Get an assistant handle by name. Clone the Arc to use independently of the registry lock.
+    pub fn get_handle(&self, name: &str) -> Option<AssistantHandle> {
+        self.assistants.get(name).cloned()
     }
 
-    /// Get an assistant by name
-    pub fn get(&self, name: &str) -> Option<&dyn AiAssistant> {
-        self.assistants.iter().find(|a| a.name() == name).map(|a| a.as_ref())
+    /// Get the default assistant handle
+    pub fn get_default_handle(&self) -> Option<AssistantHandle> {
+        self.assistants.get(&self.default_name).cloned()
     }
 
-    /// Get an assistant by name (mutable)
-    pub fn get_mut(&mut self, name: &str) -> Option<&mut Box<dyn AiAssistant>> {
-        self.assistants.iter_mut().find(|a| a.name() == name)
+    /// Check if an assistant exists
+    pub fn has(&self, name: &str) -> bool {
+        self.assistants.contains_key(name)
     }
 
     /// List all registered assistants (without availability check)
     pub fn list(&self) -> Vec<AssistantInfo> {
-        self.assistants.iter().enumerate().map(|(i, a)| {
+        self.assistants.iter().map(|(name, handle)| {
+            let a = handle.read().unwrap();
             AssistantInfo {
-                name: a.name().to_string(),
+                name: name.clone(),
                 display_name: a.display_name().to_string(),
-                is_default: i == self.default_index,
-                available: false, // will be filled by list_available
+                is_default: *name == self.default_name,
+                available: false,
                 version: None,
             }
         }).collect()
@@ -140,9 +151,9 @@ impl AssistantRegistry {
     /// List all assistants with availability check (cached)
     pub async fn list_available(&mut self) -> Vec<AssistantInfo> {
         let mut result = Vec::new();
-        for (i, a) in self.assistants.iter().enumerate() {
-            let name = a.name().to_string();
-            let (available, version) = if let Some(cached) = self.availability_cache.get(&name) {
+        for (name, handle) in self.assistants.iter() {
+            let a = handle.read().unwrap();
+            let (available, version) = if let Some(cached) = self.availability_cache.get(name) {
                 cached.clone()
             } else {
                 let avail = a.is_available().await;
@@ -151,9 +162,9 @@ impl AssistantRegistry {
                 (avail, ver)
             };
             result.push(AssistantInfo {
-                name,
+                name: name.clone(),
                 display_name: a.display_name().to_string(),
-                is_default: i == self.default_index,
+                is_default: *name == self.default_name,
                 available,
                 version,
             });

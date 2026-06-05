@@ -2,7 +2,8 @@ use actix_web::{web, HttpResponse};
 use crate::AppState;
 
 pub async fn list_sessions(data: web::Data<AppState>) -> HttpResponse {
-    let sessions = data.sessions.lock().unwrap();
+    let sessions = data.sessions.read().unwrap();
+    let streaming = data.streaming_sessions.read().unwrap();
     let mut session_list: Vec<serde_json::Value> = sessions.iter().map(|(id, session)| {
         serde_json::json!({
             "id": id,
@@ -13,6 +14,7 @@ pub async fn list_sessions(data: web::Data<AppState>) -> HttpResponse {
             "firstMessage": session.messages.first().map(|m| m.content.clone()).unwrap_or_default(),
             "created": session.created_at.to_rfc3339(),
             "modified": session.updated_at.to_rfc3339(),
+            "isStreaming": streaming.contains(id),
         })
     }).collect();
 
@@ -33,8 +35,8 @@ pub async fn get_session(
     path: web::Path<String>,
 ) -> HttpResponse {
     let session_id = path.into_inner();
-    let sessions = data.sessions.lock().unwrap();
-    
+    let sessions = data.sessions.read().unwrap();
+
     if let Some(session) = sessions.get(&session_id) {
         HttpResponse::Ok().json(serde_json::json!({
             "sessionId": session.id,
@@ -57,15 +59,15 @@ pub async fn delete_session(
     path: web::Path<String>,
 ) -> HttpResponse {
     let session_id = path.into_inner();
-    let mut sessions = data.sessions.lock().unwrap();
-    
+    let mut sessions = data.sessions.write().unwrap();
+
     if let Some(session) = sessions.remove(&session_id) {
-        // Persist sessions to disk
         crate::save_sessions_to_disk(&sessions);
         drop(sessions);
-        // Remove from the appropriate assistant
-        let mut registry = data.registry.lock().unwrap();
-        if let Some(assistant) = registry.get_mut(&session.assistant) {
+        // Remove from the appropriate assistant (handle-based, no registry write lock)
+        let registry = data.registry.read().unwrap();
+        if let Some(handle) = registry.get_handle(&session.assistant) {
+            let mut assistant = handle.write().unwrap();
             assistant.delete_session(&session_id);
         }
         HttpResponse::Ok().json(serde_json::json!({ "ok": true }))

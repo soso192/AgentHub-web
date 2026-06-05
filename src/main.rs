@@ -1,6 +1,6 @@
 use actix_web::{web, App, HttpServer, middleware};
 use actix_cors::Cors;
-use std::sync::Mutex;
+use std::sync::RwLock;
 use tokio::sync::broadcast;
 
 mod api;
@@ -14,11 +14,13 @@ use ai::codex::CodexAssistant;
 use ai::pi::PiAssistant;
 
 pub struct AppState {
-    pub registry: Mutex<AssistantRegistry>,
-    pub sessions: Mutex<std::collections::HashMap<String, models::Session>>,
-    pub events_tx: Mutex<std::collections::HashMap<String, broadcast::Sender<String>>>,
+    pub registry: RwLock<AssistantRegistry>,
+    pub sessions: RwLock<std::collections::HashMap<String, models::Session>>,
+    pub events_tx: RwLock<std::collections::HashMap<String, broadcast::Sender<String>>>,
     /// Running child process IDs for abort support (session_id → pid)
-    pub running_pids: Mutex<std::collections::HashMap<String, u32>>,
+    pub running_pids: RwLock<std::collections::HashMap<String, u32>>,
+    /// Sessions currently streaming (for frontend to know which sessions are active)
+    pub streaming_sessions: RwLock<std::collections::HashSet<String>>,
 }
 
 /// Get the path to the sessions data file
@@ -96,10 +98,11 @@ async fn main() -> std::io::Result<()> {
     }
 
     let data = web::Data::new(AppState {
-        registry: Mutex::new(registry),
-        sessions: Mutex::new(saved_sessions),
-        events_tx: Mutex::new(std::collections::HashMap::new()),
-        running_pids: Mutex::new(std::collections::HashMap::new()),
+        registry: RwLock::new(registry),
+        sessions: RwLock::new(saved_sessions),
+        events_tx: RwLock::new(std::collections::HashMap::new()),
+        running_pids: RwLock::new(std::collections::HashMap::new()),
+        streaming_sessions: RwLock::new(std::collections::HashSet::new()),
     });
 
     HttpServer::new(move || {

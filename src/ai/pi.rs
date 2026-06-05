@@ -352,6 +352,9 @@ impl AiAssistant for PiAssistant {
         agent_session_id: Option<&str>,
     ) -> StreamResult {
         eprintln!("[pi] stream_session called: session={}, model={}, pi_cmd={}", session_id, model, self.pi_cmd);
+        eprintln!("[pi] message (len={}): {:?}",
+            message.len(),
+            message.chars().take(500).collect::<String>());
         let mut args = vec![
             "--mode".to_string(),
             "json".to_string(),
@@ -372,7 +375,8 @@ impl AiAssistant for PiAssistant {
             args.push(sid.to_string());
         }
 
-        args.push(message.to_string());
+        // Message is passed via stdin to avoid Windows CLI argument
+        // length/escaping issues with long formatted messages.
 
         let mut cmd = self.create_pi_command();
         cmd.args(&args)
@@ -380,9 +384,6 @@ impl AiAssistant for PiAssistant {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
-        // Remove the provider flag - let pi auto-detect from models.json
-        // The --provider flag was causing "No API key found for opencode-go"
 
         eprintln!("[pi] cmd: {:?}, args: {:?}", cmd.get_program(), cmd.get_args().collect::<Vec<_>>());
 
@@ -402,9 +403,11 @@ impl AiAssistant for PiAssistant {
         };
 
         let pid = child.id();
-        // Close stdin
-        if let Some(stdin) = child.stdin.take() {
-            drop(stdin);
+        // Write message to stdin and close it
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(message.as_bytes());
+            let _ = stdin.flush();
         }
 
         // Drain stderr in background to prevent blocking
@@ -446,11 +449,6 @@ impl AiAssistant for PiAssistant {
                     continue;
                 }
             };
-
-            // Debug: log every event type
-            let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("?");
-            let subtype = event.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
-            eprintln!("[pi] event #{}: type={}, subtype={}", line_count, event_type, subtype);
 
             let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
