@@ -1,8 +1,63 @@
 use actix_web::{web, HttpResponse, HttpRequest};
 use tokio::sync::broadcast;
-use crate::models::{NewSessionRequest, StartPromptRequest, SwitchAssistantRequest, CommandRequest, Message};
+use crate::models::{NewSessionRequest, StartPromptRequest, SwitchAssistantRequest, CommandRequest, Message, ContentBlock};
 use crate::AppState;
 use chrono::Utc;
+
+/// Save streaming event progress to session (called by the event saver task)
+/// This updates both the in-memory cache and the session file.
+fn save_event_progress(
+    data: &web::Data<AppState>,
+    session_id: &str,
+    content_blocks: &[ContentBlock],
+    final_result: &str,
+    assistant_name: &str,
+) {
+    // Update in-memory streaming state cache first (for instant reads on page refresh)
+    {
+        let mut streaming_state = data.streaming_state.write().unwrap();
+        streaming_state.insert(session_id.to_string(), crate::StreamingState {
+            content_blocks: content_blocks.to_vec(),
+            final_result: final_result.to_string(),
+            assistant_name: assistant_name.to_string(),
+            last_updated: Utc::now(),
+        });
+    }
+    
+    // Update session file
+    let mut sessions = data.sessions.write().unwrap();
+    if let Some(session) = sessions.get_mut(session_id) {
+        let last_is_assistant = session.messages.last()
+            .map(|m| m.role == "assistant")
+            .unwrap_or(false);
+        
+        let blocks = if content_blocks.is_empty() { None } else { Some(content_blocks.to_vec()) };
+        let content = if final_result.is_empty() {
+            "(streaming...)".to_string()
+        } else {
+            final_result.to_string()
+        };
+        
+        if last_is_assistant {
+            if let Some(last_msg) = session.messages.last_mut() {
+                last_msg.content = content;
+                last_msg.content_blocks = blocks;
+                last_msg.timestamp = Utc::now().timestamp_millis();
+            }
+        } else {
+            session.messages.push(Message {
+                role: "assistant".to_string(),
+                content,
+                timestamp: Utc::now().timestamp_millis(),
+                content_blocks: blocks,
+                assistant: Some(assistant_name.to_string()),
+            });
+        }
+        session.updated_at = Utc::now();
+    }
+    drop(sessions);
+    crate::save_sessions_to_disk(&data.sessions.read().unwrap());
+}
 
 pub async fn new_session(
     data: web::Data<AppState>,
@@ -64,6 +119,7 @@ pub async fn new_session(
         updated_at: now,
         history_context: None,
         agent_session_id: None,
+        history_already_sent: false,
     };
 
     data.sessions.write().unwrap().insert(session_id.clone(), session);
@@ -136,19 +192,143 @@ pub async fn start_prompt(
 
     eprintln!("[start_prompt] tx is_some={}", tx.is_some());
 
+    // ── Spawn event saver: subscribe to broadcast channel and save events to session ──
+    // This runs in the background and captures all streaming events (thinking, tool_call,
+    // tool_result, chunk) so that if the user refreshes the page, progress is preserved.
+    if let Some(ref tx_clone) = tx {
+        let saver_rx = tx_clone.subscribe();
+        let saver_data = data.clone();
+        let saver_sid = session_id.clone();
+        let saver_assistant = assistant_name.clone();
+        tokio::spawn(async move {
+            let mut rx = saver_rx;
+            let mut content_blocks: Vec<ContentBlock> = Vec::new();
+            let mut final_result = String::new();
+            let mut last_save = std::time::Instant::now();
+            
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        let event: serde_json::Value = match serde_json::from_str(&msg) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        
+                        let mut needs_save = false;
+                        
+                        match event_type {
+                            "thinking" => {
+                                if let Some(thinking) = event.get("thinking").and_then(|t| t.as_str()) {
+                                    // Insert thinking block before any text blocks
+                                    // This ensures thinking always appears at the top
+                                    let insert_pos = content_blocks.iter().position(|b| matches!(b, ContentBlock::Text { .. }));
+                                    if let Some(pos) = insert_pos {
+                                        content_blocks.insert(pos, ContentBlock::Thinking { thinking: thinking.to_string() });
+                                    } else {
+                                        content_blocks.push(ContentBlock::Thinking { thinking: thinking.to_string() });
+                                    }
+                                    needs_save = true;
+                                }
+                            }
+                            "tool_call" => {
+                                let id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                                let input = event.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                                // Check if we already have a tool_use with this id (avoid duplicates from Pi Agent)
+                                let existing = content_blocks.iter_mut().find(|b| {
+                                    matches!(b, ContentBlock::ToolUse { id: ref existing_id, .. } if *existing_id == id && !id.is_empty())
+                                });
+                                if let Some(ContentBlock::ToolUse { name: ref mut existing_name, input: ref mut existing_input, .. }) = existing {
+                                    // Update existing block only if new input is not empty
+                                    *existing_name = name;
+                                    if input != serde_json::Value::Null && input != serde_json::json!({}) {
+                                        *existing_input = input;
+                                        needs_save = true;
+                                    }
+                                } else if !id.is_empty() {
+                                    content_blocks.push(ContentBlock::ToolUse { id, name, input });
+                                    needs_save = true;
+                                }
+                            }
+                            "tool_result" => {
+                                let tool_use_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let content = event.get("output").map(|o| {
+                                    if let Some(s) = o.as_str() { s.to_string() }
+                                    else { o.to_string() }
+                                }).unwrap_or_default();
+                                if !tool_use_id.is_empty() {
+                                    content_blocks.push(ContentBlock::ToolResult { tool_use_id, content });
+                                    needs_save = true;
+                                }
+                            }
+                            "chunk" => {
+                                if let Some(new_text) = event.get("content").and_then(|c| c.as_str()) {
+                                    final_result.push_str(new_text);
+                                    // Update or add text block
+                                    match content_blocks.last_mut() {
+                                        Some(ContentBlock::Text { text: ref mut existing }) => {
+                                            existing.push_str(new_text);
+                                        }
+                                        _ => {
+                                            content_blocks.push(ContentBlock::Text { text: new_text.to_string() });
+                                        }
+                                    }
+                                    // Save chunks less frequently (every 1 second)
+                                    if last_save.elapsed().as_secs() >= 1 {
+                                        needs_save = true;
+                                    }
+                                }
+                            }
+                            "result" => {
+                                if let Some(text) = event.get("content").and_then(|c| c.as_str()) {
+                                    final_result = text.to_string();
+                                }
+                                // Final save and exit
+                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                                break;
+                            }
+                            "error" => {
+                                // Save what we have and exit
+                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                                break;
+                            }
+                            _ => {}
+                        }
+                        
+                        // Save if needed (thinking/tool events save immediately, chunks every 1s)
+                        if needs_save {
+                            save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                            last_save = std::time::Instant::now();
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
     // Read and clear history context (set by switch_assistant)
-    let history_context = {
+    let (history_context, history_already_sent) = {
         let mut sessions = data.sessions.write().unwrap();
         if let Some(session) = sessions.get_mut(&session_id) {
-            session.history_context.take()
+            let ctx = session.history_context.take();
+            let already_sent = session.history_already_sent;
+            session.history_already_sent = false;
+            (ctx, already_sent)
         } else {
-            None
+            (None, false)
         }
     };
 
+    eprintln!("[start_prompt] history_context present: {}, history_already_sent: {}, agent_session_id: {:?}",
+        history_context.is_some(), history_already_sent, existing_agent_session_id);
+
     // If no explicit history_context and no agent session ID (restart scenario),
-    // build history from previous messages for agents without native persistence
-    let auto_history = if history_context.is_none() && existing_agent_session_id.is_none() {
+    // build history from previous messages for agents without native persistence.
+    // Skip if history was already sent via stream during assistant switch.
+    let auto_history = if history_context.is_none() && existing_agent_session_id.is_none() && !history_already_sent {
         let sessions = data.sessions.read().unwrap();
         if let Some(session) = sessions.get(&session_id) {
             // Only inject if there are previous messages (more than the one we just added)
@@ -161,11 +341,7 @@ pub async fn start_prompt(
                         "assistant" => "Assistant",
                         _ => &msg.role,
                     };
-                    let content = if msg.content.len() > 2000 {
-                        format!("{}...(truncated)", &msg.content[..2000])
-                    } else {
-                        msg.content.clone()
-                    };
+                    let content = msg.content.clone();
                     ctx.push_str(&format!("**{}:** {}\n\n", role_label, content));
                 }
                 ctx.push_str("---\nPlease continue the conversation naturally, picking up where you left off.");
@@ -218,15 +394,18 @@ pub async fn start_prompt(
         // Clone data for PID callback
         let data_for_pid = data_clone2.clone();
         let session_id_for_pid = session_id_clone.clone();
+        
         let result = tokio::task::spawn_blocking(move || {
             // Lock ONLY this assistant — other assistants are free to operate
             let assistant = handle.read().unwrap();
             eprintln!("[start_prompt] calling stream_session");
+            
             // Create PID callback to store PID immediately when process spawns
             let pid_callback = Box::new(move |pid: u32| {
                 eprintln!("[start_prompt] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
                 data_for_pid.running_pids.write().unwrap().insert(session_id_for_pid.clone(), pid);
             });
+            
             assistant.stream_session(
                 &session_id_clone,
                 &cwd,
@@ -250,6 +429,8 @@ pub async fn start_prompt(
                 // list_sessions API already reports isStreaming:false when the frontend fetches,
                 // preventing a stale LIVE badge in the sidebar.
                 data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                // Clear streaming state cache
+                data_clone2.streaming_state.write().unwrap().remove(&session_id_for_save);
 
                 // Store PID for abort support
                 if let Some(pid) = stream_result.pid {
@@ -267,6 +448,7 @@ pub async fn start_prompt(
                 eprintln!("[start_prompt] Streaming task error: {}", e);
                 // Clean up streaming status even on error
                 data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                data_clone2.streaming_state.write().unwrap().remove(&session_id_for_save);
             },
         }
 
@@ -362,12 +544,7 @@ pub async fn switch_assistant(
                 "assistant" => "Assistant",
                 _ => &msg.role,
             };
-            // Truncate individual messages to 2000 chars to keep context manageable
-            let content = if msg.content.len() > 2000 {
-                format!("{}...(truncated)", &msg.content[..2000])
-            } else {
-                msg.content.clone()
-            };
+            let content = msg.content.clone();
             ctx.push_str(&format!("**{}:** {}\n\n", role_label, content));
         }
         ctx.push_str("---\nPlease continue the conversation naturally, picking up where the previous assistant left off.");
@@ -418,6 +595,7 @@ pub async fn switch_assistant(
             // start_prompt to prepend it again on the user's first question.
             session.history_context = None;
             session.agent_session_id = None;  // clear old assistant's native session ID
+            session.history_already_sent = history_context.is_some();  // mark that history was already sent via stream
 
             // Add a system message documenting the switch
             session.messages.push(Message {
@@ -447,6 +625,99 @@ pub async fn switch_assistant(
     // ── Step 7: Create SSE broadcast channel ───────────────────────────
     let (tx, _) = broadcast::channel::<String>(256);
     data.events_tx.write().unwrap().insert(session_id.clone(), tx.clone());
+
+    // ── Step 7.5: Spawn event saver for switch ────────────────────────
+    {
+        let saver_rx = tx.subscribe();
+        let saver_data = data.clone();
+        let saver_sid = session_id.clone();
+        let saver_assistant = new_assistant_name.clone();
+        tokio::spawn(async move {
+            let mut rx = saver_rx;
+            let mut content_blocks: Vec<ContentBlock> = Vec::new();
+            let mut final_result = String::new();
+            let mut last_save = std::time::Instant::now();
+            
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        let event: serde_json::Value = match serde_json::from_str(&msg) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        
+                        match event_type {
+                            "thinking" => {
+                                if let Some(thinking) = event.get("thinking").and_then(|t| t.as_str()) {
+                                    content_blocks.push(ContentBlock::Thinking { thinking: thinking.to_string() });
+                                }
+                            }
+                            "tool_call" => {
+                                let id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                                let input = event.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                                // Check if we already have a tool_use with this id (avoid duplicates from Pi Agent)
+                                let existing = content_blocks.iter_mut().find(|b| {
+                                    matches!(b, ContentBlock::ToolUse { id: ref existing_id, .. } if *existing_id == id && !id.is_empty())
+                                });
+                                if let Some(ContentBlock::ToolUse { name: ref mut existing_name, input: ref mut existing_input, .. }) = existing {
+                                    *existing_name = name;
+                                    if input != serde_json::Value::Null && input != serde_json::json!({}) {
+                                        *existing_input = input;
+                                    }
+                                } else if !id.is_empty() {
+                                    content_blocks.push(ContentBlock::ToolUse { id, name, input });
+                                }
+                            }
+                            "tool_result" => {
+                                let tool_use_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let content = event.get("output").map(|o| {
+                                    if let Some(s) = o.as_str() { s.to_string() }
+                                    else { o.to_string() }
+                                }).unwrap_or_default();
+                                if !tool_use_id.is_empty() {
+                                    content_blocks.push(ContentBlock::ToolResult { tool_use_id, content });
+                                }
+                            }
+                            "chunk" => {
+                                if let Some(new_text) = event.get("content").and_then(|c| c.as_str()) {
+                                    final_result.push_str(new_text);
+                                    match content_blocks.last_mut() {
+                                        Some(ContentBlock::Text { text: ref mut existing }) => {
+                                            existing.push_str(new_text);
+                                        }
+                                        _ => {
+                                            content_blocks.push(ContentBlock::Text { text: new_text.to_string() });
+                                        }
+                                    }
+                                }
+                            }
+                            "result" => {
+                                if let Some(text) = event.get("content").and_then(|c| c.as_str()) {
+                                    final_result = text.to_string();
+                                }
+                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                                break;
+                            }
+                            "error" => {
+                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                                break;
+                            }
+                            _ => {}
+                        }
+                        
+                        if last_save.elapsed().as_secs() >= 2 {
+                            save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                            last_save = std::time::Instant::now();
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     // ── Step 8: Build context_message and spawn streaming task ─────────
     // The context_message includes the full conversation history plus a
@@ -515,6 +786,8 @@ pub async fn switch_assistant(
             Ok(stream_result) => {
                 // Clear streaming status immediately
                 data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                // Clear streaming state cache
+                data_clone.streaming_state.write().unwrap().remove(&session_id_for_save);
                 // Save the new assistant's native session ID for future --resume
                 if let Some(sid) = stream_result.agent_session_id {
                     if let Some(session) = data_clone.sessions.write().unwrap().get_mut(&session_id_for_save) {
@@ -527,11 +800,13 @@ pub async fn switch_assistant(
                 eprintln!("[switch] Streaming task error: {}", e);
                 // Clean up streaming status even on error
                 data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                data_clone.streaming_state.write().unwrap().remove(&session_id_for_save);
             },
         }
 
         // Final cleanup: remove streaming status and event channel
         data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_cleanup);
+        data_clone.streaming_state.write().unwrap().remove(&session_id_for_cleanup);
         data_clone.events_tx.write().unwrap().remove(&session_id_for_cleanup);
     });
 
@@ -588,6 +863,7 @@ pub async fn abort_session(
         // Close the event channel so SSE connection closes and frontend resets
         data.events_tx.write().unwrap().remove(&session_id);
         data.streaming_sessions.write().unwrap().remove(&session_id);
+        data.streaming_state.write().unwrap().remove(&session_id);
 
         HttpResponse::Ok().json(serde_json::json!({
             "success": true,
@@ -597,6 +873,7 @@ pub async fn abort_session(
         // Also clean up event channel even if no PID
         data.events_tx.write().unwrap().remove(&session_id);
         data.streaming_sessions.write().unwrap().remove(&session_id);
+        data.streaming_state.write().unwrap().remove(&session_id);
 
         HttpResponse::Ok().json(serde_json::json!({
             "success": true,
@@ -629,19 +906,36 @@ pub async fn send_command(
     match req.cmd_type.as_str() {
         "save_message" => {
             if let Some(content) = &req.message {
-                let assistant_message = Message {
-                    role: "assistant".to_string(),
-                    content: content.clone(),
-                    timestamp: Utc::now().timestamp_millis(),
-                    content_blocks: req.content_blocks.clone(),
-                    assistant: Some(assistant_name.clone()),
-                };
-
-                if let Some(session) = data.sessions.write().unwrap().get_mut(&session_id) {
-                    session.messages.push(assistant_message);
+                let mut sessions = data.sessions.write().unwrap();
+                if let Some(session) = sessions.get_mut(&session_id) {
+                    // Check if the last message is already an assistant message (from save_event_progress)
+                    let last_is_assistant = session.messages.last()
+                        .map(|m| m.role == "assistant")
+                        .unwrap_or(false);
+                    
+                    if last_is_assistant {
+                        // Update existing assistant message instead of adding a new one
+                        if let Some(last_msg) = session.messages.last_mut() {
+                            last_msg.content = content.clone();
+                            if let Some(blocks) = &req.content_blocks {
+                                last_msg.content_blocks = Some(blocks.clone());
+                            }
+                            last_msg.timestamp = Utc::now().timestamp_millis();
+                        }
+                    } else {
+                        // Add new assistant message
+                        session.messages.push(Message {
+                            role: "assistant".to_string(),
+                            content: content.clone(),
+                            timestamp: Utc::now().timestamp_millis(),
+                            content_blocks: req.content_blocks.clone(),
+                            assistant: Some(assistant_name.clone()),
+                        });
+                    }
                     session.updated_at = Utc::now();
                 }
-
+                drop(sessions);
+                
                 crate::save_sessions_to_disk(&data.sessions.read().unwrap());
 
                 HttpResponse::Ok().json(serde_json::json!({

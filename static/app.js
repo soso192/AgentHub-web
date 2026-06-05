@@ -78,6 +78,12 @@ async function init() {
     setupEventListeners();
     renderAssistantCards();
     renderAssistantStatus();
+    
+    // Auto-select the most recent session on page load
+    if (sessions.length > 0 && !currentSessionId) {
+        const latestSession = sessions[0]; // Already sorted by modified time, newest first
+        await selectSession(latestSession.id);
+    }
 }
 
 async function loadAssistants() {
@@ -224,9 +230,12 @@ function renderSessionList() {
         div.className = `session-item ${session.id === currentSessionId ? 'active' : ''} ${isLive ? 'streaming' : ''}`;
         const icon = ASSISTANT_ICONS[session.assistant] || ASSISTANT_ICONS.default;
         const live = isLive ? '<span class="session-streaming-badge">🔴 LIVE</span>' : '';
+        const fullName = session.firstMessage || 'Untitled';
+        const displayName = fullName.length > 40 ? fullName.slice(0, 40) + '...' : fullName;
         div.innerHTML = `
             <div class="header">
-                <div class="name">${icon} ${escapeHtml(session.firstMessage?.slice(0, 40) || 'Untitled')} ${live}</div>
+                <div class="name" title="${escapeHtml(fullName)}">${icon} ${escapeHtml(displayName)}</div>
+                ${live}
                 <button class="delete-btn" data-id="${session.id}">×</button>
             </div>
             <div class="meta">
@@ -436,18 +445,33 @@ function renderMessagesInto(view, messages, assistant) {
         }
         if (msg.content_blocks && msg.content_blocks.length > 0) {
             html += '<div class="message-content">';
+            
+            // First pass: render all blocks except tool_result
             msg.content_blocks.forEach(block => {
                 if (block.type === 'thinking') html += renderThinkingBlock(block.thinking);
                 else if (block.type === 'tool_use') html += renderToolCallBlock(block.id, block.name, block.input);
-                else if (block.type === 'tool_result') html += renderToolResultBlock(block.content);
                 else if (block.type === 'text') html += `<div class="text-block">${renderMarkdown(block.text)}</div>`;
+                // Skip tool_result for now
             });
             html += '</div>';
+            
+            // After rendering, inject tool results into their corresponding tool-call blocks
+            div.innerHTML = html;
+            msg.content_blocks.forEach(block => {
+                if (block.type === 'tool_result') {
+                    const area = div.querySelector(`.tool-result-area[data-tool-id="${block.tool_use_id}"]`);
+                    if (area) {
+                        area.innerHTML = `<div class="tool-result-inline"><div class="tool-result-header"><span class="tool-result-icon">📋</span><span class="tool-result-label">Output</span></div><pre class="tool-result-content">${escapeHtml(block.content)}</pre></div>`;
+                    }
+                }
+            });
+            
+            view.appendChild(div);
         } else {
             html += `<div class="message-content">${msg.role === 'assistant' ? renderMarkdown(msg.content) : escapeHtml(msg.content)}</div>`;
+            div.innerHTML = html;
+            view.appendChild(div);
         }
-        div.innerHTML = html;
-        view.appendChild(div);
     });
     scrollToBottom();
 }
@@ -494,13 +518,14 @@ function renderThinkingBlock(thinking) {
 
 function getToolPreview(name, input) {
     if (!input || typeof input !== 'object') return '';
-    if (name === 'Bash' || name === 'bash') return input.command || '';
-    if (['Read','read','Write','write','Edit','edit'].includes(name)) return input.file_path || input.path || '';
-    if (['Glob','glob'].includes(name)) return input.pattern || '';
-    if (['Grep','grep'].includes(name)) return input.pattern || input.query || '';
-    if (name === 'WebFetch') return input.url || '';
-    if (name === 'WebSearch') return input.query || '';
-    return input.command || input.path || input.file_path || input.pattern || input.query || '';
+    const n = name.toLowerCase();
+    if (n === 'bash') return input.command || '';
+    if (['read','write','edit'].includes(n)) return input.file_path || input.filePath || input.path || input.filename || '';
+    if (n === 'glob') return input.pattern || input.glob || '';
+    if (n === 'grep') return input.pattern || input.query || input.regex || '';
+    if (n === 'webfetch') return input.url || '';
+    if (n === 'websearch') return input.query || input.search || '';
+    return input.command || input.path || input.file_path || input.filePath || input.pattern || input.query || '';
 }
 
 function renderToolCallBlock(id, name, input) {
@@ -508,9 +533,11 @@ function renderToolCallBlock(id, name, input) {
     let preview = getToolPreview(name, input);
     if (typeof preview === 'object') preview = JSON.stringify(preview);
     if (preview.length > 100) preview = preview.slice(0, 100) + '...';
+    // Handle empty or null input
+    const safeInput = input && typeof input === 'object' ? input : {};
     const inputDisplay = (name === 'Bash' || name === 'bash')
-        ? (input.command ? escapeHtml(input.command) : escapeHtml(JSON.stringify(input, null, 2)))
-        : escapeHtml(JSON.stringify(input, null, 2));
+        ? (safeInput.command ? escapeHtml(safeInput.command) : escapeHtml(JSON.stringify(safeInput, null, 2)))
+        : escapeHtml(JSON.stringify(safeInput, null, 2));
     return `<div class="tool-call-block" data-tool-id="${id}">
         <div class="tool-call-header" onclick="this.parentElement.classList.toggle('expanded')">
             <span class="tool-icon">${icon}</span><span class="tool-name">${escapeHtml(name)}</span>
@@ -590,6 +617,16 @@ function renderMarkdown(text) {
 // ===== Per-Session SSE Streaming =====
 
 function connectSSE(sessionId, message, onDone) {
+    // Check if there's already an active connection for this session
+    const existing = streamingSessions.get(sessionId);
+    if (existing && !existing.finished) {
+        console.log(`[SSE] Already connected for ${sessionId}, skipping`);
+        // If a message was provided, update the existing state
+        if (message) existing._message = message;
+        if (onDone) existing._onDone = onDone;
+        return existing;
+    }
+    
     const state = {
         eventSource: null, streamingDiv: null, contentDiv: null,
         contentBlocks: [], toolCallMap: {},
@@ -696,7 +733,13 @@ function handleStreamEvent(sessionId, event) {
             ensureDiv();
             const te = document.createElement('div');
             te.innerHTML = renderThinkingBlock(event.thinking);
-            st.contentDiv.appendChild(te.firstElementChild);
+            // Insert thinking block before any text blocks
+            const firstTextBlock = st.contentDiv.querySelector('.text-block');
+            if (firstTextBlock) {
+                st.contentDiv.insertBefore(te.firstElementChild, firstTextBlock);
+            } else {
+                st.contentDiv.appendChild(te.firstElementChild);
+            }
             st.hasContent = true;
             st.contentBlocks.push({ type: 'thinking', thinking: event.thinking });
             if (isCurrent) scrollToBottom();
@@ -785,12 +828,12 @@ function finishStreaming(sessionId) {
     }
     if (st.streamingDiv) st.streamingDiv.classList.remove('streaming');
 
-    // Save the AI's response to the backend (message + content_blocks)
-    if ((st.finalResult || st.contentBlocks.length > 0) && sessionId) {
-        fetch(`${API_BASE}/api/agent/${sessionId}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'save_message', message: st.finalResult || '', content_blocks: st.contentBlocks.length > 0 ? st.contentBlocks : undefined })
-        }).catch(e => console.error('Failed to save response:', e));
+    // Note: save_message is no longer needed here because the backend's
+    // save_event_progress task handles all saving in real-time.
+
+    // Refresh file browser after AI finishes responding
+    if (fileBrowserExpanded && currentBrowsePath) {
+        refreshFiles();
     }
 
     // Delay loadSessions to let the backend clean up streaming_sessions first.
@@ -1072,6 +1115,12 @@ async function loadFiles(dirPath) {
         });
         if (fileList.children.length === 0) fileList.innerHTML = '<div class="file-empty">Empty directory</div>';
     } catch (e) { fileList.innerHTML = `<div class="file-error">Failed to load</div>`; }
+}
+
+function refreshFiles() {
+    if (currentBrowsePath) {
+        loadFiles(currentBrowsePath);
+    }
 }
 
 function createFileItem(icon, name, size, isDir) {

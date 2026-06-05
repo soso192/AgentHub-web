@@ -554,11 +554,12 @@ impl AiAssistant for PiAssistant {
                 "tool_execution_start" => {
                     let tool_id = event.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("");
                     let tool_name = event.get("toolName").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let args = event.get("args").cloned().unwrap_or(serde_json::json!({}));
                     send_pi_event(tx, serde_json::json!({
                         "type": "tool_call",
                         "id": tool_id,
                         "name": tool_name,
-                        "input": {}
+                        "input": args
                     }));
                 }
                 "tool_execution_end" => {
