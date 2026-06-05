@@ -4,9 +4,21 @@ use crate::models::{ModelsResponse, ModelInfo, DefaultModel};
 use crate::AppState;
 
 /// Get available models, optionally filtered by assistant name.
-/// GET /api/models                → models from default assistant
-/// GET /api/models?assistant=pi   → models from the "pi" assistant
+///
+/// Each AI assistant (Claude, Pi, Codex) has its own set of supported models.
+/// This endpoint returns the model list for a specific assistant, or the
+/// default assistant if no query parameter is provided.
+///
+/// # Query Parameters
+/// - `assistant` (optional): The assistant name to filter by (e.g. "pi", "claude")
+///
+/// # Examples
+/// - `GET /api/models`                → models from the default assistant (Claude)
+/// - `GET /api/models?assistant=pi`   → models from the Pi Agent
+/// - `GET /api/models?assistant=codex`→ models from Codex
 pub async fn get_models(data: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
+    // Parse the `assistant` query parameter manually.
+    // We avoid pulling in a full query-string crate for this single parameter.
     let assistant_name = req.query_string()
         .split('&')
         .find_map(|p| {
@@ -18,6 +30,7 @@ pub async fn get_models(data: web::Data<AppState>, req: HttpRequest) -> HttpResp
             }
         });
 
+    // Look up the assistant handle by name, or fall back to the default.
     let handle = {
         let registry = data.registry.read().unwrap();
         match assistant_name {
@@ -31,10 +44,13 @@ pub async fn get_models(data: web::Data<AppState>, req: HttpRequest) -> HttpResp
     };
     let assistant = handle.read().unwrap();
 
+    // Query the assistant for its supported models and default model.
     let models_list = assistant.available_models();
     let default_model_id = assistant.default_model().to_string();
-    let provider = assistant.name().to_string();
+    let provider = assistant.name().to_string();  // e.g. "claude", "pi", "codex"
     
+    // Build the response: a HashMap of id→name, a detailed model list,
+    // and the default model info.
     let mut models = HashMap::new();
     let model_list: Vec<ModelInfo> = models_list.iter().map(|m| {
         models.insert(m.id.clone(), m.name.clone());

@@ -215,10 +215,18 @@ pub async fn start_prompt(
         };
 
         eprintln!("[start_prompt] calling spawn_blocking for stream_session");
+        // Clone data for PID callback
+        let data_for_pid = data_clone2.clone();
+        let session_id_for_pid = session_id_clone.clone();
         let result = tokio::task::spawn_blocking(move || {
             // Lock ONLY this assistant — other assistants are free to operate
             let assistant = handle.read().unwrap();
             eprintln!("[start_prompt] calling stream_session");
+            // Create PID callback to store PID immediately when process spawns
+            let pid_callback = Box::new(move |pid: u32| {
+                eprintln!("[start_prompt] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
+                data_for_pid.running_pids.write().unwrap().insert(session_id_for_pid.clone(), pid);
+            });
             assistant.stream_session(
                 &session_id_clone,
                 &cwd,
@@ -226,6 +234,7 @@ pub async fn start_prompt(
                 &message,
                 tx.as_ref(),
                 existing_agent_session_id.as_deref(),
+                Some(pid_callback),
             )
         }).await;
 
@@ -254,7 +263,11 @@ pub async fn start_prompt(
                     crate::save_sessions_to_disk(&data_clone2.sessions.read().unwrap());
                 }
             }
-            Err(e) => eprintln!("[start_prompt] Streaming task error: {}", e),
+            Err(e) => {
+                eprintln!("[start_prompt] Streaming task error: {}", e);
+                // Clean up streaming status even on error
+                data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+            },
         }
 
         // Clean up PID and event channel
@@ -269,6 +282,21 @@ pub async fn start_prompt(
     }))
 }
 
+/// Handle assistant switch request.
+/// POST /api/agent/{session_id}/switch
+///
+/// Flow:
+/// 1. Read existing conversation messages from the current session
+/// 2. Build a history_context string from all user/assistant messages
+/// 3. Update the session metadata (assistant, model, clear agent_session_id)
+/// 4. Create a broadcast channel for SSE streaming
+/// 5. Build a context_message (history + prompt) and spawn a streaming task
+///    to send it to the new assistant via stdin
+/// 6. Return HTTP success immediately — the frontend connects to SSE
+///    to receive the new assistant's streamed response
+///
+/// After the new assistant responds, the frontend displays a
+/// "Switched from X to Y" system message.
 pub async fn switch_assistant(
     data: web::Data<AppState>,
     path: web::Path<String>,
@@ -278,6 +306,7 @@ pub async fn switch_assistant(
     let new_assistant_name = req.assistant.clone();
     let new_model = req.model.clone();
 
+    // ── Step 1: Read current session data ──────────────────────────────
     let (old_assistant_name, cwd, existing_messages) = {
         let sessions = data.sessions.read().unwrap();
         match sessions.get(&session_id) {
@@ -291,7 +320,7 @@ pub async fn switch_assistant(
         }
     };
 
-    // Log existing_messages before executing subsequent logic
+    // Diagnostic logging: print all existing messages for debugging
     eprintln!("[switch] session={}, old={}, new={}, msg_count={}",
         session_id, old_assistant_name, new_assistant_name, existing_messages.len());
     for (i, msg) in existing_messages.iter().enumerate() {
@@ -300,6 +329,8 @@ pub async fn switch_assistant(
             i, msg.role, msg.assistant, msg.content.len(), preview);
     }
 
+    // ── Step 2: Validate the switch request ────────────────────────────
+    // No-op if already using the requested assistant
     if old_assistant_name == new_assistant_name {
         return HttpResponse::Ok().json(serde_json::json!({
             "success": true,
@@ -308,6 +339,7 @@ pub async fn switch_assistant(
         }));
     }
 
+    // Check that the target assistant is registered
     {
         let registry = data.registry.read().unwrap();
         if !registry.has(&new_assistant_name) {
@@ -318,15 +350,19 @@ pub async fn switch_assistant(
         }
     }
 
+    // ── Step 3: Build history_context from existing messages ───────────
+    // Converts the message array into a plain-text conversation summary
+    // that the new assistant can understand.
     let history_context = if !existing_messages.is_empty() {
         let mut ctx = String::from("You are continuing a conversation that was started with a different AI assistant. Here is the conversation history for context:\n\n");
         for msg in &existing_messages {
-            if msg.role == "system" { continue; }
+            if msg.role == "system" { continue; }  // skip system notifications
             let role_label = match msg.role.as_str() {
                 "user" => "User",
                 "assistant" => "Assistant",
                 _ => &msg.role,
             };
+            // Truncate individual messages to 2000 chars to keep context manageable
             let content = if msg.content.len() > 2000 {
                 format!("{}...(truncated)", &msg.content[..2000])
             } else {
@@ -340,7 +376,9 @@ pub async fn switch_assistant(
         None
     };
 
-    // Create session with new assistant (lock only this assistant)
+    // ── Step 4: Create internal session for the new assistant ──────────
+    // Each assistant maintains its own internal session state (e.g. Claude's
+    // --resume session ID). We create a fresh one for the new assistant.
     let new_handle = {
         let registry = data.registry.read().unwrap();
         registry.get_handle(&new_assistant_name)
@@ -355,7 +393,7 @@ pub async fn switch_assistant(
         }
     }
 
-    // Get default model from the new assistant
+    // Get the new assistant's default model
     let current_model = {
         if let Some(ref handle) = new_handle {
             let assistant = handle.read().unwrap();
@@ -368,18 +406,20 @@ pub async fn switch_assistant(
         }
     };
 
+    // ── Step 5: Update the session metadata ────────────────────────────
     {
         let mut sessions = data.sessions.write().unwrap();
         if let Some(session) = sessions.get_mut(&session_id) {
             session.assistant = new_assistant_name.clone();
             session.model = current_model.clone();
             session.updated_at = Utc::now();
-            // Don't store history_context — it's already been sent to the new
-            // assistant via stream_session above. Setting it here would cause
+            // Don't store history_context here — the context is sent to the new
+            // assistant via stream_session below. Setting it would cause
             // start_prompt to prepend it again on the user's first question.
             session.history_context = None;
-            session.agent_session_id = None;
+            session.agent_session_id = None;  // clear old assistant's native session ID
 
+            // Add a system message documenting the switch
             session.messages.push(Message {
                 role: "system".to_string(),
                 content: format!(
@@ -395,6 +435,7 @@ pub async fn switch_assistant(
 
     crate::save_sessions_to_disk(&data.sessions.read().unwrap());
 
+    // ── Step 6: Clean up the old assistant's internal session ──────────
     {
         let registry = data.registry.read().unwrap();
         if let Some(handle) = registry.get_handle(&old_assistant_name) {
@@ -403,11 +444,15 @@ pub async fn switch_assistant(
         }
     }
 
+    // ── Step 7: Create SSE broadcast channel ───────────────────────────
     let (tx, _) = broadcast::channel::<String>(256);
     data.events_tx.write().unwrap().insert(session_id.clone(), tx.clone());
 
-    // Build the context message to send to the new assistant.
-    // Format: conversation history + acknowledgment prompt.
+    // ── Step 8: Build context_message and spawn streaming task ─────────
+    // The context_message includes the full conversation history plus a
+    // prompt asking the new assistant to acknowledge the context.
+    // It is sent to the new assistant via stdin (not CLI argument) to
+    // avoid Windows command-line escaping issues with long formatted text.
     let context_message = if let Some(ref ctx) = history_context {
         format!("{}\n\n---\n\nPlease review the conversation history above, acknowledge that you have the context, and await my next instruction.", ctx)
     } else {
@@ -418,7 +463,7 @@ pub async fn switch_assistant(
         context_message.len(),
         context_message.chars().take(500).collect::<String>());
 
-    // Spawn a task to stream the new assistant's response.
+    // Clone values needed by the spawned async task
     let session_id_clone = session_id.clone();
     let session_id_for_save = session_id.clone();
     let session_id_for_cleanup = session_id.clone();
@@ -426,34 +471,51 @@ pub async fn switch_assistant(
     let model_clone = current_model.clone();
     let data_clone = data.clone();
 
+    // Get the new assistant's handle for the streaming task
     let new_handle_for_stream = {
         let registry = data.registry.read().unwrap();
         registry.get_handle(&new_assistant_name)
     };
 
+    // Mark this session as actively streaming
     data.streaming_sessions.write().unwrap().insert(session_id.clone());
 
+    // Spawn the streaming task — this runs in the background while
+    // the HTTP response is returned to the frontend immediately.
     tokio::spawn(async move {
         let handle = match new_handle_for_stream {
             Some(h) => h,
             None => return,
         };
 
+        // stream_session runs in a blocking thread (it reads CLI stdout line by line)
+        // Clone data for PID callback
+        let data_for_pid = data_clone.clone();
+        let session_id_for_pid = session_id_clone.clone();
         let result = tokio::task::spawn_blocking(move || {
             let assistant = handle.read().unwrap();
+            // Create PID callback to store PID immediately when process spawns
+            let pid_callback = Box::new(move |pid: u32| {
+                eprintln!("[switch] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
+                data_for_pid.running_pids.write().unwrap().insert(session_id_for_pid.clone(), pid);
+            });
             assistant.stream_session(
                 &session_id_clone,
                 &cwd_clone,
                 &model_clone,
                 &context_message,
-                Some(&tx),
-                None,
+                Some(&tx),      // broadcast channel for SSE events
+                None,            // no existing agent session ID (fresh start)
+                Some(pid_callback),
             )
         }).await;
 
+        // ── Cleanup after streaming completes ──────────────────────────
         match result {
             Ok(stream_result) => {
+                // Clear streaming status immediately
                 data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                // Save the new assistant's native session ID for future --resume
                 if let Some(sid) = stream_result.agent_session_id {
                     if let Some(session) = data_clone.sessions.write().unwrap().get_mut(&session_id_for_save) {
                         session.agent_session_id = Some(sid);
@@ -461,13 +523,20 @@ pub async fn switch_assistant(
                     crate::save_sessions_to_disk(&data_clone.sessions.read().unwrap());
                 }
             }
-            Err(e) => eprintln!("[switch] Streaming task error: {}", e),
+            Err(e) => {
+                eprintln!("[switch] Streaming task error: {}", e);
+                // Clean up streaming status even on error
+                data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+            },
         }
 
+        // Final cleanup: remove streaming status and event channel
         data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_cleanup);
         data_clone.events_tx.write().unwrap().remove(&session_id_for_cleanup);
     });
 
+    // Return success immediately — the frontend will connect to SSE
+    // to receive the new assistant's streamed response.
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
         "sessionId": session_id,
@@ -482,6 +551,20 @@ pub async fn abort_session(
     path: web::Path<String>,
 ) -> HttpResponse {
     let session_id = path.into_inner();
+
+    // Remove the last user message that was aborted (the one without an assistant response)
+    {
+        let mut sessions = data.sessions.write().unwrap();
+        if let Some(session) = sessions.get_mut(&session_id) {
+            // Find and remove the last user message that doesn't have a corresponding assistant response
+            if let Some(last_msg) = session.messages.last() {
+                if last_msg.role == "user" {
+                    eprintln!("[abort] Removing aborted user message: {:?}", &last_msg.content[..last_msg.content.len().min(50)]);
+                    session.messages.pop();
+                }
+            }
+        }
+    }
 
     // Get and remove the PID
     let pid = data.running_pids.write().unwrap().remove(&session_id);
@@ -695,22 +778,37 @@ pub async fn events(
         }
     };
 
+    let session_id_for_heartbeat = session_id.clone();
     let stream = async_stream::stream! {
         yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!(
             "data: {}\n\n",
             serde_json::json!({"type": "connected", "sessionId": session_id})
         )));
 
+        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        heartbeat_interval.tick().await; // Skip first immediate tick
+
         loop {
-            match rx.recv().await {
-                Ok(msg) => {
-                    yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!("data: {}\n\n", msg)));
+            tokio::select! {
+                msg = rx.recv() => {
+                    match msg {
+                        Ok(msg) => {
+                            yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!("data: {}\n\n", msg)));
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            break;
+                        }
+                    }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    break;
+                _ = heartbeat_interval.tick() => {
+                    // Send heartbeat to keep connection alive and detect disconnects
+                    yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!(
+                        "data: {}\n\n",
+                        serde_json::json!({"type": "heartbeat", "sessionId": session_id_for_heartbeat})
+                    )));
                 }
             }
         }

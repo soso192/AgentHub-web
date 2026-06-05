@@ -96,16 +96,21 @@ async function loadAssistants() {
     }
 }
 
+/// Load available models from the backend, filtered by the currently selected assistant.
+/// Each assistant (Claude, Pi, Codex) supports different models, so the model list
+/// changes when the user switches assistants or selects a different session.
 async function loadModels() {
     try {
+        // Pass the current assistant name as a query parameter
+        // so the backend returns that assistant's model list.
         const url = currentAssistant
             ? `${API_BASE}/api/models?assistant=${encodeURIComponent(currentAssistant)}`
             : `${API_BASE}/api/models`;
         const res = await fetch(url);
         const data = await res.json();
         models = data.model_list || [];
-        currentModel = data.default_model?.model_id;
-        updateModelSelectors();
+        currentModel = data.default_model?.model_id;  // set default model for this assistant
+        updateModelSelectors();  // refresh all model dropdowns in the UI
     } catch (e) {
         console.error('Failed to load models:', e);
     }
@@ -212,8 +217,10 @@ function renderSessionList() {
     sessionList.innerHTML = '';
     sessions.forEach(session => {
         const div = document.createElement('div');
-        // Show streaming indicator if either frontend or backend says it's streaming
-        const isLive = streamingSessions.has(session.id) || session.isStreaming;
+        // Show streaming indicator: check frontend state first (more responsive),
+        // then fallback to backend state (handles edge cases)
+        const frontendStreaming = streamingSessions.has(session.id) && !streamingSessions.get(session.id).finished;
+        const isLive = frontendStreaming || session.isStreaming;
         div.className = `session-item ${session.id === currentSessionId ? 'active' : ''} ${isLive ? 'streaming' : ''}`;
         const icon = ASSISTANT_ICONS[session.assistant] || ASSISTANT_ICONS.default;
         const live = isLive ? '<span class="session-streaming-badge">🔴 LIVE</span>' : '';
@@ -237,7 +244,11 @@ function renderSessionList() {
 }
 
 // ===== Select Session =====
-
+// Switches the UI to display a specific session.
+//
+// This is called when the user clicks on a session in the sidebar.
+// It syncs the topbar assistant/model selectors, loads messages
+// from the backend (if not already loaded), and shows the session view.
 async function selectSession(sessionId) {
     currentSessionId = sessionId;
 
@@ -245,17 +256,21 @@ async function selectSession(sessionId) {
     await loadSessions();
     renderSessionList();
 
-    // Always sync the topbar assistant/model selectors with this session
+    // Sync the topbar assistant/model selectors with this session's settings.
+    // This runs EVERY time a session is selected (not just the first time),
+    // so the dropdown always reflects the current session's assistant.
     const sessionInfo = sessions.find(s => s.id === sessionId);
     if (sessionInfo) {
         if (sessionInfo.assistant) { currentAssistant = sessionInfo.assistant; assistantSelector.value = sessionInfo.assistant; }
         if (sessionInfo.model) { currentModel = sessionInfo.model; modelSelector.value = sessionInfo.model; statusDisplay.textContent = sessionInfo.model; }
-        // Reload model list for the new assistant, then restore this session's model
+        // Reload model list for the selected assistant, then restore this session's model.
+        // loadModels() sets currentModel to the assistant's default, so we restore
+        // the session's actual model afterward.
         await loadModels();
         if (sessionInfo.model) { currentModel = sessionInfo.model; modelSelector.value = sessionInfo.model; statusDisplay.textContent = sessionInfo.model; }
     }
 
-    // Get or create this session's view
+    // Get or create this session's DOM view
     const view = getSessionView(sessionId);
 
     // Load messages from backend if view is empty (first time viewing, e.g. after page refresh)
@@ -320,8 +335,19 @@ async function deleteSession(sessionId) {
 }
 
 // ===== Switch Assistant =====
-
+// Switches the current session to a different AI assistant.
+//
+// Flow:
+// 1. Validate the switch request (not same assistant, assistant available)
+// 2. POST /api/agent/:id/switch → backend updates session, sends history
+//    to new assistant, starts streaming response via SSE
+// 3. Connect to SSE to receive the new assistant's response
+// 4. Display "Switched from X to Y" system message after response completes
+//
+// The backend handles sending the conversation history to the new assistant.
+// The frontend just needs to listen for the streamed response.
 async function switchAssistant() {
+    // Guard: no session, already streaming, same assistant, or assistant unavailable
     if (!currentSessionId || streamingSessions.has(currentSessionId)) return;
     const newAssistant = assistantSelector.value;
     const session = sessions.find(s => s.id === currentSessionId);
@@ -329,36 +355,71 @@ async function switchAssistant() {
     const info = assistants.find(a => a.name === newAssistant);
     if (info && !info.available) { alert(`⚠️ ${info.display_name} 未在本地安装，无法切换。`); return; }
 
+    // Show immediate visual feedback before making the request
+    const fromName = session.assistant;
+    const toName = newAssistant;
+    const toInfo = assistants.find(a => a.name === toName);
+    const toDisplayName = toInfo?.display_name || toName;
+    const toIcon = ASSISTANT_ICONS[toName] || ASSISTANT_ICONS.default;
+
     try {
         switchAssistantBtn.disabled = true;
         switchAssistantBtn.textContent = '⏳ Switching...';
+
+        // Show a "switching" indicator immediately in the chat
+        const view = getSessionView(currentSessionId);
+        const switchingDiv = document.createElement('div');
+        switchingDiv.className = 'message system switching-indicator';
+        switchingDiv.id = 'switching-indicator';
+        switchingDiv.innerHTML = `<div class="system-content">⏳ Switching to ${toIcon} <strong>${toDisplayName}</strong>...</div>`;
+        view.appendChild(switchingDiv);
+        scrollToBottom();
+
+        // Step 1: Ask the backend to switch assistants.
         const res = await fetch(`${API_BASE}/api/agent/${currentSessionId}/switch`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ assistant: newAssistant, model: modelSelector.value })
         });
         const data = await res.json();
         if (data.success) {
-            const fromName = session.assistant;
-            const toName = data.assistant;
-            currentAssistant = toName; currentModel = data.model;
-            assistantSelector.value = toName; modelSelector.value = data.model;
+            // Step 2: Update local state
+            currentAssistant = data.assistant; currentModel = data.model;
+            assistantSelector.value = data.assistant; modelSelector.value = data.model;
             statusDisplay.textContent = data.model;
 
-            // The backend has already sent the conversation history to the new
-            // assistant and is streaming the response via SSE. Connect to receive it.
-            const view = getSessionView(currentSessionId);
+            // Update the switching indicator to show we're waiting for the assistant
+            const indicator = document.getElementById('switching-indicator');
+            if (indicator) {
+                indicator.innerHTML = `<div class="system-content">⏳ ${toIcon} <strong>${toDisplayName}</strong> is starting...</div>`;
+            }
+
+            // Step 3: Connect to SSE to receive the new assistant's streamed response.
             connectSSE(currentSessionId, null, () => {
-                // After the new assistant responds, show the switch message
+                // Step 4: After the new assistant responds, remove switching indicator and show switch message
+                const indicator = document.getElementById('switching-indicator');
+                if (indicator) indicator.remove();
+                
                 const sysDiv = document.createElement('div');
                 sysDiv.className = 'message system';
-                sysDiv.innerHTML = `<div class="system-content">🔄 Switched from <strong>${ASSISTANT_ICONS[fromName] || ASSISTANT_ICONS.default} ${fromName}</strong> to <strong>${ASSISTANT_ICONS[toName] || ASSISTANT_ICONS.default} ${toName}</strong></div>`;
+                sysDiv.innerHTML = `<div class="system-content">🔄 Switched from <strong>${ASSISTANT_ICONS[fromName] || ASSISTANT_ICONS.default} ${fromName}</strong> to <strong>${toIcon} ${toDisplayName}</strong></div>`;
                 view.appendChild(sysDiv);
                 scrollToBottom();
             });
 
+            // Refresh session list to reflect the new assistant
             await loadSessions(); renderSessionList(); updateSwitchButton();
-        } else { alert('Switch failed: ' + (data.error || 'Unknown error')); }
-    } catch (e) { alert('Switch error: ' + e.message); }
+        } else {
+            // Remove switching indicator on failure
+            const indicator = document.getElementById('switching-indicator');
+            if (indicator) indicator.remove();
+            alert('Switch failed: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        // Remove switching indicator on error
+        const indicator = document.getElementById('switching-indicator');
+        if (indicator) indicator.remove();
+        alert('Switch error: ' + e.message);
+    }
     finally { switchAssistantBtn.disabled = false; switchAssistantBtn.textContent = '🔄 Switch'; }
 }
 
@@ -476,10 +537,32 @@ function escapeHtml(text) {
 function renderMarkdown(text) {
     if (!text) return '';
     let html = escapeHtml(text);
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${code}</code></pre>`);
-    html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+    
+    // Protect code blocks and inline code first
+    const codeBlocks = [];
+    const inlineCodes = [];
+    
+    // Protect code blocks
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        const placeholder = `__CODE_BLOCK_${codeBlocks.length}__`;
+        codeBlocks.push(`<pre><code>${code}</code></pre>`);
+        return placeholder;
+    });
+    
+    // Protect inline code
+    html = html.replace(/`([^`\n]+)`/g, (_, code) => {
+        const placeholder = `__INLINE_CODE_${inlineCodes.length}__`;
+        inlineCodes.push(`<code>${code}</code>`);
+        return placeholder;
+    });
+    
+    // Bold: match **content** where content can contain * (for math expressions)
+    // Use non-greedy match for the outer ** markers
+    html = html.replace(/\*\*((?:[^*]|\*(?!\*))*)\*\*/g, '<strong>$1</strong>');
+    
+    // Italic: match *content* but avoid matching math expressions like 13*(12+17)*20
+    // Require content to contain at least one letter to avoid matching pure math
+    html = html.replace(/(?<!\*)\*([^*\n]*[a-zA-Z][^*\n]*)\*(?!\*)/g, '<em>$1</em>');
     html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
     html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
@@ -492,6 +575,14 @@ function renderMarkdown(text) {
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
     html = html.replace(/\n\n/g, '</p><p>');
     html = html.replace(/\n/g, '<br>');
+    // Restore code blocks and inline code
+    for (let i = 0; i < codeBlocks.length; i++) {
+        html = html.replace(`__CODE_BLOCK_${i}__`, codeBlocks[i]);
+    }
+    for (let i = 0; i < inlineCodes.length; i++) {
+        html = html.replace(`__INLINE_CODE_${i}__`, inlineCodes[i]);
+    }
+    
     if (!html.startsWith('<')) html = '<p>' + html + '</p>';
     return html;
 }
@@ -504,6 +595,7 @@ function connectSSE(sessionId, message, onDone) {
         contentBlocks: [], toolCallMap: {},
         hasContent: false, finalResult: '', promptSent: false, finished: false, safetyTimeout: null,
         _message: message, _onDone: onDone,
+        _startTime: Date.now(), lastHeartbeat: Date.now(), heartbeatCheck: null,
     };
     streamingSessions.set(sessionId, state);
 
@@ -533,6 +625,35 @@ function connectSSE(sessionId, message, onDone) {
         if (st && !st.finished) { console.warn(`[SSE] Safety timeout for ${sessionId}`); finishStreaming(sessionId); }
     }, 120000);
 
+    // Heartbeat timeout detection: if no heartbeat received for 30 seconds,
+    // the connection might be dead. Check backend status.
+    state.heartbeatCheck = setInterval(async () => {
+        const st = streamingSessions.get(sessionId);
+        if (!st || st.finished) {
+            clearInterval(state.heartbeatCheck);
+            return;
+        }
+        
+        const now = Date.now();
+        const lastHeartbeat = st.lastHeartbeat || st._startTime;
+        const timeSinceHeartbeat = now - lastHeartbeat;
+        
+        // If no heartbeat for 30 seconds, check backend status
+        if (timeSinceHeartbeat > 30000) {
+            try {
+                const res = await fetch(`${API_BASE}/api/agent/${sessionId}`);
+                const data = await res.json();
+                if (!data.state?.isStreaming) {
+                    console.warn(`[SSE] Heartbeat timeout, backend not streaming for ${sessionId}`);
+                    finishStreaming(sessionId);
+                    clearInterval(state.heartbeatCheck);
+                }
+            } catch (e) {
+                console.error('Heartbeat check failed:', e);
+            }
+        }
+    }, 10000); // Check every 10 seconds
+
     renderSessionList(); // Update sidebar indicators
 
     return state;
@@ -553,8 +674,17 @@ function handleStreamEvent(sessionId, event) {
     switch (event.type) {
         case 'connected':
             if (st._message && !st.promptSent) { st.promptSent = true; sendStartPrompt(sessionId, st._message); }
+            st.lastHeartbeat = Date.now();
+            break;
+        case 'heartbeat':
+            // Update last heartbeat time to detect connection issues
+            st.lastHeartbeat = Date.now();
             break;
         case 'start':
+            // Remove switching indicator if present
+            const switchingIndicator = document.getElementById('switching-indicator');
+            if (switchingIndicator) switchingIndicator.remove();
+            
             if (isCurrent) {
                 typingIndicator.style.display = 'block';
                 typingIndicator.querySelector('.assistant-name').textContent =
@@ -630,14 +760,23 @@ function handleStreamEvent(sessionId, event) {
     }
 }
 
+/// Called when an SSE stream ends (result or error event).
+/// Saves the AI response to the backend, cleans up UI state,
+/// and triggers the onDone callback if set (used by assistant switching).
+///
+/// Note: loadSessions is delayed 300ms to avoid a race condition where
+/// the frontend fetches isStreaming=true because the backend hasn't finished
+/// cleaning up streaming_sessions yet.
 function finishStreaming(sessionId) {
     const st = streamingSessions.get(sessionId);
     if (!st || st.finished) return;
     st.finished = true;
     if (st.safetyTimeout) clearTimeout(st.safetyTimeout);
+    if (st.heartbeatCheck) clearInterval(st.heartbeatCheck);
     if (st.eventSource) st.eventSource.close();
     streamingSessions.delete(sessionId);
 
+    // Update UI: remove streaming indicators
     const isCurrent = sessionId === currentSessionId;
     if (isCurrent) {
         sendBtn.classList.remove('streaming');
@@ -646,7 +785,7 @@ function finishStreaming(sessionId) {
     }
     if (st.streamingDiv) st.streamingDiv.classList.remove('streaming');
 
-    // Save response to backend
+    // Save the AI's response to the backend (message + content_blocks)
     if ((st.finalResult || st.contentBlocks.length > 0) && sessionId) {
         fetch(`${API_BASE}/api/agent/${sessionId}`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -655,15 +794,47 @@ function finishStreaming(sessionId) {
     }
 
     // Delay loadSessions to let the backend clean up streaming_sessions first.
-    // There is a race: the frontend receives the 'result' SSE event before the
-    // backend's stream_session() returns and clears isStreaming. A short delay
-    // ensures the backend has time to finish, so isStreaming is false by the
-    // time we fetch the session list. This prevents a stale LIVE badge.
-    setTimeout(() => {
-        loadSessions().then(() => renderSessionList());
-        if (st._onDone) st._onDone();
-        processSessionQueue(sessionId);
-    }, 300);
+    // Race condition explanation:
+    //   1. Backend sends 'result' SSE event
+    //   2. Frontend receives it, calls finishStreaming
+    //   3. Frontend fetches loadSessions → backend returns isStreaming=true
+    //      because stream_session() hasn't returned yet
+    //   4. Backend cleans up streaming_sessions (too late)
+    // Use retry logic with exponential backoff for reliability across different networks.
+    const retryLoadSessions = async () => {
+        const delays = [100, 200, 400, 800, 1600]; // Exponential backoff
+        let cleaned = false;
+        
+        for (const delay of delays) {
+            await new Promise(r => setTimeout(r, delay));
+            try {
+                await loadSessions();
+                const session = sessions.find(s => s.id === sessionId);
+                if (!session?.isStreaming) {
+                    cleaned = true;
+                    break;
+                }
+            } catch (e) {
+                console.warn('[finishStreaming] loadSessions failed:', e);
+            }
+        }
+        
+        if (!cleaned) {
+            console.warn(`[finishStreaming] Backend still reports streaming for ${sessionId}, forcing local cleanup`);
+            // Force update local sessions array to remove streaming status
+            const session = sessions.find(s => s.id === sessionId);
+            if (session) session.isStreaming = false;
+        }
+        
+        renderSessionList();
+    };
+    
+    retryLoadSessions();
+    // Fire the onDone callback if set (used by assistant switching
+    // to show the "Switched from X to Y" system message)
+    if (st._onDone) st._onDone();
+    // Process any queued messages for this session
+    processSessionQueue(sessionId);
 }
 
 function cleanupSessionStreaming(sessionId) {
@@ -762,6 +933,21 @@ async function sendMessage() {
     await sendToSession(message);
 }
 
+// ===== Create Session with First Message =====
+// Creates a new session and sends the first message in one flow.
+// Called when the user types a message and presses Enter without an active session.
+//
+// Flow:
+// 1. Create session via POST /api/agent/new
+// 2. Add user message to the session view (this also creates the view DOM element)
+// 3. Show the session view (set display: block)
+// 4. Connect SSE and send the prompt to the backend
+// 5. Stream the AI's response in real-time
+//
+// Note: addMessage MUST be called before showSessionView, because addMessage
+// internally calls getSessionView() which creates the session view DOM element
+// and adds it to the sessionViews Map. showSessionView then finds it in the
+// Map and sets display: block.
 async function createSessionWithMessage(cwd, message) {
     const assistant = currentAssistant;
     try {
@@ -771,6 +957,7 @@ async function createSessionWithMessage(cwd, message) {
         typingIndicator.style.display = 'block';
         typingIndicator.querySelector('.assistant-name').textContent = assistant;
 
+        // Step 1: Create the session on the backend
         const res = await fetch(`${API_BASE}/api/agent/new`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ cwd, model: null, assistant })
@@ -782,12 +969,13 @@ async function createSessionWithMessage(cwd, message) {
             currentAssistant = data.assistant || assistant;
             pendingCwd = null;
 
-            // Show chat container, hide welcome, create session view
+            // Step 2-3: Show chat UI, add user message, then show the session view
             welcomeScreen.style.display = 'none';
             chatContainer.style.display = 'flex'; chatContainer.style.flexDirection = 'column';
-            addMessage('user', message, assistant, data.sessionId);
-            showSessionView(data.sessionId);
+            addMessage('user', message, assistant, data.sessionId);  // creates session view
+            showSessionView(data.sessionId);                          // makes it visible
 
+            // Step 4: Refresh session list and connect SSE for streaming
             await loadSessions(); renderSessionList();
 
             // Connect SSE — message is passed to connectSSE and stored in state
