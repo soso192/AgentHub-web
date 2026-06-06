@@ -1,8 +1,63 @@
 use actix_web::{web, HttpResponse, HttpRequest};
 use tokio::sync::broadcast;
-use crate::models::{NewSessionRequest, StartPromptRequest, SwitchAssistantRequest, CommandRequest, Message};
+use crate::models::{NewSessionRequest, StartPromptRequest, SwitchAssistantRequest, CommandRequest, Message, ContentBlock};
 use crate::AppState;
 use chrono::Utc;
+
+/// Save streaming event progress to session (called by the event saver task)
+/// This updates both the in-memory cache and the session file.
+fn save_event_progress(
+    data: &web::Data<AppState>,
+    session_id: &str,
+    content_blocks: &[ContentBlock],
+    final_result: &str,
+    assistant_name: &str,
+) {
+    // Update in-memory streaming state cache first (for instant reads on page refresh)
+    {
+        let mut streaming_state = data.streaming_state.write().unwrap();
+        streaming_state.insert(session_id.to_string(), crate::StreamingState {
+            content_blocks: content_blocks.to_vec(),
+            final_result: final_result.to_string(),
+            assistant_name: assistant_name.to_string(),
+            last_updated: Utc::now(),
+        });
+    }
+    
+    // Update session file
+    let mut sessions = data.sessions.write().unwrap();
+    if let Some(session) = sessions.get_mut(session_id) {
+        let last_is_assistant = session.messages.last()
+            .map(|m| m.role == "assistant")
+            .unwrap_or(false);
+        
+        let blocks = if content_blocks.is_empty() { None } else { Some(content_blocks.to_vec()) };
+        let content = if final_result.is_empty() {
+            "(streaming...)".to_string()
+        } else {
+            final_result.to_string()
+        };
+        
+        if last_is_assistant {
+            if let Some(last_msg) = session.messages.last_mut() {
+                last_msg.content = content;
+                last_msg.content_blocks = blocks;
+                last_msg.timestamp = Utc::now().timestamp_millis();
+            }
+        } else {
+            session.messages.push(Message {
+                role: "assistant".to_string(),
+                content,
+                timestamp: Utc::now().timestamp_millis(),
+                content_blocks: blocks,
+                assistant: Some(assistant_name.to_string()),
+            });
+        }
+        session.updated_at = Utc::now();
+    }
+    drop(sessions);
+    crate::save_sessions_to_disk(&data.sessions.read().unwrap());
+}
 
 pub async fn new_session(
     data: web::Data<AppState>,
@@ -64,6 +119,7 @@ pub async fn new_session(
         updated_at: now,
         history_context: None,
         agent_session_id: None,
+        history_already_sent: false,
     };
 
     data.sessions.write().unwrap().insert(session_id.clone(), session);
@@ -136,19 +192,143 @@ pub async fn start_prompt(
 
     eprintln!("[start_prompt] tx is_some={}", tx.is_some());
 
+    // ── Spawn event saver: subscribe to broadcast channel and save events to session ──
+    // This runs in the background and captures all streaming events (thinking, tool_call,
+    // tool_result, chunk) so that if the user refreshes the page, progress is preserved.
+    if let Some(ref tx_clone) = tx {
+        let saver_rx = tx_clone.subscribe();
+        let saver_data = data.clone();
+        let saver_sid = session_id.clone();
+        let saver_assistant = assistant_name.clone();
+        tokio::spawn(async move {
+            let mut rx = saver_rx;
+            let mut content_blocks: Vec<ContentBlock> = Vec::new();
+            let mut final_result = String::new();
+            let mut last_save = std::time::Instant::now();
+            
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        let event: serde_json::Value = match serde_json::from_str(&msg) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        
+                        let mut needs_save = false;
+                        
+                        match event_type {
+                            "thinking" => {
+                                if let Some(thinking) = event.get("thinking").and_then(|t| t.as_str()) {
+                                    // Insert thinking block before any text blocks
+                                    // This ensures thinking always appears at the top
+                                    let insert_pos = content_blocks.iter().position(|b| matches!(b, ContentBlock::Text { .. }));
+                                    if let Some(pos) = insert_pos {
+                                        content_blocks.insert(pos, ContentBlock::Thinking { thinking: thinking.to_string() });
+                                    } else {
+                                        content_blocks.push(ContentBlock::Thinking { thinking: thinking.to_string() });
+                                    }
+                                    needs_save = true;
+                                }
+                            }
+                            "tool_call" => {
+                                let id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                                let input = event.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                                // Check if we already have a tool_use with this id (avoid duplicates from Pi Agent)
+                                let existing = content_blocks.iter_mut().find(|b| {
+                                    matches!(b, ContentBlock::ToolUse { id: ref existing_id, .. } if *existing_id == id && !id.is_empty())
+                                });
+                                if let Some(ContentBlock::ToolUse { name: ref mut existing_name, input: ref mut existing_input, .. }) = existing {
+                                    // Update existing block only if new input is not empty
+                                    *existing_name = name;
+                                    if input != serde_json::Value::Null && input != serde_json::json!({}) {
+                                        *existing_input = input;
+                                        needs_save = true;
+                                    }
+                                } else if !id.is_empty() {
+                                    content_blocks.push(ContentBlock::ToolUse { id, name, input });
+                                    needs_save = true;
+                                }
+                            }
+                            "tool_result" => {
+                                let tool_use_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let content = event.get("output").map(|o| {
+                                    if let Some(s) = o.as_str() { s.to_string() }
+                                    else { o.to_string() }
+                                }).unwrap_or_default();
+                                if !tool_use_id.is_empty() {
+                                    content_blocks.push(ContentBlock::ToolResult { tool_use_id, content });
+                                    needs_save = true;
+                                }
+                            }
+                            "chunk" => {
+                                if let Some(new_text) = event.get("content").and_then(|c| c.as_str()) {
+                                    final_result.push_str(new_text);
+                                    // Update or add text block
+                                    match content_blocks.last_mut() {
+                                        Some(ContentBlock::Text { text: ref mut existing }) => {
+                                            existing.push_str(new_text);
+                                        }
+                                        _ => {
+                                            content_blocks.push(ContentBlock::Text { text: new_text.to_string() });
+                                        }
+                                    }
+                                    // Save chunks less frequently (every 1 second)
+                                    if last_save.elapsed().as_secs() >= 1 {
+                                        needs_save = true;
+                                    }
+                                }
+                            }
+                            "result" => {
+                                if let Some(text) = event.get("content").and_then(|c| c.as_str()) {
+                                    final_result = text.to_string();
+                                }
+                                // Final save and exit
+                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                                break;
+                            }
+                            "error" => {
+                                // Save what we have and exit
+                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                                break;
+                            }
+                            _ => {}
+                        }
+                        
+                        // Save if needed (thinking/tool events save immediately, chunks every 1s)
+                        if needs_save {
+                            save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                            last_save = std::time::Instant::now();
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
     // Read and clear history context (set by switch_assistant)
-    let history_context = {
+    let (history_context, history_already_sent) = {
         let mut sessions = data.sessions.write().unwrap();
         if let Some(session) = sessions.get_mut(&session_id) {
-            session.history_context.take()
+            let ctx = session.history_context.take();
+            let already_sent = session.history_already_sent;
+            session.history_already_sent = false;
+            (ctx, already_sent)
         } else {
-            None
+            (None, false)
         }
     };
 
+    eprintln!("[start_prompt] history_context present: {}, history_already_sent: {}, agent_session_id: {:?}",
+        history_context.is_some(), history_already_sent, existing_agent_session_id);
+
     // If no explicit history_context and no agent session ID (restart scenario),
-    // build history from previous messages for agents without native persistence
-    let auto_history = if history_context.is_none() && existing_agent_session_id.is_none() {
+    // build history from previous messages for agents without native persistence.
+    // Skip if history was already sent via stream during assistant switch.
+    let auto_history = if history_context.is_none() && existing_agent_session_id.is_none() && !history_already_sent {
         let sessions = data.sessions.read().unwrap();
         if let Some(session) = sessions.get(&session_id) {
             // Only inject if there are previous messages (more than the one we just added)
@@ -161,11 +341,7 @@ pub async fn start_prompt(
                         "assistant" => "Assistant",
                         _ => &msg.role,
                     };
-                    let content = if msg.content.len() > 2000 {
-                        format!("{}...(truncated)", &msg.content[..2000])
-                    } else {
-                        msg.content.clone()
-                    };
+                    let content = msg.content.clone();
                     ctx.push_str(&format!("**{}:** {}\n\n", role_label, content));
                 }
                 ctx.push_str("---\nPlease continue the conversation naturally, picking up where you left off.");
@@ -215,10 +391,21 @@ pub async fn start_prompt(
         };
 
         eprintln!("[start_prompt] calling spawn_blocking for stream_session");
+        // Clone data for PID callback
+        let data_for_pid = data_clone2.clone();
+        let session_id_for_pid = session_id_clone.clone();
+        
         let result = tokio::task::spawn_blocking(move || {
             // Lock ONLY this assistant — other assistants are free to operate
             let assistant = handle.read().unwrap();
             eprintln!("[start_prompt] calling stream_session");
+            
+            // Create PID callback to store PID immediately when process spawns
+            let pid_callback = Box::new(move |pid: u32| {
+                eprintln!("[start_prompt] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
+                data_for_pid.running_pids.write().unwrap().insert(session_id_for_pid.clone(), pid);
+            });
+            
             assistant.stream_session(
                 &session_id_clone,
                 &cwd,
@@ -226,6 +413,7 @@ pub async fn start_prompt(
                 &message,
                 tx.as_ref(),
                 existing_agent_session_id.as_deref(),
+                Some(pid_callback),
             )
         }).await;
 
@@ -241,6 +429,8 @@ pub async fn start_prompt(
                 // list_sessions API already reports isStreaming:false when the frontend fetches,
                 // preventing a stale LIVE badge in the sidebar.
                 data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                // Clear streaming state cache
+                data_clone2.streaming_state.write().unwrap().remove(&session_id_for_save);
 
                 // Store PID for abort support
                 if let Some(pid) = stream_result.pid {
@@ -254,7 +444,12 @@ pub async fn start_prompt(
                     crate::save_sessions_to_disk(&data_clone2.sessions.read().unwrap());
                 }
             }
-            Err(e) => eprintln!("[start_prompt] Streaming task error: {}", e),
+            Err(e) => {
+                eprintln!("[start_prompt] Streaming task error: {}", e);
+                // Clean up streaming status even on error
+                data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                data_clone2.streaming_state.write().unwrap().remove(&session_id_for_save);
+            },
         }
 
         // Clean up PID and event channel
@@ -269,6 +464,21 @@ pub async fn start_prompt(
     }))
 }
 
+/// Handle assistant switch request.
+/// POST /api/agent/{session_id}/switch
+///
+/// Flow:
+/// 1. Read existing conversation messages from the current session
+/// 2. Build a history_context string from all user/assistant messages
+/// 3. Update the session metadata (assistant, model, clear agent_session_id)
+/// 4. Create a broadcast channel for SSE streaming
+/// 5. Build a context_message (history + prompt) and spawn a streaming task
+///    to send it to the new assistant via stdin
+/// 6. Return HTTP success immediately — the frontend connects to SSE
+///    to receive the new assistant's streamed response
+///
+/// After the new assistant responds, the frontend displays a
+/// "Switched from X to Y" system message.
 pub async fn switch_assistant(
     data: web::Data<AppState>,
     path: web::Path<String>,
@@ -278,6 +488,7 @@ pub async fn switch_assistant(
     let new_assistant_name = req.assistant.clone();
     let new_model = req.model.clone();
 
+    // ── Step 1: Read current session data ──────────────────────────────
     let (old_assistant_name, cwd, existing_messages) = {
         let sessions = data.sessions.read().unwrap();
         match sessions.get(&session_id) {
@@ -291,7 +502,7 @@ pub async fn switch_assistant(
         }
     };
 
-    // Log existing_messages before executing subsequent logic
+    // Diagnostic logging: print all existing messages for debugging
     eprintln!("[switch] session={}, old={}, new={}, msg_count={}",
         session_id, old_assistant_name, new_assistant_name, existing_messages.len());
     for (i, msg) in existing_messages.iter().enumerate() {
@@ -300,6 +511,8 @@ pub async fn switch_assistant(
             i, msg.role, msg.assistant, msg.content.len(), preview);
     }
 
+    // ── Step 2: Validate the switch request ────────────────────────────
+    // No-op if already using the requested assistant
     if old_assistant_name == new_assistant_name {
         return HttpResponse::Ok().json(serde_json::json!({
             "success": true,
@@ -308,6 +521,7 @@ pub async fn switch_assistant(
         }));
     }
 
+    // Check that the target assistant is registered
     {
         let registry = data.registry.read().unwrap();
         if !registry.has(&new_assistant_name) {
@@ -318,20 +532,19 @@ pub async fn switch_assistant(
         }
     }
 
+    // ── Step 3: Build history_context from existing messages ───────────
+    // Converts the message array into a plain-text conversation summary
+    // that the new assistant can understand.
     let history_context = if !existing_messages.is_empty() {
         let mut ctx = String::from("You are continuing a conversation that was started with a different AI assistant. Here is the conversation history for context:\n\n");
         for msg in &existing_messages {
-            if msg.role == "system" { continue; }
+            if msg.role == "system" { continue; }  // skip system notifications
             let role_label = match msg.role.as_str() {
                 "user" => "User",
                 "assistant" => "Assistant",
                 _ => &msg.role,
             };
-            let content = if msg.content.len() > 2000 {
-                format!("{}...(truncated)", &msg.content[..2000])
-            } else {
-                msg.content.clone()
-            };
+            let content = msg.content.clone();
             ctx.push_str(&format!("**{}:** {}\n\n", role_label, content));
         }
         ctx.push_str("---\nPlease continue the conversation naturally, picking up where the previous assistant left off.");
@@ -340,7 +553,9 @@ pub async fn switch_assistant(
         None
     };
 
-    // Create session with new assistant (lock only this assistant)
+    // ── Step 4: Create internal session for the new assistant ──────────
+    // Each assistant maintains its own internal session state (e.g. Claude's
+    // --resume session ID). We create a fresh one for the new assistant.
     let new_handle = {
         let registry = data.registry.read().unwrap();
         registry.get_handle(&new_assistant_name)
@@ -355,7 +570,7 @@ pub async fn switch_assistant(
         }
     }
 
-    // Get default model from the new assistant
+    // Get the new assistant's default model
     let current_model = {
         if let Some(ref handle) = new_handle {
             let assistant = handle.read().unwrap();
@@ -368,18 +583,21 @@ pub async fn switch_assistant(
         }
     };
 
+    // ── Step 5: Update the session metadata ────────────────────────────
     {
         let mut sessions = data.sessions.write().unwrap();
         if let Some(session) = sessions.get_mut(&session_id) {
             session.assistant = new_assistant_name.clone();
             session.model = current_model.clone();
             session.updated_at = Utc::now();
-            // Don't store history_context — it's already been sent to the new
-            // assistant via stream_session above. Setting it here would cause
+            // Don't store history_context here — the context is sent to the new
+            // assistant via stream_session below. Setting it would cause
             // start_prompt to prepend it again on the user's first question.
             session.history_context = None;
-            session.agent_session_id = None;
+            session.agent_session_id = None;  // clear old assistant's native session ID
+            session.history_already_sent = history_context.is_some();  // mark that history was already sent via stream
 
+            // Add a system message documenting the switch
             session.messages.push(Message {
                 role: "system".to_string(),
                 content: format!(
@@ -395,6 +613,7 @@ pub async fn switch_assistant(
 
     crate::save_sessions_to_disk(&data.sessions.read().unwrap());
 
+    // ── Step 6: Clean up the old assistant's internal session ──────────
     {
         let registry = data.registry.read().unwrap();
         if let Some(handle) = registry.get_handle(&old_assistant_name) {
@@ -403,11 +622,108 @@ pub async fn switch_assistant(
         }
     }
 
+    // ── Step 7: Create SSE broadcast channel ───────────────────────────
     let (tx, _) = broadcast::channel::<String>(256);
     data.events_tx.write().unwrap().insert(session_id.clone(), tx.clone());
 
-    // Build the context message to send to the new assistant.
-    // Format: conversation history + acknowledgment prompt.
+    // ── Step 7.5: Spawn event saver for switch ────────────────────────
+    {
+        let saver_rx = tx.subscribe();
+        let saver_data = data.clone();
+        let saver_sid = session_id.clone();
+        let saver_assistant = new_assistant_name.clone();
+        tokio::spawn(async move {
+            let mut rx = saver_rx;
+            let mut content_blocks: Vec<ContentBlock> = Vec::new();
+            let mut final_result = String::new();
+            let mut last_save = std::time::Instant::now();
+            
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        let event: serde_json::Value = match serde_json::from_str(&msg) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        
+                        match event_type {
+                            "thinking" => {
+                                if let Some(thinking) = event.get("thinking").and_then(|t| t.as_str()) {
+                                    content_blocks.push(ContentBlock::Thinking { thinking: thinking.to_string() });
+                                }
+                            }
+                            "tool_call" => {
+                                let id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                                let input = event.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                                // Check if we already have a tool_use with this id (avoid duplicates from Pi Agent)
+                                let existing = content_blocks.iter_mut().find(|b| {
+                                    matches!(b, ContentBlock::ToolUse { id: ref existing_id, .. } if *existing_id == id && !id.is_empty())
+                                });
+                                if let Some(ContentBlock::ToolUse { name: ref mut existing_name, input: ref mut existing_input, .. }) = existing {
+                                    *existing_name = name;
+                                    if input != serde_json::Value::Null && input != serde_json::json!({}) {
+                                        *existing_input = input;
+                                    }
+                                } else if !id.is_empty() {
+                                    content_blocks.push(ContentBlock::ToolUse { id, name, input });
+                                }
+                            }
+                            "tool_result" => {
+                                let tool_use_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let content = event.get("output").map(|o| {
+                                    if let Some(s) = o.as_str() { s.to_string() }
+                                    else { o.to_string() }
+                                }).unwrap_or_default();
+                                if !tool_use_id.is_empty() {
+                                    content_blocks.push(ContentBlock::ToolResult { tool_use_id, content });
+                                }
+                            }
+                            "chunk" => {
+                                if let Some(new_text) = event.get("content").and_then(|c| c.as_str()) {
+                                    final_result.push_str(new_text);
+                                    match content_blocks.last_mut() {
+                                        Some(ContentBlock::Text { text: ref mut existing }) => {
+                                            existing.push_str(new_text);
+                                        }
+                                        _ => {
+                                            content_blocks.push(ContentBlock::Text { text: new_text.to_string() });
+                                        }
+                                    }
+                                }
+                            }
+                            "result" => {
+                                if let Some(text) = event.get("content").and_then(|c| c.as_str()) {
+                                    final_result = text.to_string();
+                                }
+                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                                break;
+                            }
+                            "error" => {
+                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                                break;
+                            }
+                            _ => {}
+                        }
+                        
+                        if last_save.elapsed().as_secs() >= 2 {
+                            save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                            last_save = std::time::Instant::now();
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    // ── Step 8: Build context_message and spawn streaming task ─────────
+    // The context_message includes the full conversation history plus a
+    // prompt asking the new assistant to acknowledge the context.
+    // It is sent to the new assistant via stdin (not CLI argument) to
+    // avoid Windows command-line escaping issues with long formatted text.
     let context_message = if let Some(ref ctx) = history_context {
         format!("{}\n\n---\n\nPlease review the conversation history above, acknowledge that you have the context, and await my next instruction.", ctx)
     } else {
@@ -418,7 +734,7 @@ pub async fn switch_assistant(
         context_message.len(),
         context_message.chars().take(500).collect::<String>());
 
-    // Spawn a task to stream the new assistant's response.
+    // Clone values needed by the spawned async task
     let session_id_clone = session_id.clone();
     let session_id_for_save = session_id.clone();
     let session_id_for_cleanup = session_id.clone();
@@ -426,34 +742,53 @@ pub async fn switch_assistant(
     let model_clone = current_model.clone();
     let data_clone = data.clone();
 
+    // Get the new assistant's handle for the streaming task
     let new_handle_for_stream = {
         let registry = data.registry.read().unwrap();
         registry.get_handle(&new_assistant_name)
     };
 
+    // Mark this session as actively streaming
     data.streaming_sessions.write().unwrap().insert(session_id.clone());
 
+    // Spawn the streaming task — this runs in the background while
+    // the HTTP response is returned to the frontend immediately.
     tokio::spawn(async move {
         let handle = match new_handle_for_stream {
             Some(h) => h,
             None => return,
         };
 
+        // stream_session runs in a blocking thread (it reads CLI stdout line by line)
+        // Clone data for PID callback
+        let data_for_pid = data_clone.clone();
+        let session_id_for_pid = session_id_clone.clone();
         let result = tokio::task::spawn_blocking(move || {
             let assistant = handle.read().unwrap();
+            // Create PID callback to store PID immediately when process spawns
+            let pid_callback = Box::new(move |pid: u32| {
+                eprintln!("[switch] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
+                data_for_pid.running_pids.write().unwrap().insert(session_id_for_pid.clone(), pid);
+            });
             assistant.stream_session(
                 &session_id_clone,
                 &cwd_clone,
                 &model_clone,
                 &context_message,
-                Some(&tx),
-                None,
+                Some(&tx),      // broadcast channel for SSE events
+                None,            // no existing agent session ID (fresh start)
+                Some(pid_callback),
             )
         }).await;
 
+        // ── Cleanup after streaming completes ──────────────────────────
         match result {
             Ok(stream_result) => {
+                // Clear streaming status immediately
                 data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                // Clear streaming state cache
+                data_clone.streaming_state.write().unwrap().remove(&session_id_for_save);
+                // Save the new assistant's native session ID for future --resume
                 if let Some(sid) = stream_result.agent_session_id {
                     if let Some(session) = data_clone.sessions.write().unwrap().get_mut(&session_id_for_save) {
                         session.agent_session_id = Some(sid);
@@ -461,13 +796,22 @@ pub async fn switch_assistant(
                     crate::save_sessions_to_disk(&data_clone.sessions.read().unwrap());
                 }
             }
-            Err(e) => eprintln!("[switch] Streaming task error: {}", e),
+            Err(e) => {
+                eprintln!("[switch] Streaming task error: {}", e);
+                // Clean up streaming status even on error
+                data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                data_clone.streaming_state.write().unwrap().remove(&session_id_for_save);
+            },
         }
 
+        // Final cleanup: remove streaming status and event channel
         data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_cleanup);
+        data_clone.streaming_state.write().unwrap().remove(&session_id_for_cleanup);
         data_clone.events_tx.write().unwrap().remove(&session_id_for_cleanup);
     });
 
+    // Return success immediately — the frontend will connect to SSE
+    // to receive the new assistant's streamed response.
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
         "sessionId": session_id,
@@ -482,6 +826,20 @@ pub async fn abort_session(
     path: web::Path<String>,
 ) -> HttpResponse {
     let session_id = path.into_inner();
+
+    // Remove the last user message that was aborted (the one without an assistant response)
+    {
+        let mut sessions = data.sessions.write().unwrap();
+        if let Some(session) = sessions.get_mut(&session_id) {
+            // Find and remove the last user message that doesn't have a corresponding assistant response
+            if let Some(last_msg) = session.messages.last() {
+                if last_msg.role == "user" {
+                    eprintln!("[abort] Removing aborted user message: {:?}", &last_msg.content[..last_msg.content.len().min(50)]);
+                    session.messages.pop();
+                }
+            }
+        }
+    }
 
     // Get and remove the PID
     let pid = data.running_pids.write().unwrap().remove(&session_id);
@@ -505,6 +863,7 @@ pub async fn abort_session(
         // Close the event channel so SSE connection closes and frontend resets
         data.events_tx.write().unwrap().remove(&session_id);
         data.streaming_sessions.write().unwrap().remove(&session_id);
+        data.streaming_state.write().unwrap().remove(&session_id);
 
         HttpResponse::Ok().json(serde_json::json!({
             "success": true,
@@ -514,6 +873,7 @@ pub async fn abort_session(
         // Also clean up event channel even if no PID
         data.events_tx.write().unwrap().remove(&session_id);
         data.streaming_sessions.write().unwrap().remove(&session_id);
+        data.streaming_state.write().unwrap().remove(&session_id);
 
         HttpResponse::Ok().json(serde_json::json!({
             "success": true,
@@ -546,19 +906,36 @@ pub async fn send_command(
     match req.cmd_type.as_str() {
         "save_message" => {
             if let Some(content) = &req.message {
-                let assistant_message = Message {
-                    role: "assistant".to_string(),
-                    content: content.clone(),
-                    timestamp: Utc::now().timestamp_millis(),
-                    content_blocks: req.content_blocks.clone(),
-                    assistant: Some(assistant_name.clone()),
-                };
-
-                if let Some(session) = data.sessions.write().unwrap().get_mut(&session_id) {
-                    session.messages.push(assistant_message);
+                let mut sessions = data.sessions.write().unwrap();
+                if let Some(session) = sessions.get_mut(&session_id) {
+                    // Check if the last message is already an assistant message (from save_event_progress)
+                    let last_is_assistant = session.messages.last()
+                        .map(|m| m.role == "assistant")
+                        .unwrap_or(false);
+                    
+                    if last_is_assistant {
+                        // Update existing assistant message instead of adding a new one
+                        if let Some(last_msg) = session.messages.last_mut() {
+                            last_msg.content = content.clone();
+                            if let Some(blocks) = &req.content_blocks {
+                                last_msg.content_blocks = Some(blocks.clone());
+                            }
+                            last_msg.timestamp = Utc::now().timestamp_millis();
+                        }
+                    } else {
+                        // Add new assistant message
+                        session.messages.push(Message {
+                            role: "assistant".to_string(),
+                            content: content.clone(),
+                            timestamp: Utc::now().timestamp_millis(),
+                            content_blocks: req.content_blocks.clone(),
+                            assistant: Some(assistant_name.clone()),
+                        });
+                    }
                     session.updated_at = Utc::now();
                 }
-
+                drop(sessions);
+                
                 crate::save_sessions_to_disk(&data.sessions.read().unwrap());
 
                 HttpResponse::Ok().json(serde_json::json!({
@@ -695,22 +1072,37 @@ pub async fn events(
         }
     };
 
+    let session_id_for_heartbeat = session_id.clone();
     let stream = async_stream::stream! {
         yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!(
             "data: {}\n\n",
             serde_json::json!({"type": "connected", "sessionId": session_id})
         )));
 
+        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        heartbeat_interval.tick().await; // Skip first immediate tick
+
         loop {
-            match rx.recv().await {
-                Ok(msg) => {
-                    yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!("data: {}\n\n", msg)));
+            tokio::select! {
+                msg = rx.recv() => {
+                    match msg {
+                        Ok(msg) => {
+                            yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!("data: {}\n\n", msg)));
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            break;
+                        }
+                    }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    break;
+                _ = heartbeat_interval.tick() => {
+                    // Send heartbeat to keep connection alive and detect disconnects
+                    yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!(
+                        "data: {}\n\n",
+                        serde_json::json!({"type": "heartbeat", "sessionId": session_id_for_heartbeat})
+                    )));
                 }
             }
         }

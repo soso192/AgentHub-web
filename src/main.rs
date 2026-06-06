@@ -13,6 +13,17 @@ use ai::claude::ClaudeAssistant;
 use ai::codex::CodexAssistant;
 use ai::pi::PiAssistant;
 
+/// Streaming state cache for real-time consistency
+/// This cache stores the current streaming state in memory,
+/// so when the user refreshes the page, they get the latest state immediately.
+#[derive(Debug, Clone)]
+pub struct StreamingState {
+    pub content_blocks: Vec<models::ContentBlock>,
+    pub final_result: String,
+    pub assistant_name: String,
+    pub last_updated: chrono::DateTime<chrono::Utc>,
+}
+
 pub struct AppState {
     pub registry: RwLock<AssistantRegistry>,
     pub sessions: RwLock<std::collections::HashMap<String, models::Session>>,
@@ -21,6 +32,8 @@ pub struct AppState {
     pub running_pids: RwLock<std::collections::HashMap<String, u32>>,
     /// Sessions currently streaming (for frontend to know which sessions are active)
     pub streaming_sessions: RwLock<std::collections::HashSet<String>>,
+    /// Streaming state cache for real-time consistency
+    pub streaming_state: RwLock<std::collections::HashMap<String, StreamingState>>,
 }
 
 /// Get the path to the sessions data file
@@ -103,6 +116,7 @@ async fn main() -> std::io::Result<()> {
         events_tx: RwLock::new(std::collections::HashMap::new()),
         running_pids: RwLock::new(std::collections::HashMap::new()),
         streaming_sessions: RwLock::new(std::collections::HashSet::new()),
+        streaming_state: RwLock::new(std::collections::HashMap::new()),
     });
 
     HttpServer::new(move || {
@@ -134,7 +148,7 @@ async fn main() -> std::io::Result<()> {
             // Static files (fallback)
             .default_service(web::route().to(static_files::serve))
     })
-    .bind("127.0.0.1:3030")?
+    .bind("0.0.0.0:3030")?
     .run()
     .await
 }

@@ -342,6 +342,18 @@ impl AiAssistant for PiAssistant {
         self.sessions.remove(session_id);
     }
 
+    /// Stream a session message through the Pi Agent CLI.
+    ///
+    /// The message is passed via stdin (not as a CLI argument) to avoid
+    /// Windows command-line escaping issues with long formatted messages
+    /// that contain newlines and markdown syntax.
+    ///
+    /// Pi CLI invocation:
+    ///   pi --mode json --print --model <model> [--provider <provider>] [--session <id>]
+    ///   stdin: <message>
+    ///
+    /// The CLI outputs JSON events to stdout, which are parsed and forwarded
+    /// to the frontend via the broadcast channel (SSE).
     fn stream_session(
         &self,
         session_id: &str,
@@ -350,40 +362,42 @@ impl AiAssistant for PiAssistant {
         message: &str,
         tx: Option<&broadcast::Sender<String>>,
         agent_session_id: Option<&str>,
+        pid_callback: Option<Box<dyn Fn(u32) + Send>>,
     ) -> StreamResult {
         eprintln!("[pi] stream_session called: session={}, model={}, pi_cmd={}", session_id, model, self.pi_cmd);
         eprintln!("[pi] message (len={}): {:?}",
             message.len(),
             message.chars().take(500).collect::<String>());
+
+        // ── Build CLI arguments ────────────────────────────────────────
         let mut args = vec![
-            "--mode".to_string(),
-            "json".to_string(),
-            "--print".to_string(),
-            "--model".to_string(),
-            model.to_string(),
+            "--mode".to_string(), "json".to_string(),     // JSON output format
+            "--print".to_string(),                         // Non-interactive: process and exit
+            "--model".to_string(), model.to_string(),       // Model ID
         ];
 
-        // Auto-detect provider from pi's models.json
+        // Auto-detect provider from pi's models.json (e.g. "xiaomi", "anthropic")
         if let Some(provider) = Self::find_provider_for_model(model) {
             args.push("--provider".to_string());
             args.push(provider);
         }
 
-        // Resume session if we have a session ID
+        // Resume an existing Pi session if we have a session ID
         if let Some(sid) = agent_session_id {
             args.push("--session".to_string());
             args.push(sid.to_string());
         }
 
-        // Message is passed via stdin to avoid Windows CLI argument
-        // length/escaping issues with long formatted messages.
+        // Note: The message is NOT added as a CLI argument here.
+        // It is written to stdin below to avoid Windows cmd.exe escaping issues.
 
+        // ── Spawn the Pi Agent process ─────────────────────────────────
         let mut cmd = self.create_pi_command();
         cmd.args(&args)
             .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(Stdio::piped())   // we'll write the message to stdin
+            .stdout(Stdio::piped())  // read JSON events from stdout
+            .stderr(Stdio::piped()); // drain stderr to prevent blocking
 
         eprintln!("[pi] cmd: {:?}, args: {:?}", cmd.get_program(), cmd.get_args().collect::<Vec<_>>());
 
@@ -403,14 +417,25 @@ impl AiAssistant for PiAssistant {
         };
 
         let pid = child.id();
-        // Write message to stdin and close it
+
+        // Report PID immediately via callback for abort support
+        if let Some(ref callback) = pid_callback {
+            callback(pid);
+        }
+
+        // ── Write message to stdin ────────────────────────────────────
+        // The message (including conversation history for assistant switches)
+        // is passed via stdin to avoid Windows cmd.exe argument escaping issues.
+        // After writing, we flush and close stdin so the CLI knows input is complete.
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
             let _ = stdin.write_all(message.as_bytes());
             let _ = stdin.flush();
         }
 
-        // Drain stderr in background to prevent blocking
+        // ── Drain stderr in background ─────────────────────────────────
+        // If we don't read stderr, the pipe buffer can fill up and cause
+        // the child process to block (deadlock on Windows).
         if let Some(stderr) = child.stderr.take() {
             std::thread::spawn(move || {
                 use std::io::BufRead;
@@ -423,14 +448,17 @@ impl AiAssistant for PiAssistant {
             });
         }
 
-        // Read stdout line by line
+        // ── Parse stdout JSON events ───────────────────────────────────
+        // Pi Agent outputs one JSON object per line to stdout.
+        // Each line represents an event (session, message_update, result, etc.).
+        // We parse each line and forward relevant data to the frontend via SSE.
         let stdout = child.stdout.take().expect("stdout should be piped");
         let reader = std::io::BufReader::new(stdout);
         use std::io::BufRead;
 
-        let mut pi_session_id: Option<String> = None;
+        let mut pi_session_id: Option<String> = None;  // captured from "session" event
         let mut line_count = 0;
-        let mut got_result = false;
+        let mut got_result = false;  // tracks whether we received a final result
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
@@ -441,6 +469,7 @@ impl AiAssistant for PiAssistant {
             };
             line_count += 1;
 
+            // Parse the JSON event
             let event: serde_json::Value = match serde_json::from_str(&line) {
                 Ok(v) => v,
                 Err(e) => {
@@ -453,11 +482,13 @@ impl AiAssistant for PiAssistant {
             let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
             match event_type {
+                // ── Session init event ──────────────────────────────────
+                // Contains the Pi Agent's native session ID for --resume
                 "session" => {
-                    // Capture session ID for future --session
                     if let Some(sid) = event.get("id").and_then(|s| s.as_str()) {
                         pi_session_id = Some(sid.to_string());
                     }
+                    // Notify frontend that streaming has started
                     send_pi_event(tx, serde_json::json!({
                         "type": "start",
                         "sessionId": session_id,
@@ -523,11 +554,12 @@ impl AiAssistant for PiAssistant {
                 "tool_execution_start" => {
                     let tool_id = event.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("");
                     let tool_name = event.get("toolName").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let args = event.get("args").cloned().unwrap_or(serde_json::json!({}));
                     send_pi_event(tx, serde_json::json!({
                         "type": "tool_call",
                         "id": tool_id,
                         "name": tool_name,
-                        "input": {}
+                        "input": args
                     }));
                 }
                 "tool_execution_end" => {

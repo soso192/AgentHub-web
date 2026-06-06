@@ -262,6 +262,7 @@ impl AiAssistant for CodexAssistant {
         message: &str,
         tx: Option<&broadcast::Sender<String>>,
         agent_session_id: Option<&str>,
+        pid_callback: Option<Box<dyn Fn(u32) + Send>>,
     ) -> StreamResult {
         eprintln!("[codex] stream_session called: session={}, model={}", session_id, model);
 
@@ -304,6 +305,12 @@ impl AiAssistant for CodexAssistant {
         };
 
         let pid = child.id();
+
+        // Report PID immediately via callback for abort support
+        if let Some(ref callback) = pid_callback {
+            callback(pid);
+        }
+
         // Close stdin
         if let Some(stdin) = child.stdin.take() {
             drop(stdin);
