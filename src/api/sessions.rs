@@ -38,12 +38,52 @@ pub async fn get_session(
     let sessions = data.sessions.read().unwrap();
 
     if let Some(session) = sessions.get(&session_id) {
+        // Build messages array, potentially with streaming state injected
+        let mut messages = session.messages.clone();
+        
+        // Check if there's active streaming state for this session
+        let streaming_state = data.streaming_state.read().unwrap();
+        if let Some(state) = streaming_state.get(&session_id) {
+            // If the last message is from assistant, update it with streaming state
+            if let Some(last_msg) = messages.last_mut() {
+                if last_msg.role == "assistant" {
+                    last_msg.content = if state.final_result.is_empty() {
+                        "(streaming...)".to_string()
+                    } else {
+                        state.final_result.clone()
+                    };
+                    last_msg.content_blocks = if state.content_blocks.is_empty() {
+                        None
+                    } else {
+                        Some(state.content_blocks.clone())
+                    };
+                } else {
+                    // Add a new assistant message from streaming state
+                    messages.push(crate::models::Message {
+                        role: "assistant".to_string(),
+                        content: if state.final_result.is_empty() {
+                            "(streaming...)".to_string()
+                        } else {
+                            state.final_result.clone()
+                        },
+                        timestamp: state.last_updated.timestamp_millis(),
+                        content_blocks: if state.content_blocks.is_empty() {
+                            None
+                        } else {
+                            Some(state.content_blocks.clone())
+                        },
+                        assistant: Some(state.assistant_name.clone()),
+                    });
+                }
+            }
+        }
+        
         HttpResponse::Ok().json(serde_json::json!({
             "sessionId": session.id,
             "assistant": session.assistant,
             "cwd": session.cwd,
             "model": session.model,
-            "messages": session.messages,
+            "messages": messages,
             "created": session.created_at.to_rfc3339(),
             "modified": session.updated_at.to_rfc3339(),
         }))

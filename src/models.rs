@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
+fn is_false(b: &bool) -> bool { !b }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -16,6 +18,10 @@ pub struct Session {
     /// Agent's native session ID for session continuity (Claude --resume / Pi --session)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
+    /// Flag: history context was already sent to the new assistant via stream_session during switch.
+    /// When true, start_prompt should NOT prepend auto_history on the first user message.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub history_already_sent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

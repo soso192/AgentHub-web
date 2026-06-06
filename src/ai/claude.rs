@@ -404,6 +404,7 @@ impl AiAssistant for ClaudeAssistant {
         message: &str,
         tx: Option<&broadcast::Sender<String>>,
         existing_agent_session_id: Option<&str>,
+        pid_callback: Option<Box<dyn Fn(u32) + Send>>,
     ) -> StreamResult {
         eprintln!("[claude] stream_session: session={}, model={}, resume={:?}", session_id, model, existing_agent_session_id);
         let git_bash = &self.git_bash_path;
@@ -445,6 +446,11 @@ impl AiAssistant for ClaudeAssistant {
         };
 
         let pid = child.id();
+
+        // Report PID immediately via callback for abort support
+        if let Some(ref callback) = pid_callback {
+            callback(pid);
+        }
 
         // Write message to stdin and close it (Claude CLI needs EOF to start processing)
         if let Some(mut stdin) = child.stdin.take() {

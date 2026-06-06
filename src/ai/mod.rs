@@ -53,6 +53,8 @@ pub trait AiAssistant: Send + Sync {
 
     /// Stream a session message. Each agent implements its own CLI invocation.
     /// Default implementation does nothing (returns empty StreamResult).
+    /// `pid_callback` is called with the child process PID as soon as it's spawned,
+    /// allowing the caller to store the PID for abort support before streaming completes.
     fn stream_session(
         &self,
         _session_id: &str,
@@ -61,6 +63,7 @@ pub trait AiAssistant: Send + Sync {
         _message: &str,
         _tx: Option<&broadcast::Sender<String>>,
         _agent_session_id: Option<&str>,
+        _pid_callback: Option<Box<dyn Fn(u32) + Send>>,
     ) -> StreamResult {
         StreamResult { agent_session_id: None, pid: None }
     }

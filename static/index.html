@@ -33,11 +33,12 @@
 
             <!-- File Browser -->
             <div id="fileBrowser" class="file-browser">
-                <div class="file-browser-header" onclick="toggleFileBrowser()">
-                    <span class="file-browser-icon">📁</span>
-                    <span class="file-browser-title">Files</span>
-                    <span id="fileBrowserPath" class="file-browser-path"></span>
-                    <span id="fileBrowserToggle" class="file-browser-toggle">▶</span>
+                <div class="file-browser-header">
+                    <span class="file-browser-icon" onclick="toggleFileBrowser()">📁</span>
+                    <span class="file-browser-title" onclick="toggleFileBrowser()">Files</span>
+                    <span id="fileBrowserPath" class="file-browser-path" onclick="toggleFileBrowser()"></span>
+                    <button id="refreshFilesBtn" class="file-refresh-btn" onclick="event.stopPropagation(); refreshFiles();" title="Refresh files">🔄</button>
+                    <span id="fileBrowserToggle" class="file-browser-toggle" onclick="toggleFileBrowser()">▶</span>
                 </div>
                 <div id="fileBrowserContent" class="file-browser-content" style="display:none;">
                     <div id="fileList" class="file-list"></div>

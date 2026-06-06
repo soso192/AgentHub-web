@@ -59,7 +59,7 @@ pub fn process_stream_line(
                             "tool_use" => {
                                 let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("");
                                 let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                let input = block.get("input").cloned().unwrap_or(Value::Null);
+                                let input = block.get("input").cloned().unwrap_or_else(|| serde_json::json!({}));
                                 send_event(tx, serde_json::json!({
                                     "type": "tool_call",
                                     "id": id,
