@@ -66,19 +66,27 @@ fn load_sessions_from_disk() -> std::collections::HashMap<String, models::Sessio
     }
 }
 
-/// Save sessions to disk
+/// Save sessions to disk (同步版本，用于 spawn_blocking 内部)
 pub fn save_sessions_to_disk(sessions: &std::collections::HashMap<String, models::Session>) {
     let path = get_sessions_file_path();
     match serde_json::to_string_pretty(sessions) {
         Ok(content) => {
             if let Err(e) = std::fs::write(&path, content) {
-                log::error!("⚠️ Failed to save sessions: {}", e);
+                log::error!("Failed to save sessions: {}", e);
             }
         }
         Err(e) => {
-            log::error!("⚠️ Failed to serialize sessions: {}", e);
+            log::error!("Failed to serialize sessions: {}", e);
         }
     }
+}
+
+/// Save sessions to disk (异步版本，不阻塞 tokio 工作线程)
+pub fn save_sessions_to_disk_async(data: &AppState) {
+    let sessions_snapshot = data.sessions.read().unwrap().clone();
+    tokio::task::spawn_blocking(move || {
+        save_sessions_to_disk(&sessions_snapshot);
+    });
 }
 
 #[actix_web::main]

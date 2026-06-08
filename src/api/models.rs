@@ -75,7 +75,7 @@ pub async fn get_models(data: web::Data<AppState>, req: HttpRequest) -> HttpResp
 
 /// List all registered assistants with availability status
 pub async fn list_assistants(data: web::Data<AppState>) -> HttpResponse {
-    let mut registry = data.registry.write().unwrap();
+    let registry = data.registry.read().unwrap();
     let assistants = registry.list_available().await;
 
     HttpResponse::Ok().json(serde_json::json!({
