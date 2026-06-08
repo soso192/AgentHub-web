@@ -88,7 +88,8 @@ pub struct AssistantRegistry {
     assistants: std::collections::HashMap<String, AssistantHandle>,
     default_name: String,
     /// Cached availability results (name -> (available, version))
-    availability_cache: std::collections::HashMap<String, (bool, Option<String>)>,
+    /// 使用 Mutex 实现内部可变性，这样 list_available 只需要 &self（读锁）
+    availability_cache: std::sync::Mutex<std::collections::HashMap<String, (bool, Option<String>)>>,
 }
 
 impl AssistantRegistry {
@@ -96,7 +97,7 @@ impl AssistantRegistry {
         Self {
             assistants: std::collections::HashMap::new(),
             default_name: String::new(),
-            availability_cache: std::collections::HashMap::new(),
+            availability_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -154,16 +155,24 @@ impl AssistantRegistry {
     }
 
     /// List all assistants with availability check (cached)
-    pub async fn list_available(&mut self) -> Vec<AssistantInfo> {
+    /// 只需要 &self，通过 Mutex 内部可变性更新缓存
+    pub async fn list_available(&self) -> Vec<AssistantInfo> {
         let mut result = Vec::new();
         for (name, handle) in self.assistants.iter() {
             let a = handle.read().unwrap();
-            let (available, version) = if let Some(cached) = self.availability_cache.get(name) {
-                cached.clone()
+            let cached = {
+                let cache = self.availability_cache.lock().unwrap();
+                cache.get(name).cloned()
+            };
+            let (available, version) = if let Some((avail, ver)) = cached {
+                (avail, ver)
             } else {
                 let avail = a.is_available().await;
                 let ver = if avail { a.version().await } else { None };
-                self.availability_cache.insert(name.clone(), (avail, ver.clone()));
+                {
+                    let mut cache = self.availability_cache.lock().unwrap();
+                    cache.insert(name.clone(), (avail, ver.clone()));
+                }
                 (avail, ver)
             };
             result.push(AssistantInfo {
