@@ -278,11 +278,14 @@ function renderSessionList() {
 // This is called when the user clicks on a session in the sidebar.
 // It syncs the topbar assistant/model selectors, loads messages
 // from the backend (if not already loaded), and shows the session view.
+let selectSessionGeneration = 0; // 竞态条件保护：每次调用递增，丢弃过期调用
 async function selectSession(sessionId) {
+    const gen = ++selectSessionGeneration;
     currentSessionId = sessionId;
 
     // Reload sessions to get fresh isStreaming status from backend
     await loadSessions();
+    if (gen !== selectSessionGeneration) return; // 用户已切换到其他会话，丢弃本次结果
     renderSessionList();
 
     // Sync the topbar assistant/model selectors with this session's settings.
@@ -292,10 +295,8 @@ async function selectSession(sessionId) {
     if (sessionInfo) {
         if (sessionInfo.assistant) { currentAssistant = sessionInfo.assistant; assistantSelector.value = sessionInfo.assistant; }
         if (sessionInfo.model) { currentModel = sessionInfo.model; modelSelector.value = sessionInfo.model; statusDisplay.textContent = sessionInfo.model; }
-        // Reload model list for the selected assistant, then restore this session's model.
-        // loadModels() sets currentModel to the assistant's default, so we restore
-        // the session's actual model afterward.
         await loadModels();
+        if (gen !== selectSessionGeneration) return;
         if (sessionInfo.model) { currentModel = sessionInfo.model; modelSelector.value = sessionInfo.model; statusDisplay.textContent = sessionInfo.model; }
     }
 
@@ -306,6 +307,7 @@ async function selectSession(sessionId) {
     if (view.children.length === 0) {
         try {
             const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`);
+            if (gen !== selectSessionGeneration) return;
             const data = await res.json();
             if (data.messages) renderMessagesInto(view, data.messages, data.assistant);
         } catch (e) { console.error('Failed to load session:', e); }
@@ -1512,7 +1514,8 @@ function setupEventListeners() {
     newSessionBtn.onclick = () => { newSessionForm.style.display = newSessionForm.style.display === 'none' ? 'block' : 'none'; };
     cancelSessionBtn.onclick = () => { newSessionForm.style.display = 'none'; cwdInput.value = ''; };
     createSessionBtn.onclick = createSession;
-    sendBtn.onclick = sendMessage;
+    // 使用箭头函数调用 sendMessage()（按名称解析），这样猴子补丁能生效
+    sendBtn.onclick = () => sendMessage();
     messageInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
     messageInput.oninput = () => { messageInput.style.height = 'auto'; messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px'; };
     assistantSelector.onchange = (e) => selectAssistant(e.target.value);

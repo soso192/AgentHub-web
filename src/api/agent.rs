@@ -4,6 +4,11 @@ use crate::models::{NewSessionRequest, StartPromptRequest, SwitchAssistantReques
 use crate::AppState;
 use chrono::Utc;
 
+/// 异步保存会话到磁盘（在 async handler 中使用，不阻塞 tokio 工作线程）
+fn save_async(data: &AppState) {
+    crate::save_sessions_to_disk_async(data);
+}
+
 /// Save streaming event progress to session (called by the event saver task)
 /// This updates both the in-memory cache and the session file.
 fn save_event_progress(
@@ -123,9 +128,9 @@ pub async fn new_session(
     };
 
     data.sessions.write().unwrap().insert(session_id.clone(), session);
-    crate::save_sessions_to_disk(&data.sessions.read().unwrap());
+    save_async(&data);
 
-    let (tx, _) = broadcast::channel::<String>(256);
+    let (tx, _) = broadcast::channel::<String>(1024);
     data.events_tx.write().unwrap().insert(session_id.clone(), tx);
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -174,7 +179,7 @@ pub async fn start_prompt(
         session.updated_at = Utc::now();
     }
 
-    crate::save_sessions_to_disk(&data.sessions.read().unwrap());
+    save_async(&data);
 
     // Get or create the broadcast sender for this session
     let tx: Option<broadcast::Sender<String>> = {
@@ -184,7 +189,7 @@ pub async fn start_prompt(
             Some(tx.clone())
         } else {
             log::debug!("[start_prompt] creating new events_tx channel");
-            let (tx, _) = broadcast::channel::<String>(256);
+            let (tx, _) = broadcast::channel::<String>(1024);
             channels.insert(session_id.clone(), tx.clone());
             Some(tx)
         }
@@ -306,7 +311,10 @@ pub async fn start_prompt(
                             last_save = std::time::Instant::now();
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("[saver] lagged: dropped {} events for session={}", n, saver_sid);
+                        continue;
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -642,7 +650,7 @@ pub async fn switch_assistant(
         }
     }
 
-    crate::save_sessions_to_disk(&data.sessions.read().unwrap());
+    save_async(&data);
 
     // ── Step 6: Clean up the old assistant's internal session ──────────
     {
@@ -654,7 +662,7 @@ pub async fn switch_assistant(
     }
 
     // ── Step 7: Create SSE broadcast channel ───────────────────────────
-    let (tx, _) = broadcast::channel::<String>(256);
+    let (tx, _) = broadcast::channel::<String>(1024);
     data.events_tx.write().unwrap().insert(session_id.clone(), tx.clone());
 
     // ── Step 7.5: Spawn event saver for switch ────────────────────────
@@ -743,7 +751,10 @@ pub async fn switch_assistant(
                             last_save = std::time::Instant::now();
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("[saver:switch] lagged: dropped {} events for session={}", n, saver_sid);
+                        continue;
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -979,8 +990,8 @@ pub async fn send_command(
                     session.updated_at = Utc::now();
                 }
                 drop(sessions);
-                
-                crate::save_sessions_to_disk(&data.sessions.read().unwrap());
+
+                save_async(&data);
 
                 HttpResponse::Ok().json(serde_json::json!({
                     "success": true,
@@ -1118,7 +1129,7 @@ pub async fn events(
             None => {
                 log::debug!("[sse] no channel found for session={}, creating new one", session_id);
                 drop(channels);
-                let (tx, _) = broadcast::channel::<String>(256);
+                let (tx, _) = broadcast::channel::<String>(1024);
                 let rx = tx.subscribe();
                 data.events_tx.write().unwrap().insert(session_id.clone(), tx);
                 rx
@@ -1152,8 +1163,8 @@ pub async fn events(
                             log::trace!("[sse] sending event #{} for session={}, type={}", event_count, session_id_clone, event_type);
                             yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!("data: {}\n\n", msg)));
                         }
-                        Err(broadcast::error::RecvError::Lagged(_)) => {
-                            log::warn!("[sse] WARNING: receiver lagged for session={}", session_id_clone);
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            log::warn!("[sse] lagged: dropped {} events for session={}", n, session_id_clone);
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
