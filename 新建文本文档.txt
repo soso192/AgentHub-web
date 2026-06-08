@@ -1,0 +1,111 @@
+## 🏗️ 架构分析报告
+
+经过深入分析后端 Rust 代码和前端 JavaScript 代码，以下是发现的架构问题，按严重程度分类：
+
+---
+
+### 🔴 高优先级问题
+
+#### 1. 前端 `streamingSessions` Map 的所有权冲突
+
+**这是最严重的架构问题。**
+
+`connectSSE`（主视图）和 `connectPanelSSE`（分屏）都用 `sessionId` 作为 key 写入同一个 `streamingSessions` Map。如果同一个会话同时出现在主视图和分屏中，后写入的会**覆盖**前一个的 state 对象，导致：
+
+- 被覆盖的 EventSource 成为孤儿连接，永远不会被关闭（内存泄漏）
+- 被覆盖的状态对象丢失引用，其 DOM 更新全部丢失
+
+```
+connectSSE:      streamingSessions.set("abc", mainState)    // line 657
+connectPanelSSE: streamingSessions.set("abc", panelState)   // line 2007 ← 覆盖了 mainState！
+```
+
+#### 2. `list_assistants` 持有写锁执行子进程
+
+`api/models.rs:78` 中 `list_assistants` 在持有 `registry.write()` 锁的情况下调用 `is_available()` 和 `version()`，这些方法会 spawn 子进程（`claude --version` 等）。如果某个 CLI 响应慢（5秒），**所有**会话创建和流式请求都会被阻塞。
+
+#### 3. 同步文件 I/O 阻塞异步运行时
+
+`save_sessions_to_disk` 使用 `std::fs::write`（同步），但在 async handler 中被直接调用（`agent.rs:126, 177, 469` 等多处）。这会阻塞 tokio 工作线程，影响并发性能。
+
+#### 4. `renderGrid()` 销毁活跃的流式 DOM
+
+`renderGrid()` 每次调用都 `grid.innerHTML = ''`（line 1603），销毁所有面板 DOM。如果有面板正在流式传输：
+- `st.streamingDiv` 引用变成 detached DOM 节点
+- EventSource 仍在运行，但新事件写入了已脱离文档的节点
+- 用户看到的是流突然"消失"了
+
+---
+
+### 🟡 中优先级问题
+
+#### 5. `sendMessage` 猴子补丁无效
+
+```javascript
+// line 1240: init() 中绑定了原始 sendMessage
+sendBtn.onclick = sendMessage;
+
+// line 2462: 之后才覆盖 sendMessage
+const originalSendMessage = sendMessage;
+sendMessage = function(...) { ... originalSendMessage.call(this, ...); };
+```
+
+`sendBtn.onclick` 已经绑定了原始函数引用，覆盖全局变量**不会**改变已绑定的 click handler。发送按钮仍然调用原始的 `sendMessage`。
+
+#### 6. Claude/Codex 不使用 `on_result_callback`
+
+`claude.rs` 和 `codex.rs` 的 `stream_session` 都忽略了 `on_result_callback` 参数。这意味着 `streaming_sessions` 的清理只在外层 async task 完成后才发生，存在一个窗口期：前端已经收到 `result` 事件，但后端仍报告 `isStreaming=true`。
+
+#### 7. broadcast channel 容量 256 且静默丢弃
+
+所有 broadcast channel 容量为 256。如果 AI 产生超过 256 个事件（长对话+多次工具调用），`RecvError::Lagged` 会导致事件被**静默丢弃**，前端丢失工具调用等中间事件。
+
+#### 8. 两种 finish 函数行为不一致
+
+| 行为 | `finishStreaming` | `finishPanelStreaming` |
+|------|-------------------|----------------------|
+| 清除 `noEventTimeout` | ✅ | ❌ |
+| 后端同步重试 | ✅ (5次退避) | ❌ |
+| 触发 `onDone` 回调 | ✅ | ❌ |
+
+#### 9. `selectSession` 竞态条件
+
+快速点击不同会话时，多个 `selectSession` 异步调用同时进行。每个都立即设置 `currentSessionId`，后完成的"赢"，但中间状态不一致。
+
+#### 10. SSE 断开时无 channel 清理
+
+浏览器关闭标签页时，`rx` 被 drop，但 `tx` 仍留在 `events_tx` 中直到流结束。事件被发送到无人消费的 channel，浪费内存。
+
+---
+
+### 🟢 低优先级问题
+
+#### 11. `streaming_sessions` 双重清理
+
+`on_result_callback` 和外层 cleanup block 都移除 `streaming_sessions`。无害但职责不清。
+
+#### 12. `RwLock::unwrap()` 全局使用
+
+任何一次 panic 会 poison 所有锁，导致整个服务器崩溃。应该用 `unwrap_or_else` 或自定义恢复逻辑。
+
+#### 13. 前端单文件 2477 行
+
+- `handleStreamEvent`（140行）和 `handlePanelStreamEvent`（140行）几乎完全重复
+- `renderMessagesInto` 和 `renderPanelMessages` 也是重复
+- 无模块系统，无构建工具
+
+---
+
+### 📋 建议的修复优先级
+
+| 优先级 | 问题 | 修复方案 |
+|--------|------|----------|
+| **P0** | streamingSessions 所有权冲突 | 使用复合 key `owner:sessionId` 或在写入前检查并关闭旧连接 |
+| **P0** | renderGrid 销毁活跃 DOM | 重建 DOM 后恢复流式引用，或跳过活跃面板的重建 |
+| **P1** | list_assistants 写锁阻塞 | 改用读锁，或缓存可用性结果 |
+| **P1** | 同步文件 I/O | 改用 `tokio::spawn_blocking` 或 debounce |
+| **P1** | sendMessage 猴子补丁 | 改用 `addEventListener` + 可更新引用 |
+| **P2** | Claude/Codex 不用 callback | 统一所有 agent 的 `on_result_callback` 使用 |
+| **P2** | channel 容量 | 增大到 1024 或改为有界通知机制 |
+| **P2** | finish 函数不一致 | 提取公共的 `finishStreamBase()` |
+| **P3** | 前端代码重复 | 提取 `StreamConnection` 类，拆分 ES 模块 |

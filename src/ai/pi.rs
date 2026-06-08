@@ -107,7 +107,7 @@ impl PiAssistant {
         // Fallback: use the first provider that has an API key configured
         for (provider_name, provider_config) in providers {
             if provider_config.get("apiKey").and_then(|k| k.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
-                eprintln!("[pi] model '{}' not found, falling back to provider '{}'", model, provider_name);
+                log::warn!("[pi] model '{}' not found, falling back to provider '{}'", model, provider_name);
                 return Some(provider_name.clone());
             }
         }
@@ -363,11 +363,10 @@ impl AiAssistant for PiAssistant {
         tx: Option<&broadcast::Sender<String>>,
         agent_session_id: Option<&str>,
         pid_callback: Option<Box<dyn Fn(u32) + Send>>,
+        on_result_callback: Option<Box<dyn Fn() + Send>>,
     ) -> StreamResult {
-        eprintln!("[pi] stream_session called: session={}, model={}, pi_cmd={}", session_id, model, self.pi_cmd);
-        eprintln!("[pi] message (len={}): {:?}",
-            message.len(),
-            message.chars().take(500).collect::<String>());
+        log::info!("[pi] stream_session called: session={}, model={}, pi_cmd={}", session_id, model, self.pi_cmd);
+        log::debug!("[pi] message len={}", message.len());
 
         // ── Build CLI arguments ────────────────────────────────────────
         let mut args = vec![
@@ -399,20 +398,20 @@ impl AiAssistant for PiAssistant {
             .stdout(Stdio::piped())  // read JSON events from stdout
             .stderr(Stdio::piped()); // drain stderr to prevent blocking
 
-        eprintln!("[pi] cmd: {:?}, args: {:?}", cmd.get_program(), cmd.get_args().collect::<Vec<_>>());
+        log::debug!("[pi] cmd: {:?}, args: {:?}", cmd.get_program(), cmd.get_args().collect::<Vec<_>>());
 
         let mut child = match cmd.spawn() {
             Ok(c) => {
-                eprintln!("[pi] process spawned successfully, pid={:?}", c.id());
+                log::info!("[pi] process spawned successfully, pid={:?}", c.id());
                 c
             }
             Err(e) => {
-                eprintln!("[pi] failed to spawn: {}", e);
+                log::error!("[pi] failed to spawn: {}", e);
                 send_pi_event(tx, serde_json::json!({
                     "type": "error",
                     "message": format!("Failed to start Pi Agent: {}", e)
                 }));
-                return StreamResult { agent_session_id: None, pid: None };
+                return StreamResult { agent_session_id: None, pid: None, result_sent: false };
             }
         };
 
@@ -442,7 +441,7 @@ impl AiAssistant for PiAssistant {
                 let reader = std::io::BufReader::new(stderr);
                 for line in reader.lines() {
                     if let Ok(line) = line {
-                        eprintln!("[pi:stderr] {}", line);
+                        log::debug!("[pi:stderr] {}", line);
                     }
                 }
             });
@@ -459,11 +458,13 @@ impl AiAssistant for PiAssistant {
         let mut pi_session_id: Option<String> = None;  // captured from "session" event
         let mut line_count = 0;
         let mut got_result = false;  // tracks whether we received a final result
+        let mut result_callback_called = false;  // tracks whether on_result_callback was called
+        let mut accumulated_text = String::new();  // accumulate text across multiple turns
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("[pi] read error: {}", e);
+                    log::error!("[pi] read error: {}", e);
                     continue;
                 }
             };
@@ -474,7 +475,7 @@ impl AiAssistant for PiAssistant {
                 Ok(v) => v,
                 Err(e) => {
                     let preview: String = line.chars().take(100).collect();
-                    eprintln!("[pi] json parse error: {} (line: {})", e, preview);
+                    log::warn!("[pi] json parse error: {} (line: {})", e, preview);
                     continue;
                 }
             };
@@ -520,18 +521,15 @@ impl AiAssistant for PiAssistant {
                                 }
                             }
                             "text_end" => {
-                                // Text ended - send final result
+                                // Text ended — 不发送 chunk 事件！
+                                // text_delta 已经逐字发送了增量文本，前端已累加到 DOM。
+                                // 如果这里再发送完整文本，会导致 DOM 中文本重复。
+                                // turn_end/agent_end/fallback 会处理最终结果。
                                 if let Some(content) = ame.get("content").and_then(|c| c.as_str()) {
                                     let preview: String = content.chars().take(100).collect();
-                                    eprintln!("[pi] text_end: content={}", preview);
-                                    send_pi_event(tx, serde_json::json!({
-                                        "type": "result",
-                                        "content": content,
-                                        "model": model
-                                    }));
-                                    got_result = true;
+                                    log::debug!("[pi] text_end: content={} (not re-sent, already streamed via deltas)", preview);
                                 } else {
-                                    eprintln!("[pi] text_end: no content field in ame");
+                                    log::debug!("[pi] text_end: no content field in ame");
                                 }
                             }
                             "tool_use_start" => {
@@ -575,52 +573,144 @@ impl AiAssistant for PiAssistant {
                     }));
                 }
                 "turn_end" => {
-                    // Fallback: extract final text from turn_end if text_end wasn't received
+                    // ── Pi Agent 的 turn_end 事件 ──
+                    //
+                    // Pi Agent 是多轮对话 Agent：一个 prompt 可能触发多个 turn，
+                    // 每个 turn 包含：thinking → tool_call → tool_result → text
+                    //
+                    // turn_end 在每个 turn 结束时触发，但不代表 Agent 整体完成。
+                    // 如果在 turn_end 发送 "result" 事件，前端会调用 finishStreaming()
+                    // 关闭 SSE 连接，导致后续 turn 的事件无法送达。
+                    //
+                    // 因此这里只累积文本，不发送 result。最终的 result 在以下时机发送：
+                    // 1. agent_end 事件（如果 Pi Agent 发送了此事件）
+                    // 2. 流结束时的 fallback（如果 Pi Agent 没有发送 agent_end）
                     if let Some(msg) = event.get("message") {
                         if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
                             for block in content_arr {
                                 if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                                     if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                        send_pi_event(tx, serde_json::json!({
-                                            "type": "result",
-                                            "content": text,
-                                            "model": model
-                                        }));
-                                        got_result = true;
+                                        accumulated_text.push_str(text);
                                     }
                                 }
                             }
                         }
                     }
+                    log::debug!("[pi] turn_end: accumulated_text len={}", accumulated_text.len());
                 }
                 "agent_end" => {
+                    // ── Pi Agent 的 agent_end 事件 ──
+                    //
+                    // 这是 Agent 会话的真正结束。此时发送最终的 result 事件。
+                    // 前端收到 result 后会调用 finishStreaming() 关闭 SSE 连接——
+                    // 这是正确的，因为 Agent 已经完成了所有工作。
+                    //
+                    // 注意：Pi Agent 可能不会发送 agent_end 事件（取决于 CLI 版本）。
+                    // 如果没有 agent_end，流结束时的 fallback 代码会发送累积的文本。
+                    log::info!("[pi] agent_end: sending final result, accumulated_text len={}", accumulated_text.len());
+                    send_pi_event(tx, serde_json::json!({
+                        "type": "result",
+                        "content": accumulated_text,
+                        "model": model
+                    }));
                     got_result = true;
+                    // 调用 on_result_callback 清理后端的 streaming_sessions
+                    // 这会让前端的 isStreaming 查询返回 false
+                    if !result_callback_called {
+                        result_callback_called = true;
+                        if let Some(ref callback) = on_result_callback {
+                            log::debug!("[pi] calling on_result_callback after agent_end");
+                            callback();
+                        }
+                    }
                 }
                 _ => {}
             }
         }
 
+        // ── 等待 Pi Agent 进程退出 ──
+        // 此时 stdout 已经读完（for line in reader.lines() 循环结束），
+        // 说明 Pi Agent 进程已经关闭了 stdout（通常是进程退出）。
         let exit_status = child.wait();
-        eprintln!("[pi] stream loop ended, {} lines processed, exit={:?}", line_count, exit_status);
+        log::info!("[pi] stream loop ended, {} lines processed, exit={:?}, got_result={}, accumulated_text_len={}",
+            line_count, exit_status, got_result, accumulated_text.len());
 
-        // If no result was received, send an error so frontend doesn't hang
+        // ══════════════════════════════════════════════════════════════
+        //  Fallback：确保前端一定收到 result 或 error 事件
+        // ══════════════════════════════════════════════════════════════
+        //
+        // 前端在等待 result/error 事件来结束 SSE 连接。如果这里不发送，
+        // 前端会一直等待直到 120 秒安全超时触发（用户看到的就是 SSE 断开）。
+        //
+        // 三种情况：
+        // 1. got_result = true：agent_end 已经发送了 result，跳过
+        // 2. accumulated_text 非空：有文本但没有 agent_end，发送累积文本作为 result
+        // 3. 既没有 result 也没有文本：发送 error 事件
+        //
+        // 注意：Pi Agent 可能不发送 agent_end 事件（取决于 CLI 版本），
+        // 所以这个 fallback 是必需的。大多数情况下走的是第 2 种路径。
         if !got_result {
-            let error_msg = if line_count <= 1 {
-                "Pi Agent exited without producing output. Check API key and model configuration.".to_string()
+            if !accumulated_text.is_empty() {
+                // ── 情况 2：发送累积文本作为最终结果 ──
+                // 这是最常见的路径：Pi Agent 通过 turn_end 累积了文本，
+                // 但没有发送 agent_end。我们在进程退出后发送累积的文本。
+                log::info!("[pi] >>> SENDING FINAL RESULT (no agent_end), accumulated_text len={}", accumulated_text.len());
+                let receivers = tx.as_ref().map(|t| t.receiver_count()).unwrap_or(0);
+                log::debug!("[pi] >>> receivers before send: {}", receivers);
+                send_pi_event(tx, serde_json::json!({
+                    "type": "result",
+                    "content": accumulated_text,
+                    "model": model
+                }));
+                got_result = true;
+            } else if line_count <= 1 {
+                // ── 情况 3a：没有任何输出 ──
+                // Pi Agent 启动后立即退出，可能是 API Key 未配置或模型不可用
+                let error_msg = "Pi Agent exited without producing output. Check API key and model configuration.".to_string();
+                log::warn!("[pi] >>> SENDING ERROR (no output): {}", error_msg);
+                send_pi_event(tx, serde_json::json!({
+                    "type": "error",
+                    "message": error_msg
+                }));
             } else {
-                format!("Pi Agent exited unexpectedly ({} lines processed)", line_count)
-            };
-            eprintln!("[pi] no result received, sending error: {}", error_msg);
-            send_pi_event(tx, serde_json::json!({
-                "type": "error",
-                "message": error_msg
-            }));
+                // ── 情况 3b：有输出但没有 result ──
+                // Pi Agent 产出了事件（thinking/tool_call 等）但没有 turn_end，
+                // 可能是进程被杀或异常退出
+                let error_msg = format!("Pi Agent exited unexpectedly ({} lines processed)", line_count);
+                log::warn!("[pi] >>> SENDING ERROR (unexpected exit): {}", error_msg);
+                send_pi_event(tx, serde_json::json!({
+                    "type": "error",
+                    "message": error_msg
+                }));
+            }
+        } else {
+            log::debug!("[pi] result already sent via agent_end, skipping fallback");
         }
+
+        // ── 确保 on_result_callback 被调用 ──
+        // on_result_callback 负责清理后端的 streaming_sessions（让 isStreaming 返回 false）。
+        // 如果没有调用，前端的 retryLoadSessions 会一直看到 isStreaming=true。
+        //
+        // 调用时机：
+        // - 正常情况：agent_end 中调用（result_callback_called = true）
+        // - fallback：这里调用（agent_end 没有触发）
+        if !result_callback_called {
+            if let Some(ref callback) = on_result_callback {
+                log::debug!("[pi] calling on_result_callback at stream end (fallback)");
+                callback();
+            }
+        } else {
+            log::debug!("[pi] on_result_callback already called, skipping");
+        }
+
+        // Log final state before returning
+        log::info!("[pi] stream_session COMPLETE: session={}, got_result={}, line_count={}, pi_session_id={:?}",
+            session_id, got_result, line_count, pi_session_id);
 
         // Convert UUID to full file path for --session
         let session_path = pi_session_id.and_then(|uuid| {
             Self::find_session_file(&uuid).or_else(|| {
-                eprintln!("[pi] could not find session file for UUID: {}", uuid);
+                log::warn!("[pi] could not find session file for UUID: {}", uuid);
                 Some(uuid) // Fallback to UUID
             })
         });
@@ -628,6 +718,7 @@ impl AiAssistant for PiAssistant {
         StreamResult {
             agent_session_id: session_path,
             pid: Some(pid),
+            result_sent: got_result,
         }
     }
 
@@ -649,8 +740,7 @@ impl AiAssistant for PiAssistant {
     }
 }
 
+/// 发送 SSE 事件（复用 streaming 模块的统一实现）
 fn send_pi_event(tx: Option<&broadcast::Sender<String>>, event: serde_json::Value) {
-    if let Some(tx) = tx {
-        let _ = tx.send(event.to_string());
-    }
+    super::streaming::send_event(tx, event);
 }
