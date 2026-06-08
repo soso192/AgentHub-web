@@ -79,7 +79,9 @@ pub struct ModelInfo {
 }
 
 /// Session information
+/// Note: This struct is reserved for future use. The main Session type is in models.rs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct SessionInfo {
     pub id: String,
     pub assistant: String,
@@ -90,7 +92,9 @@ pub struct SessionInfo {
 }
 
 /// Message in a conversation
+/// Note: This struct is reserved for future use. The main Message type is in models.rs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Message {
     pub role: String,
     pub content: String,

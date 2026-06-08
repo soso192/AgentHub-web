@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpServer, middleware};
+use actix_web::{web, App, HttpServer};
 use actix_cors::Cors;
 use std::sync::RwLock;
 use tokio::sync::broadcast;
@@ -7,6 +7,7 @@ mod api;
 mod ai;
 mod models;
 mod static_files;
+mod logging;
 
 use ai::{AssistantRegistry, AiAssistant};
 use ai::claude::ClaudeAssistant;
@@ -52,11 +53,11 @@ fn load_sessions_from_disk() -> std::collections::HashMap<String, models::Sessio
         Ok(content) => {
             match serde_json::from_str(&content) {
                 Ok(sessions) => {
-                    println!("📂 Loaded sessions from {}", path.display());
+                    log::info!("📂 Loaded sessions from {}", path.display());
                     sessions
                 }
                 Err(e) => {
-                    eprintln!("⚠️ Failed to parse sessions file: {}", e);
+                    log::error!("⚠️ Failed to parse sessions file: {}", e);
                     std::collections::HashMap::new()
                 }
             }
@@ -71,43 +72,56 @@ pub fn save_sessions_to_disk(sessions: &std::collections::HashMap<String, models
     match serde_json::to_string_pretty(sessions) {
         Ok(content) => {
             if let Err(e) = std::fs::write(&path, content) {
-                eprintln!("⚠️ Failed to save sessions: {}", e);
+                log::error!("⚠️ Failed to save sessions: {}", e);
             }
         }
         Err(e) => {
-            eprintln!("⚠️ Failed to serialize sessions: {}", e);
+            log::error!("⚠️ Failed to serialize sessions: {}", e);
         }
     }
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    println!("🚀 Starting CC-Web server...");
-    println!("📍 Open http://localhost:3030 in your browser");
+    // 初始化结构化日志系统（日志只写入文件，控制台不输出）
+    // 设置 RUST_LOG 环境变量控制日志级别，例如：
+    //   RUST_LOG=info                    (默认)
+    //   RUST_LOG=debug                   (所有模块 debug)
+    //   RUST_LOG=cc_web::api::agent=debug (只有 agent 模块 debug)
+    //   RUST_LOG=cc_web::ai::pi=trace    (Pi Agent 最详细)
+    logging::init();
+
+    // ── 启动横幅（直接输出到控制台）──
+    println!("🚀 CC-Web server starting...");
+    println!("📍 http://localhost:3030");
 
     // Initialize AI assistant registry
     let mut registry = AssistantRegistry::new();
 
     // Register Claude Code assistant
     let claude = ClaudeAssistant::new();
-    println!("✅ Claude Code registered (default model: {})", claude.default_model());
+    println!("   ✅ Claude ({})", claude.default_model());
+    log::info!("Claude Code registered (default model: {})", claude.default_model());
     registry.register(Box::new(claude));
 
     // Register Pi Agent assistant
     let pi = PiAssistant::new();
-    println!("✅ Pi Agent registered (default model: {})", pi.default_model());
+    println!("   ✅ Pi Agent ({})", pi.default_model());
+    log::info!("Pi Agent registered (default model: {})", pi.default_model());
     registry.register(Box::new(pi));
 
     // Register Codex assistant
     let codex = CodexAssistant::new();
-    println!("✅ Codex registered (default model: {})", codex.default_model());
+    println!("   ✅ Codex ({})", codex.default_model());
+    log::info!("Codex registered (default model: {})", codex.default_model());
     registry.register(Box::new(codex));
 
     // Load persisted sessions
     let saved_sessions = load_sessions_from_disk();
     let session_count = saved_sessions.len();
     if session_count > 0 {
-        println!("📂 Restored {} session(s)", session_count);
+        println!("   📂 {} session(s) restored", session_count);
+        log::info!("Restored {} session(s)", session_count);
     }
 
     let data = web::Data::new(AppState {
@@ -119,6 +133,10 @@ async fn main() -> std::io::Result<()> {
         streaming_state: RwLock::new(std::collections::HashMap::new()),
     });
 
+    println!("   🔗 Listening on 0.0.0.0:3030");
+    println!("   📝 Logs: ~/.cc-web/logs/");
+    println!();
+
     HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
@@ -128,7 +146,9 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(cors)
-            .wrap(middleware::Logger::default())
+            // 注释掉 actix Logger 中间件，避免 HTTP 请求日志输出到控制台
+            // 详细日志已通过 logging 系统写入文件
+            // .wrap(middleware::Logger::default())
             .app_data(data.clone())
             // API routes
             .route("/api/models", web::get().to(api::models::get_models))
@@ -145,10 +165,31 @@ async fn main() -> std::io::Result<()> {
             .route("/api/agent/{id}/events", web::get().to(api::agent::events))
             .route("/api/files", web::get().to(api::files::list_files))
             .route("/api/files/{path:.*}", web::get().to(api::files::read_file))
+            // 调试 API：返回所有会话的实时状态快照
+            .route("/api/debug/state", web::get().to(debug_state))
             // Static files (fallback)
             .default_service(web::route().to(static_files::serve))
     })
     .bind("0.0.0.0:3030")?
     .run()
     .await
+}
+
+/// 调试 API：返回所有会话的实时状态快照
+///
+/// 访问方式：GET /api/debug/state
+///
+/// 返回内容：
+/// - 所有会话的基本信息（assistant、model、messageCount）
+/// - 每个会话的流式传输状态（isStreaming、hasChannel、channelReceivers）
+/// - 运行中的进程 PID
+/// - streaming_state 缓存状态
+///
+/// 用途：
+/// - 调试 SSE 断开问题：检查 isStreaming 和 channelReceivers
+/// - 调试进程泄漏：检查 runningProcesses
+/// - 调试 channel 泄漏：检查 activeChannels
+async fn debug_state(data: web::Data<AppState>) -> actix_web::HttpResponse {
+    let snapshot = logging::format_state_snapshot(&data);
+    actix_web::HttpResponse::Ok().json(snapshot)
 }
