@@ -263,8 +263,9 @@ impl AiAssistant for CodexAssistant {
         tx: Option<&broadcast::Sender<String>>,
         agent_session_id: Option<&str>,
         pid_callback: Option<Box<dyn Fn(u32) + Send>>,
+        on_result_callback: Option<Box<dyn Fn() + Send>>,
     ) -> StreamResult {
-        eprintln!("[codex] stream_session called: session={}, model={}", session_id, model);
+        log::info!("[codex] stream_session called: session={}, model={}", session_id, model);
 
         let mut args = vec![
             "exec".to_string(),
@@ -291,16 +292,16 @@ impl AiAssistant for CodexAssistant {
 
         let mut child = match cmd.spawn() {
             Ok(c) => {
-                eprintln!("[codex] process spawned, pid={:?}", c.id());
+                log::info!("[codex] process spawned, pid={:?}", c.id());
                 c
             }
             Err(e) => {
-                eprintln!("[codex] failed to spawn: {}", e);
+                log::error!("[codex] failed to spawn: {}", e);
                 send_codex_event(tx, serde_json::json!({
                     "type": "error",
                     "message": format!("Failed to start Codex: {}", e)
                 }));
-                return StreamResult { agent_session_id: None, pid: None };
+                return StreamResult { agent_session_id: None, pid: None, result_sent: false };
             }
         };
 
@@ -323,7 +324,7 @@ impl AiAssistant for CodexAssistant {
                 let reader = std::io::BufReader::new(stderr);
                 for line in reader.lines() {
                     if let Ok(line) = line {
-                        eprintln!("[codex:stderr] {}", line);
+                        log::debug!("[codex:stderr] {}", line);
                     }
                 }
             });
@@ -336,12 +337,13 @@ impl AiAssistant for CodexAssistant {
 
         let mut codex_session_id: Option<String> = None;
         let mut line_count = 0;
+        let mut result_callback_called = false;
 
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("[codex] read error: {}", e);
+                    log::error!("[codex] read error: {}", e);
                     continue;
                 }
             };
@@ -390,6 +392,13 @@ impl AiAssistant for CodexAssistant {
                             "content": content,
                             "model": model
                         }));
+                        if !result_callback_called {
+                            result_callback_called = true;
+                            if let Some(ref callback) = on_result_callback {
+                                log::debug!("[codex] result sent (message.completed), calling on_result_callback");
+                                callback();
+                            }
+                        }
                     }
                 }
                 "turn.completed" => {
@@ -401,6 +410,13 @@ impl AiAssistant for CodexAssistant {
                                 "content": content,
                                 "model": model
                             }));
+                            if !result_callback_called {
+                                result_callback_called = true;
+                                if let Some(ref callback) = on_result_callback {
+                                    log::debug!("[codex] result sent (turn.completed), calling on_result_callback");
+                                    callback();
+                                }
+                            }
                         }
                     }
                 }
@@ -452,11 +468,12 @@ impl AiAssistant for CodexAssistant {
         }
 
         let _ = child.wait();
-        eprintln!("[codex] stream loop ended, {} lines processed", line_count);
+        log::info!("[codex] stream loop ended, {} lines processed", line_count);
 
         StreamResult {
             agent_session_id: codex_session_id,
             pid: Some(pid),
+            result_sent: false,  // Codex doesn't track result_sent
         }
     }
 

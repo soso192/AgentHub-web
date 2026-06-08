@@ -405,8 +405,9 @@ impl AiAssistant for ClaudeAssistant {
         tx: Option<&broadcast::Sender<String>>,
         existing_agent_session_id: Option<&str>,
         pid_callback: Option<Box<dyn Fn(u32) + Send>>,
+        on_result_callback: Option<Box<dyn Fn() + Send>>,
     ) -> StreamResult {
-        eprintln!("[claude] stream_session: session={}, model={}, resume={:?}", session_id, model, existing_agent_session_id);
+        log::info!("[claude] stream_session: session={}, model={}, resume={:?}", session_id, model, existing_agent_session_id);
         let git_bash = &self.git_bash_path;
 
         let mut args = vec![
@@ -420,7 +421,6 @@ impl AiAssistant for ClaudeAssistant {
             model.to_string(),
         ];
 
-        // Use --resume to continue an existing Claude session
         if let Some(resume_id) = existing_agent_session_id {
             args.push("--resume".to_string());
             args.push(resume_id.to_string());
@@ -437,55 +437,62 @@ impl AiAssistant for ClaudeAssistant {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
+                log::error!("[claude] failed to spawn: {}", e);
                 streaming::send_event(tx, serde_json::json!({
                     "type": "error",
                     "message": format!("Failed to start Claude: {}", e)
                 }));
-                return StreamResult { agent_session_id: None, pid: None };
+                return StreamResult { agent_session_id: None, pid: None, result_sent: false };
             }
         };
 
         let pid = child.id();
+        log::info!("[claude] process spawned, pid={}", pid);
 
-        // Report PID immediately via callback for abort support
         if let Some(ref callback) = pid_callback {
             callback(pid);
         }
 
-        // Write message to stdin and close it (Claude CLI needs EOF to start processing)
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(message.as_bytes());
             let _ = stdin.flush();
         }
-        eprintln!("[claude] message written, pid={}", pid);
 
-        // Read stdout line by line and parse events
         let stdout = child.stdout.take().expect("stdout should be piped");
         let reader = std::io::BufReader::new(stdout);
         use std::io::BufRead;
 
         let mut agent_session_id: Option<String> = None;
         let mut line_count = 0;
+        let mut callback_called = false;
 
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("[claude] read error: {}", e);
+                    log::error!("[claude] read error: {}", e);
                     continue;
                 }
             };
             line_count += 1;
 
-            if let Some(sid) = streaming::process_stream_line(&line, session_id, model, tx) {
+            let (sid, result_sent) = streaming::process_stream_line(&line, session_id, model, tx);
+            if let Some(sid) = sid {
                 agent_session_id = Some(sid);
+            }
+            if result_sent && !callback_called {
+                callback_called = true;
+                if let Some(ref callback) = on_result_callback {
+                    log::debug!("[claude] result sent, calling on_result_callback");
+                    callback();
+                }
             }
         }
 
         let exit_status = child.wait();
-        eprintln!("[claude] stream loop ended, {} lines, exit={:?}", line_count, exit_status);
+        log::info!("[claude] stream loop ended, {} lines, exit={:?}", line_count, exit_status);
 
-        StreamResult { agent_session_id, pid: Some(pid) }
+        StreamResult { agent_session_id, pid: Some(pid), result_sent: false }
     }
 
     async fn is_available(&self) -> bool {

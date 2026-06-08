@@ -157,7 +157,7 @@ pub async fn start_prompt(
         }
     };
 
-    eprintln!("[start_prompt] session={}, assistant={}, model={}, agent_session_id={:?}",
+    log::info!("[start_prompt] session={}, assistant={}, model={}, agent_session_id={:?}",
         session_id, assistant_name, model, existing_agent_session_id);
 
     // Store user message
@@ -180,17 +180,17 @@ pub async fn start_prompt(
     let tx: Option<broadcast::Sender<String>> = {
         let mut channels = data.events_tx.write().unwrap();
         if let Some(tx) = channels.get(&session_id) {
-            eprintln!("[start_prompt] using existing events_tx channel");
+            log::debug!("[start_prompt] using existing events_tx channel");
             Some(tx.clone())
         } else {
-            eprintln!("[start_prompt] creating new events_tx channel");
+            log::debug!("[start_prompt] creating new events_tx channel");
             let (tx, _) = broadcast::channel::<String>(256);
             channels.insert(session_id.clone(), tx.clone());
             Some(tx)
         }
     };
 
-    eprintln!("[start_prompt] tx is_some={}", tx.is_some());
+    log::debug!("[start_prompt] tx is_some={}", tx.is_some());
 
     // ── Spawn event saver: subscribe to broadcast channel and save events to session ──
     // This runs in the background and captures all streaming events (thinking, tool_call,
@@ -200,20 +200,24 @@ pub async fn start_prompt(
         let saver_data = data.clone();
         let saver_sid = session_id.clone();
         let saver_assistant = assistant_name.clone();
+        log::debug!("[saver] spawning event saver task for session={}", session_id);
         tokio::spawn(async move {
             let mut rx = saver_rx;
             let mut content_blocks: Vec<ContentBlock> = Vec::new();
             let mut final_result = String::new();
             let mut last_save = std::time::Instant::now();
+            let mut event_count = 0;
             
             loop {
                 match rx.recv().await {
                     Ok(msg) => {
+                        event_count += 1;
                         let event: serde_json::Value = match serde_json::from_str(&msg) {
                             Ok(v) => v,
                             Err(_) => continue,
                         };
                         let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        log::trace!("[saver] received event #{} for session={}, type={}", event_count, saver_sid, event_type);
                         
                         let mut needs_save = false;
                         
@@ -322,7 +326,7 @@ pub async fn start_prompt(
         }
     };
 
-    eprintln!("[start_prompt] history_context present: {}, history_already_sent: {}, agent_session_id: {:?}",
+    log::debug!("[start_prompt] history_context present: {}, history_already_sent: {}, agent_session_id: {:?}",
         history_context.is_some(), history_already_sent, existing_agent_session_id);
 
     // If no explicit history_context and no agent session ID (restart scenario),
@@ -380,30 +384,55 @@ pub async fn start_prompt(
     // Mark session as actively streaming
     data.streaming_sessions.write().unwrap().insert(session_id.clone());
 
-    eprintln!("[start_prompt] spawning streaming task for session={}", session_id);
+    log::debug!("[start_prompt] spawning streaming task for session={}", session_id);
     tokio::spawn(async move {
         let handle = match assistant_handle {
             Some(h) => h,
             None => {
-                eprintln!("[start_prompt] assistant not found: {}", assistant_name);
+                log::error!("[start_prompt] assistant not found: {}", assistant_name);
                 return;
             }
         };
 
-        eprintln!("[start_prompt] calling spawn_blocking for stream_session");
+        log::debug!("[start_prompt] calling spawn_blocking for stream_session");
         // Clone data for PID callback
         let data_for_pid = data_clone2.clone();
         let session_id_for_pid = session_id_clone.clone();
+        // Clone data for result callback
+        let data_for_result = data_clone2.clone();
+        let session_id_for_result = session_id_clone.clone();
         
         let result = tokio::task::spawn_blocking(move || {
             // Lock ONLY this assistant — other assistants are free to operate
             let assistant = handle.read().unwrap();
-            eprintln!("[start_prompt] calling stream_session");
+            log::debug!("[start_prompt] calling stream_session");
             
             // Create PID callback to store PID immediately when process spawns
             let pid_callback = Box::new(move |pid: u32| {
-                eprintln!("[start_prompt] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
+                log::debug!("[start_prompt] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
                 data_for_pid.running_pids.write().unwrap().insert(session_id_for_pid.clone(), pid);
+            });
+            
+            // Create result callback to clean up streaming_sessions immediately when result is sent
+            // Note: Only clean up streaming_sessions, NOT events_tx channel.
+            // The events_tx channel needs to stay alive until the SSE stream ends.
+            let on_result_callback = Box::new(move || {
+                log::debug!("[start_prompt] on_result_callback called for session={}", session_id_for_result);
+                
+                // Clean up streaming_sessions
+                {
+                    let mut streaming = data_for_result.streaming_sessions.write().unwrap();
+                    let existed = streaming.remove(&session_id_for_result);
+                    log::debug!("[start_prompt] on_result_callback: streaming_sessions.remove returned {:?}", existed);
+                }
+                
+                // Clean up streaming_state
+                {
+                    let mut state = data_for_result.streaming_state.write().unwrap();
+                    state.remove(&session_id_for_result);
+                }
+                
+                log::debug!("[start_prompt] on_result_callback: cleanup complete for session={}", session_id_for_result);
             });
             
             assistant.stream_session(
@@ -414,22 +443,18 @@ pub async fn start_prompt(
                 tx.as_ref(),
                 existing_agent_session_id.as_deref(),
                 Some(pid_callback),
+                Some(on_result_callback),
             )
         }).await;
 
         match result {
             Ok(stream_result) => {
-                eprintln!("[start_prompt] stream_session completed, agent_session_id={:?}, pid={:?}",
-                    stream_result.agent_session_id, stream_result.pid);
+                log::info!("[start_prompt] stream_session completed, agent_session_id={:?}, pid={:?}, result_sent={}",
+                    stream_result.agent_session_id, stream_result.pid, stream_result.result_sent);
 
                 // Remove streaming status IMMEDIATELY after stream_session returns.
-                // The frontend receives the 'result' SSE event before this point, and its
-                // finishStreaming() calls loadSessions() shortly after. By clearing isStreaming
-                // now (inside the Ok branch, before any further async work), the backend's
-                // list_sessions API already reports isStreaming:false when the frontend fetches,
-                // preventing a stale LIVE badge in the sidebar.
+                // If result was already sent, the frontend is already done, so clean up immediately.
                 data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
-                // Clear streaming state cache
                 data_clone2.streaming_state.write().unwrap().remove(&session_id_for_save);
 
                 // Store PID for abort support
@@ -445,17 +470,24 @@ pub async fn start_prompt(
                 }
             }
             Err(e) => {
-                eprintln!("[start_prompt] Streaming task error: {}", e);
+                log::error!("[start_prompt] Streaming task error: {}", e);
                 // Clean up streaming status even on error
                 data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
                 data_clone2.streaming_state.write().unwrap().remove(&session_id_for_save);
             },
         }
 
-        // Clean up PID and event channel
-        eprintln!("[start_prompt] cleaning up session={}", session_id_for_cleanup);
+        // Clean up PID
+        log::debug!("[start_prompt] cleaning up session={}", session_id_for_cleanup);
         data_clone2.running_pids.write().unwrap().remove(&session_id_for_cleanup);
-        data_clone2.events_tx.write().unwrap().remove(&session_id_for_cleanup);
+
+        // 不删除 events_tx channel！
+        // 原因：如果用户快速连续发送消息，新的 start_prompt 可能已经复用了这个 channel。
+        // 删除会导致新流的 SSE 收到 RecvError::Closed。
+        // broadcast::Sender 是 Arc 包装的，克隆的 Sender 共享同一个底层 channel。
+        // 保留 channel 在 map 中，下次 start_prompt 会复用它，SSE endpoint 也会复用。
+        // channel 会在服务器重启时自然清理。
+        log::debug!("[start_prompt] cleanup complete for session={} (events_tx kept alive)", session_id_for_cleanup);
     });
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -503,12 +535,11 @@ pub async fn switch_assistant(
     };
 
     // Diagnostic logging: print all existing messages for debugging
-    eprintln!("[switch] session={}, old={}, new={}, msg_count={}",
+    log::info!("[switch] session={}, old={}, new={}, msg_count={}",
         session_id, old_assistant_name, new_assistant_name, existing_messages.len());
     for (i, msg) in existing_messages.iter().enumerate() {
-        let preview: String = msg.content.chars().take(200).collect();
-        eprintln!("[switch]   msg[{}]: role={}, assistant={:?}, content_len={}, preview={:?}",
-            i, msg.role, msg.assistant, msg.content.len(), preview);
+        log::debug!("[switch]   msg[{}]: role={}, assistant={:?}, content_len={}",
+            i, msg.role, msg.assistant, msg.content.len());
     }
 
     // ── Step 2: Validate the switch request ────────────────────────────
@@ -730,7 +761,7 @@ pub async fn switch_assistant(
         "No previous conversation history. Please introduce yourself and await instructions.".to_string()
     };
 
-    eprintln!("[switch] context_message (len={}): {:?}",
+    log::debug!("[switch] context_message (len={}): {:?}",
         context_message.len(),
         context_message.chars().take(500).collect::<String>());
 
@@ -763,12 +794,23 @@ pub async fn switch_assistant(
         // Clone data for PID callback
         let data_for_pid = data_clone.clone();
         let session_id_for_pid = session_id_clone.clone();
+        // Clone data for result callback
+        let data_for_result = data_clone.clone();
+        let session_id_for_result = session_id_clone.clone();
         let result = tokio::task::spawn_blocking(move || {
             let assistant = handle.read().unwrap();
             // Create PID callback to store PID immediately when process spawns
             let pid_callback = Box::new(move |pid: u32| {
-                eprintln!("[switch] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
+                log::debug!("[switch] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
                 data_for_pid.running_pids.write().unwrap().insert(session_id_for_pid.clone(), pid);
+            });
+            // Create result callback to clean up streaming_sessions immediately when result is sent
+            // Note: Only clean up streaming_sessions, NOT events_tx channel.
+            // The events_tx channel needs to stay alive until the SSE stream ends.
+            let on_result_callback = Box::new(move || {
+                log::debug!("[switch] on_result_callback: cleaning up streaming_sessions for session={}", session_id_for_result);
+                data_for_result.streaming_sessions.write().unwrap().remove(&session_id_for_result);
+                data_for_result.streaming_state.write().unwrap().remove(&session_id_for_result);
             });
             assistant.stream_session(
                 &session_id_clone,
@@ -778,6 +820,7 @@ pub async fn switch_assistant(
                 Some(&tx),      // broadcast channel for SSE events
                 None,            // no existing agent session ID (fresh start)
                 Some(pid_callback),
+                Some(on_result_callback),
             )
         }).await;
 
@@ -797,17 +840,18 @@ pub async fn switch_assistant(
                 }
             }
             Err(e) => {
-                eprintln!("[switch] Streaming task error: {}", e);
+                log::error!("[switch] Streaming task error: {}", e);
                 // Clean up streaming status even on error
                 data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
                 data_clone.streaming_state.write().unwrap().remove(&session_id_for_save);
             },
         }
 
-        // Final cleanup: remove streaming status and event channel
+        // Final cleanup: remove streaming status
+        // 不删除 events_tx channel（同 start_prompt 的理由）
         data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_cleanup);
         data_clone.streaming_state.write().unwrap().remove(&session_id_for_cleanup);
-        data_clone.events_tx.write().unwrap().remove(&session_id_for_cleanup);
+        log::debug!("[switch] cleanup complete for session={} (events_tx kept alive)", session_id_for_cleanup);
     });
 
     // Return success immediately — the frontend will connect to SSE
@@ -834,7 +878,7 @@ pub async fn abort_session(
             // Find and remove the last user message that doesn't have a corresponding assistant response
             if let Some(last_msg) = session.messages.last() {
                 if last_msg.role == "user" {
-                    eprintln!("[abort] Removing aborted user message: {:?}", &last_msg.content[..last_msg.content.len().min(50)]);
+                    log::info!("[abort] Removing aborted user message: {:?}", &last_msg.content[..last_msg.content.len().min(50)]);
                     session.messages.pop();
                 }
             }
@@ -1050,19 +1094,29 @@ pub async fn events(
     _req: HttpRequest,
 ) -> HttpResponse {
     let session_id = path.into_inner();
+    log::debug!("[sse] events endpoint called for session={}", session_id);
 
     let exists = data.sessions.read().unwrap().contains_key(&session_id);
     if !exists {
+        log::warn!("[sse] session not found: {}", session_id);
         return HttpResponse::NotFound().json(serde_json::json!({
             "error": "Session not found"
         }));
     }
 
+    // Check if session is currently streaming
+    let is_streaming = data.streaming_sessions.read().unwrap().contains(&session_id);
+    log::debug!("[sse] session={} is_streaming={}", session_id, is_streaming);
+
     let mut rx = {
         let channels = data.events_tx.read().unwrap();
         match channels.get(&session_id) {
-            Some(tx) => tx.subscribe(),
+            Some(tx) => {
+                log::debug!("[sse] found existing channel for session={}, receivers={}", session_id, tx.receiver_count());
+                tx.subscribe()
+            }
             None => {
+                log::debug!("[sse] no channel found for session={}, creating new one", session_id);
                 drop(channels);
                 let (tx, _) = broadcast::channel::<String>(256);
                 let rx = tx.subscribe();
@@ -1072,27 +1126,38 @@ pub async fn events(
         }
     };
 
+    let session_id_clone = session_id.clone();
     let session_id_for_heartbeat = session_id.clone();
     let stream = async_stream::stream! {
+        log::debug!("[sse] stream started for session={}", session_id_clone);
         yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!(
             "data: {}\n\n",
-            serde_json::json!({"type": "connected", "sessionId": session_id})
+            serde_json::json!({"type": "connected", "sessionId": session_id_clone})
         )));
 
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(15));
         heartbeat_interval.tick().await; // Skip first immediate tick
+        let mut event_count = 0;
 
         loop {
             tokio::select! {
                 msg = rx.recv() => {
                     match msg {
                         Ok(msg) => {
+                            event_count += 1;
+                            let event_type = serde_json::from_str::<serde_json::Value>(&msg)
+                                .ok()
+                                .and_then(|v| v.get("type").and_then(|t| t.as_str().map(String::from)))
+                                .unwrap_or_else(|| "unknown".to_string());
+                            log::trace!("[sse] sending event #{} for session={}, type={}", event_count, session_id_clone, event_type);
                             yield Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!("data: {}\n\n", msg)));
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
+                            log::warn!("[sse] WARNING: receiver lagged for session={}", session_id_clone);
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
+                            log::info!("[sse] channel closed for session={}", session_id_clone);
                             break;
                         }
                     }
