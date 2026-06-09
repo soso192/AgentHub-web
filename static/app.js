@@ -10,11 +10,7 @@ let currentAssistant = 'claude';
 let currentModel = null;
 let pendingCwd = null;
 let currentBrowsePath = null;
-<<<<<<< HEAD
-let fileBrowserExpanded = true;
-=======
 let fileBrowserExpanded = false;
->>>>>>> 33cc2d13ad8d4c83e29d753c55dbe034f9e10e4e
 
 // Per-session streaming: sessionId → { eventSource, streamingDiv, contentDiv, contentBlocks, toolCallMap, hasContent, finalResult, finished, safetyTimeout }
 const streamingSessions = new Map();
@@ -267,7 +263,12 @@ function renderSessionList() {
                 <span>${session.messageCount || 0} msgs</span>
                 <span class="cwd-label" title="${escapeHtml(session.cwd || '')}">📁 ${escapeHtml(session.cwd || '')}</span>
             </div>`;
-        div.onclick = (e) => { if (!e.target.classList.contains('delete-btn')) selectSession(session.id); };
+        div.onclick = (e) => {
+            if (e.target.classList.contains('delete-btn')) return;
+            // 如果当前是面板模式，先退出面板模式再切换会话
+            if (splitViewManager.enabled) splitViewManager.toggle();
+            selectSession(session.id);
+        };
         div.querySelector('.delete-btn').onclick = async (e) => {
             e.stopPropagation();
             if (confirm('Delete this session?')) await deleteSession(session.id);
@@ -1542,6 +1543,57 @@ function setupEventListeners() {
 
     // Theme toggle
     document.getElementById('themeToggle').onclick = toggleTheme;
+
+    // 文件浏览器拖拽调整高度
+    initFileBrowserResize();
+}
+
+/**
+ * 初始化文件浏览器的拖拽调整高度功能
+ *
+ * 拖拽手柄位于文件浏览器顶部，上下拖拽可调整高度。
+ * 高度持久化到 localStorage。
+ */
+function initFileBrowserResize() {
+    const handle = document.getElementById('fileBrowserResize');
+    const fileBrowser = document.getElementById('fileBrowser');
+    if (!handle || !fileBrowser) return;
+
+    // 从 localStorage 恢复上次的高度
+    const savedHeight = localStorage.getItem('cc-web-file-browser-height');
+    if (savedHeight) fileBrowser.style.height = savedHeight + 'px';
+
+    let startY = 0;
+    let startHeight = 0;
+    let isDragging = false;
+
+    handle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        isDragging = true;
+        startY = e.clientY;
+        startHeight = fileBrowser.offsetHeight;
+        handle.classList.add('dragging');
+        document.body.style.cursor = 'ns-resize';
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        // 向上拖动 = 减小高度（handle 在底部，鼠标上移 = 高度减小）
+        const delta = startY - e.clientY;
+        const newHeight = Math.max(60, startHeight + delta);
+        fileBrowser.style.height = newHeight + 'px';
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (!isDragging) return;
+        isDragging = false;
+        handle.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        // 持久化高度
+        localStorage.setItem('cc-web-file-browser-height', fileBrowser.offsetHeight);
+    });
 }
 
 init();
@@ -1889,6 +1941,36 @@ class SplitViewManager {
         document.querySelectorAll('.split-panel').forEach(el => {
             el.classList.toggle('active', el.dataset.panelId === panelId);
         });
+
+        // 同步更新侧边栏、顶栏、文件浏览器
+        const panel = this.panels.get(panelId);
+        if (!panel || !panel.sessionId) return;
+        const sessionId = panel.sessionId;
+        const sessionInfo = sessions.find(s => s.id === sessionId);
+
+        // 1. 更新侧边栏选中状态
+        currentSessionId = sessionId;
+        renderSessionList();
+
+        // 2. 更新顶栏助手/模型选择器
+        if (sessionInfo) {
+            if (sessionInfo.assistant) {
+                currentAssistant = sessionInfo.assistant;
+                assistantSelector.value = sessionInfo.assistant;
+            }
+            if (sessionInfo.model) {
+                currentModel = sessionInfo.model;
+                modelSelector.value = sessionInfo.model;
+                statusDisplay.textContent = sessionInfo.model;
+            }
+        }
+
+        // 3. 更新文件浏览器目录
+        if (sessionInfo?.cwd) {
+            currentBrowsePath = sessionInfo.cwd;
+            if (fileBrowserExpanded) loadFiles(sessionInfo.cwd);
+            else document.getElementById('fileBrowserPath').textContent = sessionInfo.cwd;
+        }
     }
 
     /**
