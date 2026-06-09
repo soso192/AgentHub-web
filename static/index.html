@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CC-Web - AI Coding Assistant Hub</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="app">
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>Sessions</h2>
+                <button id="newSessionBtn" title="New Session">+</button>
+            </div>
+            <div id="newSessionForm" class="new-session-form" style="display:none;">
+                <div class="form-group">
+                    <label>Working Directory</label>
+                    <input type="text" id="cwdInput" placeholder="e.g., C:/Users/you/project">
+                </div>
+                <div class="form-group">
+                    <label>Model</label>
+                    <select id="modelSelectNew" class="form-select">
+                        <!-- Populated dynamically -->
+                    </select>
+                </div>
+                <div class="form-buttons">
+                    <button id="createSessionBtn">Create</button>
+                    <button id="cancelSessionBtn">Cancel</button>
+                </div>
+            </div>
+            <div id="sessionList" class="session-list"></div>
+
+            <!-- File Browser -->
+            <div id="fileBrowser" class="file-browser">
+                <div class="file-browser-header">
+                    <span class="file-browser-icon" onclick="toggleFileBrowser()">📁</span>
+                    <span class="file-browser-title" onclick="toggleFileBrowser()">Files</span>
+                    <span id="fileBrowserPath" class="file-browser-path" onclick="toggleFileBrowser()"></span>
+                    <button id="refreshFilesBtn" class="file-refresh-btn" onclick="event.stopPropagation(); refreshFiles();" title="Refresh files">🔄</button>
+                    <span id="fileBrowserToggle" class="file-browser-toggle" onclick="toggleFileBrowser()">▼</span>
+                </div>
+                <div id="fileBrowserContent" class="file-browser-content">
+                    <div id="fileList" class="file-list"></div>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <div class="assistant-status" id="assistantStatus">
+                    <!-- Shows available assistants -->
+                </div>
+            </div>
+        </div>
+
+        <div class="main">
+            <div class="topbar">
+                <button id="toggleSidebar" class="icon-btn">☰</button>
+                <span class="logo">⚡ CC-Web</span>
+                
+                <!-- Assistant Selector -->
+                <div class="topbar-selector">
+                    <label>Assistant:</label>
+                    <select id="assistantSelector" class="topbar-select">
+                        <!-- Populated dynamically -->
+                    </select>
+                    <button id="switchAssistantBtn" class="switch-btn" title="Switch Assistant (preserve context)" style="display:none;">🔄 Switch</button>
+                </div>
+                
+                <!-- Model Selector -->
+                <div class="topbar-selector">
+                    <label>Model:</label>
+                    <select id="modelSelector" class="topbar-select">
+                        <!-- Populated dynamically -->
+                    </select>
+                </div>
+                
+                <span id="statusDisplay" class="status-display"></span>
+                <button id="themeToggle" class="theme-btn" title="Toggle theme">🌙</button>
+                
+                <!-- Split View Controls -->
+                <div class="split-view-controls">
+                    <button id="toggleSplitView" class="icon-btn" title="Toggle Split View">⊞</button>
+                    <select id="splitLayoutSelect" class="topbar-select" style="display:none; min-width: 80px;">
+                        <option value="1x1">1×1</option>
+                        <option value="2x1">2×1</option>
+                        <option value="1x2">1×2</option>
+                        <option value="2x2" selected>2×2</option>
+                        <option value="3x2">3×2</option>
+                        <option value="3x3">3×3</option>
+                    </select>
+                    <button id="addPanelBtn" class="icon-btn" title="Add Panel" style="display:none;">+</button>
+                    <button id="toggleSyncMode" class="sync-btn" title="Toggle Sync Mode" style="display:none;">🔗 Sync</button>
+                </div>
+            </div>
+
+            <div class="welcome-screen" id="welcomeScreen">
+                <h1>⚡ CC-Web</h1>
+                <p>AI Coding Assistant Hub</p>
+                <div class="assistant-cards" id="assistantCards">
+                    <!-- Populated dynamically -->
+                </div>
+                <ol>
+                    <li>Select an <strong>AI Assistant</strong> above</li>
+                    <li>Click <strong>+</strong> to create a new session</li>
+                    <li>Start coding with your preferred AI!</li>
+                </ol>
+            </div>
+
+            <!-- Single View (default) -->
+            <div class="single-view-container" id="singleViewContainer">
+                <div class="chat-container" id="chatContainer" style="display:none;">
+                    <div id="typingIndicator" class="typing-indicator" style="display:none;">
+                        <span class="assistant-name"></span> Thinking...
+                    </div>
+                </div>
+
+                <div class="input-area" id="inputArea" style="display:none;">
+                    <div class="input-wrapper">
+                        <textarea id="messageInput" placeholder="Message..." rows="1"></textarea>
+                        <button id="sendBtn" class="send-btn">Send</button>
+                        <button id="stopBtn" class="stop-btn" style="display:none;">⏹ Stop</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Split View Container -->
+            <div class="split-view-container" id="splitViewContainer" style="display:none;">
+                <div class="split-grid" id="splitGrid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Panel Modal -->
+    <div id="addPanelModal" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Add Panel</h3>
+                <button class="modal-close" onclick="closeAddPanelModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Select Session</label>
+                    <select id="panelSessionSelect" class="form-select">
+                        <option value="new">+ New Session</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Position</label>
+                    <select id="panelPositionSelect" class="form-select">
+                        <option value="-1">Auto (next available)</option>
+                    </select>
+                </div>
+                <div id="newSessionPanelFields">
+                    <div class="form-group">
+                        <label>Assistant</label>
+                        <select id="panelAssistantSelect" class="form-select"></select>
+                    </div>
+                    <div class="form-group">
+                        <label>Working Directory</label>
+                        <input type="text" id="panelCwdInput" placeholder="e.g., C:/Users/you/project">
+                    </div>
+                    <div class="form-group">
+                        <label>Model</label>
+                        <select id="panelModelSelect" class="form-select"></select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeAddPanelModal()">Cancel</button>
+                <button class="btn-primary" onclick="confirmAddPanel()">Add Panel</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
