@@ -10,7 +10,11 @@ let currentAssistant = 'claude';
 let currentModel = null;
 let pendingCwd = null;
 let currentBrowsePath = null;
+<<<<<<< HEAD
 let fileBrowserExpanded = true;
+=======
+let fileBrowserExpanded = false;
+>>>>>>> 33cc2d13ad8d4c83e29d753c55dbe034f9e10e4e
 
 // Per-session streaming: sessionId → { eventSource, streamingDiv, contentDiv, contentBlocks, toolCallMap, hasContent, finalResult, finished, safetyTimeout }
 const streamingSessions = new Map();

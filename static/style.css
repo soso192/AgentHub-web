@@ -139,7 +139,11 @@ body {
 .form-buttons button:last-child { background: var(--bg-hover); color: var(--text-secondary); }
 
 /* Session List */
+<<<<<<< HEAD
 .session-list { flex: 1; overflow-y: auto; min-height: 0; }
+=======
+.session-list { flex: 1; overflow-y: auto; }
+>>>>>>> 33cc2d13ad8d4c83e29d753c55dbe034f9e10e4e
 .session-item {
     padding: 10px 16px; cursor: pointer;
     border-left: 3px solid transparent;
@@ -170,7 +174,11 @@ body {
 @keyframes pulse-live { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 /* File Browser */
+<<<<<<< HEAD
 .file-browser { border-top: 1px solid var(--border); flex: 1; display: flex; flex-direction: column; min-height: 0; }
+=======
+.file-browser { border-top: 1px solid var(--border); }
+>>>>>>> 33cc2d13ad8d4c83e29d753c55dbe034f9e10e4e
 .file-browser-header {
     display: flex; align-items: center; gap: 6px;
     padding: 10px 16px; cursor: pointer; user-select: none;
@@ -189,8 +197,13 @@ body {
 .file-refresh-btn { background: none; border: none; cursor: pointer; font-size: 12px; padding: 2px 4px; opacity: 0.5; transition: opacity 0.12s; }
 .file-refresh-btn:hover { opacity: 1; }
 .file-browser-content {
+<<<<<<< HEAD
     flex: 1; overflow-y: auto; border-top: 1px solid var(--border);
     background: var(--bg); min-height: 0;
+=======
+    max-height: 300px; overflow-y: auto; border-top: 1px solid var(--border);
+    background: var(--bg);
+>>>>>>> 33cc2d13ad8d4c83e29d753c55dbe034f9e10e4e
 }
 .file-list { padding: 4px 0; }
 .file-item {
