@@ -224,7 +224,10 @@ function selectAssistant(name) {
 function updateSwitchButton() {
     if (!currentSessionId) { switchAssistantBtn.style.display = 'none'; return; }
     const session = sessions.find(s => s.id === currentSessionId);
-    switchAssistantBtn.style.display = (session && session.assistant !== currentAssistant) ? 'inline-flex' : 'none';
+    const hasQueue = messageQueues.has(currentSessionId) && messageQueues.get(currentSessionId).length > 0;
+    const isStreaming = streamingSessions.has(currentSessionId);
+    const canSwitch = session && session.assistant !== currentAssistant && !isStreaming && !hasQueue;
+    switchAssistantBtn.style.display = canSwitch ? 'inline-flex' : 'none';
 }
 
 function updateSendButtonState() {
@@ -1224,6 +1227,8 @@ function finishStreaming(sessionId) {
     if (st._onDone) st._onDone();
     // Process any queued messages for this session
     processSessionQueue(sessionId);
+    // 更新切换按钮状态（流式传输结束，可能可以切换了）
+    updateSwitchButton();
 }
 
 /**
@@ -1378,6 +1383,8 @@ function updateQueueUI(targetSessionId) {
             existing.remove();
         }
     }
+    // 队列变化后更新切换按钮状态
+    updateSwitchButton();
 }
 
 function removeFromSessionQueue(sessionId, index) {
