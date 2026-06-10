@@ -421,26 +421,35 @@ async function switchAssistant() {
     const toInfo = assistants.find(a => a.name === toName);
     const toDisplayName = toInfo?.display_name || toName;
     const toIcon = ASSISTANT_ICONS[toName] || ASSISTANT_ICONS.default;
+    const sessionId = currentSessionId; // 捕获，防止异步期间变化
+
+    const isPanelMode = splitViewManager.enabled;
+    const activePanelId = isPanelMode ? splitViewManager.activePanelId : null;
 
     try {
         switchAssistantBtn.disabled = true;
         switchAssistantBtn.textContent = '⏳ Switching...';
 
         // Show a "switching" indicator immediately in the chat
-        const view = getSessionView(currentSessionId);
+        // 面板模式下显示在面板的聊天区域，普通模式显示在主视图
+        const chatTarget = isPanelMode
+            ? document.getElementById(`panel-chat-${activePanelId}`)
+            : getSessionView(sessionId);
         const switchingDiv = document.createElement('div');
         switchingDiv.className = 'message system switching-indicator';
-        switchingDiv.id = 'switching-indicator';
+        // 使用基于 sessionId 的唯一 ID，避免多个面板同时切换时 ID 冲突
+        const indicatorId = `switching-indicator-${sessionId}`;
+        switchingDiv.id = indicatorId;
         switchingDiv.innerHTML = `<div class="system-content">⏳ Switching to ${toIcon} <strong>${toDisplayName}</strong>...</div>`;
-        view.appendChild(switchingDiv);
-        scrollToBottom();
+        if (chatTarget) { chatTarget.appendChild(switchingDiv); chatTarget.scrollTop = chatTarget.scrollHeight; }
 
         // Step 1: Ask the backend to switch assistants.
-        const res = await fetch(`${API_BASE}/api/agent/${currentSessionId}/switch`, {
+        const res = await fetch(`${API_BASE}/api/agent/${sessionId}/switch`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ assistant: newAssistant, model: modelSelector.value })
         });
         const data = await res.json();
+
         if (data.success) {
             // Step 2: Update local state
             currentAssistant = data.assistant; currentModel = data.model;
@@ -448,35 +457,37 @@ async function switchAssistant() {
             statusDisplay.textContent = data.model;
 
             // Update the switching indicator to show we're waiting for the assistant
-            const indicator = document.getElementById('switching-indicator');
+            const indicator = document.getElementById(indicatorId);
             if (indicator) {
                 indicator.innerHTML = `<div class="system-content">⏳ ${toIcon} <strong>${toDisplayName}</strong> is starting...</div>`;
             }
 
             // Step 3: Connect to SSE to receive the new assistant's streamed response.
-            connectSSE(currentSessionId, null, () => {
+            // 面板模式下需要传入 activePanelId，否则流式内容会渲染到隐藏的主视图
+            connectSSE(sessionId, null, () => {
                 // Step 4: After the new assistant responds, remove switching indicator and show switch message
-                const indicator = document.getElementById('switching-indicator');
-                if (indicator) indicator.remove();
-                
+                const ind = document.getElementById(indicatorId);
+                if (ind) ind.remove();
+
                 const sysDiv = document.createElement('div');
                 sysDiv.className = 'message system';
                 sysDiv.innerHTML = `<div class="system-content">🔄 Switched from <strong>${ASSISTANT_ICONS[fromName] || ASSISTANT_ICONS.default} ${fromName}</strong> to <strong>${toIcon} ${toDisplayName}</strong></div>`;
-                view.appendChild(sysDiv);
-                scrollToBottom();
-            });
+                // 面板模式下系统消息显示在面板聊天区域
+                const target = isPanelMode
+                    ? document.getElementById(`panel-chat-${activePanelId}`)
+                    : getSessionView(sessionId);
+                if (target) { target.appendChild(sysDiv); target.scrollTop = target.scrollHeight; }
+            }, { panelId: activePanelId });
 
             // Refresh session list to reflect the new assistant
             await loadSessions(); renderSessionList(); updateSwitchButton();
         } else {
-            // Remove switching indicator on failure
-            const indicator = document.getElementById('switching-indicator');
+            const indicator = document.getElementById(indicatorId);
             if (indicator) indicator.remove();
             alert('Switch failed: ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
-        // Remove switching indicator on error
-        const indicator = document.getElementById('switching-indicator');
+        const indicator = document.getElementById(indicatorId);
         if (indicator) indicator.remove();
         alert('Switch error: ' + e.message);
     }
@@ -1008,7 +1019,9 @@ function handleStreamEvent(sessionId, event) {
                 // 面板模式：更新面板的流式状态 + 显示 Thinking 指示器
                 splitViewManager.updatePanelStreaming(st.panelId, true);
                 const chatDiv = document.getElementById(`panel-chat-${st.panelId}`);
-                if (chatDiv && !chatDiv.querySelector('.panel-thinking-indicator')) {
+                if (chatDiv) {
+                    // 先移除旧的 Thinking 指示器（可能是上次 abort 残留的）
+                    chatDiv.querySelectorAll('.panel-thinking-indicator').forEach(el => el.remove());
                     const icon = ASSISTANT_ICONS[st.assistant] || ASSISTANT_ICONS.default;
                     const thinkingDiv = document.createElement('div');
                     thinkingDiv.className = 'panel-thinking-indicator';
@@ -1246,16 +1259,33 @@ function cleanupSessionStreaming(sessionId) {
 
 function processSessionQueue(sessionId) {
     const queue = messageQueues.get(sessionId);
-    if (!queue || queue.length === 0) { messageQueues.delete(sessionId); updateQueueUI(); return; }
+    if (!queue || queue.length === 0) { messageQueues.delete(sessionId); updateQueueUI(sessionId); return; }
     if (streamingSessions.has(sessionId)) return;
     const nextMsg = queue.shift();
-    updateQueueUI();
-    if (sessionId === currentSessionId) { sendToSession(nextMsg); }
-    else { sendToBackgroundSession(sessionId, nextMsg); }
+    updateQueueUI(sessionId);
+
+    // 查找该会话是否在面板中
+    const panelId = findPanelIdForSession(sessionId);
+    if (panelId) {
+        // 面板模式：通过面板发送，SSE 连接到面板
+        sendToPanelWithMessage(panelId, nextMsg);
+    } else if (sessionId === currentSessionId) {
+        sendToSession(nextMsg);
+    } else {
+        sendToBackgroundSession(sessionId, nextMsg);
+    }
 }
 
 async function sendToBackgroundSession(sessionId, message) {
     try {
+        // 先在会话的 DOM 视图中添加用户消息（如果视图已创建）
+        const view = sessionViews.get(sessionId);
+        if (view) {
+            const session = sessions.find(s => s.id === sessionId);
+            const assistant = session?.assistant || 'claude';
+            addMessageToView(view, 'user', message, assistant);
+        }
+
         const res = await fetch(`${API_BASE}/api/agent/${sessionId}/start`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message })
@@ -1268,29 +1298,103 @@ async function sendToBackgroundSession(sessionId, message) {
     } catch (e) { console.error('Background send error:', e); }
 }
 
-function updateQueueUI() {
-    const existing = document.getElementById('queueStatus');
-    const queue = currentSessionId ? messageQueues.get(currentSessionId) : null;
-    if (queue && queue.length > 0) {
-        let html = `<div class="queue-header">📨 ${queue.length} message(s) queued <button class="queue-clear-btn" onclick="clearCurrentQueue()">Clear</button></div>`;
-        queue.forEach((msg, i) => {
-            const preview = msg.length > 50 ? msg.slice(0, 50) + '...' : msg;
-            html += `<div class="queue-item" onclick="removeFromCurrentQueue(${i})" title="Click to remove"><span class="queue-item-text">${escapeHtml(preview)}</span><span class="queue-item-remove">×</span></div>`;
-        });
-        if (existing) { existing.innerHTML = html; }
-        else {
-            const div = document.createElement('div'); div.id = 'queueStatus'; div.className = 'queue-status'; div.innerHTML = html;
-            chatContainer.appendChild(div);
-        }
-    } else if (existing) { existing.remove(); }
+/**
+ * 向指定会话视图添加消息（不切换当前视图）
+ * @param {HTMLElement} view - 会话的 DOM 视图
+ * @param {string} role - 'user' 或 'assistant'
+ * @param {string} content - 消息内容
+ * @param {string} assistant - 助手名称
+ */
+function addMessageToView(view, role, content, assistant) {
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    if (role === 'assistant') {
+        const a = assistant || 'assistant';
+        const icon = ASSISTANT_ICONS[a] || ASSISTANT_ICONS.default;
+        div.innerHTML = `<div class="assistant-label">${icon} ${a}</div><div class="message-content"></div>`;
+    } else {
+        div.innerHTML = `<div class="message-content">${escapeHtml(content)}</div>`;
+    }
+    view.appendChild(div);
 }
 
-function removeFromCurrentQueue(index) {
-    if (!currentSessionId) return;
-    const queue = messageQueues.get(currentSessionId);
-    if (queue) { queue.splice(index, 1); if (queue.length === 0) messageQueues.delete(currentSessionId); updateQueueUI(); }
+/**
+ * 更新队列 UI 显示
+ * 队列显示在消息输入框上方（普通模式和面板模式一致）
+ *
+ * @param {string} [targetSessionId] - 指定要更新的会话ID（不传则更新所有有队列的会话）
+ */
+function updateQueueUI(targetSessionId) {
+    // 先清理不属于当前可见视图的队列元素
+    // （切换会话后，旧会话的队列 DOM 可能残留在新会话的视图中）
+    document.querySelectorAll('[id^="queueStatus-"]').forEach(el => {
+        const sid = el.id.replace('queueStatus-', '');
+        const panelId = findPanelIdForSession(sid);
+        // 如果该会话既不在面板中，也不是当前会话，且不在 targetSessionId 中，清理
+        const isTargeted = targetSessionId === sid;
+        const isPanelSession = panelId !== null;
+        const isCurrentSession = sid === currentSessionId;
+        if (!isTargeted && !isPanelSession && !isCurrentSession) {
+            el.remove();
+        }
+    });
+
+    const sessionIds = targetSessionId
+        ? [targetSessionId]
+        : [...messageQueues.keys()];
+
+    for (const sid of sessionIds) {
+        const queue = messageQueues.get(sid);
+        const queueId = `queueStatus-${sid}`;
+
+        // 找到输入框容器，在其上方插入队列
+        const panelId = findPanelIdForSession(sid);
+        const inputContainer = panelId
+            ? document.getElementById(`panel-chat-${panelId}`)?.parentElement?.querySelector('.panel-input')
+            : (sid === currentSessionId ? document.getElementById('inputArea') : null);
+        if (!inputContainer) continue;
+
+        // 在输入框的父容器中查找已有的队列元素
+        const parent = inputContainer.parentElement;
+        const existing = parent.querySelector(`#${queueId}`);
+
+        if (queue && queue.length > 0) {
+            let html = `<div class="queue-header">📨 ${queue.length} message(s) queued <button class="queue-clear-btn" onclick="clearSessionQueue('${sid}')">Clear</button></div>`;
+            queue.forEach((msg, i) => {
+                const preview = msg.length > 50 ? msg.slice(0, 50) + '...' : msg;
+                html += `<div class="queue-item" onclick="removeFromSessionQueue('${sid}', ${i})" title="Click to remove"><span class="queue-item-text">${escapeHtml(preview)}</span><span class="queue-item-remove">×</span></div>`;
+            });
+            if (existing) {
+                existing.innerHTML = html;
+            } else {
+                const div = document.createElement('div');
+                div.id = queueId;
+                div.className = 'queue-status';
+                div.innerHTML = html;
+                // 插入到输入框上方
+                parent.insertBefore(div, inputContainer);
+            }
+        } else if (existing) {
+            existing.remove();
+        }
+    }
 }
-function clearCurrentQueue() { if (currentSessionId) { messageQueues.delete(currentSessionId); updateQueueUI(); } }
+
+function removeFromSessionQueue(sessionId, index) {
+    const queue = messageQueues.get(sessionId);
+    if (queue) {
+        queue.splice(index, 1);
+        if (queue.length === 0) messageQueues.delete(sessionId);
+        updateQueueUI(sessionId);
+    }
+}
+function clearSessionQueue(sessionId) {
+    messageQueues.delete(sessionId);
+    updateQueueUI(sessionId);
+}
+// 兼容旧调用
+function removeFromCurrentQueue(index) { removeFromSessionQueue(currentSessionId, index); }
+function clearCurrentQueue() { clearSessionQueue(currentSessionId); }
 
 // ===== Send Messages =====
 
@@ -1407,13 +1511,17 @@ async function sendToSession(message, onDone) {
 async function abortSession(sessionId) {
     sessionId = sessionId || currentSessionId;
     if (!sessionId) return;
-    try { await fetch(`${API_BASE}/api/agent/${sessionId}/abort`, { method: 'POST' }); } catch (e) { console.error('Abort failed:', e); }
+
+    // 立即标记流为完成 + 关闭 EventSource，防止后续事件被渲染到错误的位置
+    // 必须在 await fetch 之前执行，否则旧 SSE 可能在 POST 完成前收到 result 事件
     cleanupSessionStreaming(sessionId);
     if (sessionId === currentSessionId) {
         sendBtn.classList.remove('streaming'); stopBtn.style.display = 'none'; typingIndicator.style.display = 'none';
-        const sm = getSessionView(sessionId).querySelector('.message.streaming');
+        const sm = getSessionView(sessionId)?.querySelector('.message.streaming');
         if (sm) sm.classList.remove('streaming');
     }
+
+    try { await fetch(`${API_BASE}/api/agent/${sessionId}/abort`, { method: 'POST' }); } catch (e) { console.error('Abort failed:', e); }
     loadSessions().then(() => renderSessionList());
     setTimeout(() => processSessionQueue(sessionId), 500);
 }
@@ -2062,17 +2170,15 @@ class SplitViewManager {
      */
     broadcastMessage(message) {
         if (!this.syncMode) return;
-        
+
         this.panels.forEach((panel, panelId) => {
             if (panel.sessionId) {
-                // 为每个面板的消息队列添加消息
                 if (!messageQueues.has(panel.sessionId)) {
                     messageQueues.set(panel.sessionId, []);
                 }
                 messageQueues.get(panel.sessionId).push(message);
-                
-                // 错开处理时间（每个面板间隔100ms）
-                // 避免所有面板同时发送请求造成服务器压力
+                updateQueueUI(panel.sessionId);
+
                 const panelIndex = [...this.panels.keys()].indexOf(panelId);
                 setTimeout(() => processSessionQueue(panel.sessionId), 100 * panelIndex);
             }
@@ -2388,6 +2494,18 @@ class SplitViewManager {
 // ── 初始化分屏管理器 ──
 const splitViewManager = new SplitViewManager();
 
+/**
+ * 根据 sessionId 查找对应的 panelId
+ * @param {string} sessionId
+ * @returns {string|null} panelId 或 null（不在面板中）
+ */
+function findPanelIdForSession(sessionId) {
+    for (const [panelId, panel] of splitViewManager.panels) {
+        if (panel.sessionId === sessionId) return panelId;
+    }
+    return null;
+}
+
 // ╔══════════════════════════════════════════════════════════════════╗
 // ║                    分屏视图相关函数                               ║
 // ╚══════════════════════════════════════════════════════════════════╝
@@ -2446,7 +2564,7 @@ async function sendToPanel(panelId) {
             messageQueues.set(panel.sessionId, []);
         }
         messageQueues.get(panel.sessionId).push(message);
-        updateQueueUI();
+        updateQueueUI(panel.sessionId);
         return;
     }
     
@@ -2473,6 +2591,44 @@ async function sendToPanel(panelId) {
             // 连接 SSE 接收流式响应
             connectPanelSSE(panelId, panel.sessionId);
             // 更新面板流式状态
+            splitViewManager.updatePanelStreaming(panelId, true);
+        }
+    } catch (e) {
+        console.error('Failed to send to panel:', e);
+    }
+}
+
+/**
+ * 向指定面板发送指定消息（不从 textarea 读取）
+ * 用于队列处理、同步模式广播等场景
+ *
+ * @param {string} panelId - 面板ID
+ * @param {string} message - 要发送的消息
+ */
+async function sendToPanelWithMessage(panelId, message) {
+    const panel = splitViewManager.panels.get(panelId);
+    if (!panel || !panel.sessionId) return;
+
+    // 显示用户消息
+    const chatDiv = document.getElementById(`panel-chat-${panelId}`);
+    if (chatDiv) {
+        const div = document.createElement('div');
+        div.className = 'message user';
+        div.innerHTML = `<div class="message-content">${escapeHtml(message)}</div>`;
+        chatDiv.appendChild(div);
+        chatDiv.scrollTop = chatDiv.scrollHeight;
+    }
+
+    // 发送到后端
+    try {
+        const res = await fetch(`${API_BASE}/api/agent/${panel.sessionId}/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message })
+        });
+        const data = await res.json();
+        if (data.success) {
+            connectPanelSSE(panelId, panel.sessionId);
             splitViewManager.updatePanelStreaming(panelId, true);
         }
     } catch (e) {
@@ -2553,6 +2709,13 @@ async function checkBackendStreamingStatus(sessionId, onNotStreaming) {
 function abortPanel(panelId) {
     const panel = splitViewManager.panels.get(panelId);
     if (!panel || !panel.sessionId) return;
+
+    // 清理面板中的 Thinking 指示器（abort 后不会被新流覆盖，必须手动移除）
+    const chatDiv = document.getElementById(`panel-chat-${panelId}`);
+    if (chatDiv) {
+        chatDiv.querySelectorAll('.panel-thinking-indicator').forEach(el => el.remove());
+    }
+
     abortSession(panel.sessionId);
     splitViewManager.updatePanelStreaming(panelId, false);
 }
