@@ -5,7 +5,8 @@
 **CC-Web** 是一个高性能的 Web 平台，让你在浏览器中统一管理和使用多种 AI 编程助手（Claude Code、Pi Agent、Codex 等）。支持实时流式输出、多会话分屏并行、Agent 无缝切换、消息队列、暗色主题等企业级特性。
 
 ---
-
+去下载!!!  https://github.com/soso192/AgentHub-web/releases
+赶快给我用起来!!!  https://github.com/soso192/AgentHub-web/releases
 ## ✨ 核心特性
 
 ### 🤖 多 Agent 统一管理
