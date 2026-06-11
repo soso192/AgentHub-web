@@ -43,6 +43,7 @@ const sidebar = document.getElementById('sidebar');
 const toggleSidebar = document.getElementById('toggleSidebar');
 const newSessionBtn = document.getElementById('newSessionBtn');
 const newSessionForm = document.getElementById('newSessionForm');
+const assistantSelectNew = document.getElementById('assistantSelectNew');
 const modelSelectNew = document.getElementById('modelSelectNew');
 const cwdInput = document.getElementById('cwdInput');
 const createSessionBtn = document.getElementById('createSessionBtn');
@@ -156,16 +157,19 @@ async function loadSessions() {
 // ===== UI Updates =====
 
 function updateAssistantSelectors() {
-    assistantSelector.innerHTML = '';
-    assistants.forEach(a => {
-        const opt = document.createElement('option');
-        opt.value = a.name;
-        const status = a.available ? '' : ' ⚠️未安装';
-        const version = a.version ? ` v${a.version}` : '';
-        opt.textContent = `${ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default} ${a.display_name}${version}${status}`;
-        if (!a.available) opt.style.color = '#999';
-        if (a.name === currentAssistant) opt.selected = true;
-        assistantSelector.appendChild(opt);
+    [assistantSelector, assistantSelectNew].forEach(select => {
+        if (!select) return;
+        select.innerHTML = '';
+        assistants.forEach(a => {
+            const opt = document.createElement('option');
+            opt.value = a.name;
+            const status = a.available ? '' : ' ⚠️未安装';
+            const version = a.version ? ` v${a.version}` : '';
+            opt.textContent = `${ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default} ${a.display_name}${version}${status}`;
+            if (!a.available) opt.style.color = '#999';
+            if (a.name === currentAssistant) opt.selected = true;
+            select.appendChild(opt);
+        });
     });
 }
 
@@ -1538,6 +1542,7 @@ async function abortSession(sessionId) {
 async function createSession() {
     const cwd = cwdInput.value.trim();
     if (!cwd) { alert('Please enter a working directory'); return; }
+    const assistant = assistantSelectNew.value || currentAssistant;
     const model = modelSelectNew.value;
     newSessionForm.style.display = 'none'; cwdInput.value = '';
 
@@ -1546,11 +1551,19 @@ async function createSession() {
     chatContainer.style.display = 'none';
     inputArea.style.display = 'block';
 
+    // 更新当前助手和模型
+    currentAssistant = assistant;
     currentSessionId = null;
     currentModel = model; pendingCwd = cwd;
-    modelSelector.value = model; statusDisplay.textContent = model;
+
+    // 同步更新顶栏选择器
+    assistantSelector.value = currentAssistant;
+    modelSelector.value = model;
+    statusDisplay.textContent = model;
+    updateSwitchButton();
+
     sendBtn.classList.remove('streaming'); stopBtn.style.display = 'none'; typingIndicator.style.display = 'none';
-    renderSessionList(); messageInput.focus();
+    renderSessionList(); renderAssistantCards(); renderAssistantStatus(); messageInput.focus();
 }
 
 // ===== File Browser =====
@@ -1634,6 +1647,13 @@ function setupEventListeners() {
     newSessionBtn.onclick = () => { newSessionForm.style.display = newSessionForm.style.display === 'none' ? 'block' : 'none'; };
     cancelSessionBtn.onclick = () => { newSessionForm.style.display = 'none'; cwdInput.value = ''; };
     createSessionBtn.onclick = createSession;
+    // 新会话表单中切换助手时，更新模型列表
+    assistantSelectNew.onchange = async (e) => {
+        currentAssistant = e.target.value;
+        assistantSelector.value = currentAssistant;
+        await loadModels();
+        updateSwitchButton();
+    };
     // 使用箭头函数调用 sendMessage()（按名称解析），这样猴子补丁能生效
     sendBtn.onclick = () => sendMessage();
     messageInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
@@ -2101,34 +2121,38 @@ class SplitViewManager {
         this.syncMode = !this.syncMode;
         const syncBtn = document.getElementById('toggleSyncMode');
         syncBtn.classList.toggle('active', this.syncMode);
-        
-        // 显示/隐藏同步模式指示器（右上角的浮动提示）
+
         let indicator = document.querySelector('.sync-mode-indicator');
         if (this.syncMode) {
-            // 创建或显示指示器
             if (!indicator) {
                 indicator = document.createElement('div');
                 indicator.className = 'sync-mode-indicator';
-                indicator.textContent = '🔗 Sync Mode Active';
+                indicator.textContent = '🔗 Sync Mode Active — click to dismiss';
+                indicator.onclick = () => { indicator.classList.add('fade-out'); };
                 document.body.appendChild(indicator);
             }
             indicator.style.display = 'block';
-            
+            indicator.classList.remove('fade-out');
+
+            // 3 秒后自动淡出
+            clearTimeout(this._syncIndicatorTimer);
+            this._syncIndicatorTimer = setTimeout(() => {
+                indicator.classList.add('fade-out');
+            }, 3000);
+
             // 默认将第一个面板设为同步源
             if (this.panels.size > 0 && !this.syncSourcePanelId) {
                 this.syncSourcePanelId = this.panels.keys().next().value;
             }
         } else {
-            // 隐藏指示器
             if (indicator) indicator.style.display = 'none';
             this.syncSourcePanelId = null;
-            // 移除所有面板的同步目标样式
             document.querySelectorAll('.split-panel.sync-target').forEach(el => {
                 el.classList.remove('sync-target');
             });
         }
-        
-        this.updatePanelSyncState();  // 更新面板的同步状态显示
+
+        this.updatePanelSyncState();
     }
 
     /**
