@@ -8,6 +8,8 @@
 
 **CC-Web** is a high-performance web platform that lets you manage and use multiple AI coding assistants (Claude Code, Pi Agent, Codex, etc.) from a single browser interface. It features real-time streaming, multi-session split-screen, seamless agent switching, message queuing, dark theme, and other enterprise-grade capabilities.
 
+![demo](static/demo.gif)
+
 ---
 
 ## ✨ Core Features

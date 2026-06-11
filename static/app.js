@@ -2164,13 +2164,15 @@ class SplitViewManager {
     updatePanelSyncState() {
         document.querySelectorAll('.split-panel').forEach(el => {
             const panelId = el.dataset.panelId;
+            // 先移除旧的 Source 标记（切换源时清理旧源面板）
+            el.querySelector('.sync-source-badge')?.remove();
+
             if (this.syncMode) {
                 if (panelId === this.syncSourcePanelId) {
                     // ── 同步源面板 ──
                     el.classList.remove('sync-target');
-                    // 添加 "📤 Source" 标记到面板头部
                     const header = el.querySelector('.panel-header');
-                    if (header && !header.querySelector('.sync-source-badge')) {
+                    if (header) {
                         const badge = document.createElement('span');
                         badge.className = 'sync-source-badge';
                         badge.textContent = '📤 Source';
@@ -2184,7 +2186,6 @@ class SplitViewManager {
             } else {
                 // ── 同步模式关闭 ──
                 el.classList.remove('sync-target');
-                el.querySelector('.sync-source-badge')?.remove();
             }
         });
     }
