@@ -116,50 +116,74 @@ impl PiAssistant {
     }
 
     fn find_pi_cmd() -> String {
-        // 1. Check PI_CMD environment variable
+        // 1. 环境变量
         if let Ok(pi_path) = std::env::var("PI_CMD") {
             if std::path::Path::new(&pi_path).exists() {
+                log::info!("[pi] found via PI_CMD: {}", pi_path);
                 return pi_path;
             }
         }
 
-        // 2. Try running `pi` directly (works if in PATH)
-        if Command::new("pi").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
-            return "pi".to_string();
-        }
-
-        // 3. Search common installation paths
+        // 2. 文件路径检查（优先，不需要 spawn 子进程）
         if let Some(home) = dirs::home_dir() {
-            // npm global: ~/.npm-global/bin/pi or AppData/Roaming/npm/pi
-            let npm_paths = vec![
-                home.join("AppData").join("Roaming").join("npm").join("pi.cmd"),
-                home.join("AppData").join("Roaming").join("npm").join("pi"),
-                home.join(".npm-global").join("bin").join("pi"),
-            ];
-            for path in &npm_paths {
-                if path.exists() {
-                    return path.to_string_lossy().to_string();
-                }
-            }
-
-            // pi-node: ~/AppData/Local/pi-node/current/
+            // pi-node 安装路径（最常见的安装方式）
             let pi_node = home.join("AppData").join("Local").join("pi-node").join("current");
             if pi_node.exists() {
-                // Prefer direct node.exe + cli.js invocation
                 let node_exe = pi_node.join("node.exe");
                 let cli_js = pi_node.join("node_modules").join("@earendil-works").join("pi-coding-agent").join("dist").join("cli.js");
                 if node_exe.exists() && cli_js.exists() {
+                    log::info!("[pi] found via pi-node: {}", cli_js.display());
                     return format!("node:{}", cli_js.to_string_lossy());
                 }
-                // Fallback to pi.cmd
                 let pi_cmd = pi_node.join("pi.cmd");
                 if pi_cmd.exists() {
+                    log::info!("[pi] found pi.cmd: {}", pi_cmd.display());
                     return pi_cmd.to_string_lossy().to_string();
+                }
+            }
+
+            // npm 全局路径
+            let npm_paths = if cfg!(target_os = "windows") {
+                vec![
+                    home.join("AppData").join("Roaming").join("npm").join("pi.cmd"),
+                    home.join("AppData").join("Roaming").join("npm").join("pi"),
+                ]
+            } else {
+                vec![
+                    home.join(".npm-global").join("bin").join("pi"),
+                    home.join(".local").join("bin").join("pi"),
+                ]
+            };
+            for path in &npm_paths {
+                if path.exists() {
+                    log::info!("[pi] found at: {}", path.display());
+                    return path.to_string_lossy().to_string();
                 }
             }
         }
 
-        // 4. Fallback to just "pi"
+        // 3. PATH 中直接运行（放最后，因为需要 spawn 子进程）
+        if cfg!(target_os = "windows") {
+            for name in &["pi.cmd", "pi"] {
+                if Command::new("cmd.exe").arg("/C").arg(name).arg("--version")
+                    .stdout(Stdio::null()).stderr(Stdio::null())
+                    .output().map(|o| o.status.success()).unwrap_or(false)
+                {
+                    log::info!("[pi] found in PATH as: {}", name);
+                    return name.to_string();
+                }
+            }
+        } else {
+            if Command::new("pi").arg("--version")
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .output().map(|o| o.status.success()).unwrap_or(false)
+            {
+                log::info!("[pi] found in PATH");
+                return "pi".to_string();
+            }
+        }
+
+        log::warn!("[pi] not found, falling back to 'pi'");
         "pi".to_string()
     }
 }
@@ -723,20 +747,30 @@ impl AiAssistant for PiAssistant {
     }
 
     async fn is_available(&self) -> bool {
-        self.create_pi_command()
-            .args(&["--version"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        let mut cmd = self.create_pi_command();
+        cmd.args(&["--version"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        tokio::task::spawn_blocking(move || {
+            cmd.output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
     }
 
     async fn version(&self) -> Option<String> {
-        self.create_pi_command()
-            .args(&["--version"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|v| v.trim().to_string())
+        let mut cmd = self.create_pi_command();
+        cmd.args(&["--version"]);
+        tokio::task::spawn_blocking(move || {
+            cmd.output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|v| v.trim().to_string())
+        })
+        .await
+        .unwrap_or(None)
     }
 }
 

@@ -12,6 +12,7 @@ pub struct ClaudeAssistant {
     sessions: HashMap<String, ClaudeSession>,
     default_model: String,
     git_bash_path: String,
+    claude_cmd: String,
 }
 
 struct ClaudeSession {
@@ -33,6 +34,8 @@ impl ClaudeAssistant {
         let default_model = Self::read_default_model()
             .unwrap_or_else(|| "MiniMax-M2.7".to_string());
 
+        let claude_cmd = Self::find_claude_cmd();
+
         let git_bash_path = std::env::var("CLAUDE_CODE_GIT_BASH_PATH")
             .unwrap_or_else(|_| {
                 let paths = vec![
@@ -52,6 +55,110 @@ impl ClaudeAssistant {
             sessions: HashMap::new(),
             default_model,
             git_bash_path,
+            claude_cmd,
+        }
+    }
+
+    /// 查找 Claude CLI 可执行文件路径
+    ///
+    /// 搜索优先级：
+    /// 1. CLAUDE_CMD 环境变量
+    /// 2. PATH 中的 claude / claude.exe
+    /// 3. npm 全局安装路径
+    /// 4. 常见安装路径
+    /// 5. fallback: "claude"
+    fn find_claude_cmd() -> String {
+        // 1. 环境变量
+        if let Ok(path) = std::env::var("CLAUDE_CMD") {
+            if std::path::Path::new(&path).exists() {
+                log::info!("[claude] found via CLAUDE_CMD: {}", path);
+                return path;
+            }
+        }
+
+        // 2. npm 全局安装路径（优先检查文件是否存在，比 spawn 子进程更快）
+        if let Some(home) = dirs::home_dir() {
+            let npm_paths = if cfg!(target_os = "windows") {
+                vec![
+                    home.join("AppData").join("Roaming").join("npm").join("claude.cmd"),
+                    home.join("AppData").join("Roaming").join("npm").join("claude.exe"),
+                    home.join("AppData").join("Roaming").join("npm").join("claude"),
+                ]
+            } else {
+                vec![
+                    home.join(".npm-global").join("bin").join("claude"),
+                    home.join(".local").join("bin").join("claude"),
+                ]
+            };
+            for path in &npm_paths {
+                if path.exists() {
+                    log::info!("[claude] found at: {}", path.display());
+                    return path.to_string_lossy().to_string();
+                }
+            }
+
+            // 3. node_modules 全局安装（通过 node + cli.js 调用）
+            let global_node_modules = home.join("AppData").join("Roaming").join("npm").join("node_modules");
+            if global_node_modules.exists() {
+                let claude_cli = global_node_modules.join("@anthropic-ai").join("claude-code").join("cli.js");
+                if claude_cli.exists() {
+                    log::info!("[claude] found via node_modules: {}", claude_cli.display());
+                    return format!("node:{}", claude_cli.to_string_lossy());
+                }
+            }
+
+            // 4. Linux/macOS 常见路径
+            let common_paths = vec![
+                "/usr/local/bin/claude",
+                "/usr/bin/claude",
+            ];
+            for path in &common_paths {
+                if std::path::Path::new(path).exists() {
+                    log::info!("[claude] found at: {}", path);
+                    return path.to_string();
+                }
+            }
+        }
+
+        // 5. 尝试 PATH 中直接运行（spawn 子进程检测，放最后）
+        // Windows 上需要分别尝试 claude、claude.cmd、claude.exe
+        if cfg!(target_os = "windows") {
+            for name in &["claude.cmd", "claude.exe", "claude"] {
+                if Command::new("cmd.exe").arg("/C").arg(name).arg("--version")
+                    .stdout(Stdio::null()).stderr(Stdio::null())
+                    .output().map(|o| o.status.success()).unwrap_or(false)
+                {
+                    log::info!("[claude] found in PATH as: {}", name);
+                    return name.to_string();
+                }
+            }
+        } else {
+            if Command::new("claude").arg("--version")
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .output().map(|o| o.status.success()).unwrap_or(false)
+            {
+                log::info!("[claude] found in PATH");
+                return "claude".to_string();
+            }
+        }
+
+        log::warn!("[claude] not found, falling back to 'claude'");
+        "claude".to_string()
+    }
+
+    /// 创建 Claude 命令（处理 node: 前缀和 .cmd 文件）
+    fn create_claude_command(&self) -> Command {
+        if self.claude_cmd.starts_with("node:") {
+            let cli_js = &self.claude_cmd[5..];
+            let mut cmd = Command::new("node");
+            cmd.arg(cli_js);
+            cmd
+        } else if self.claude_cmd.ends_with(".cmd") && cfg!(target_os = "windows") {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.arg("/C").arg(&self.claude_cmd);
+            cmd
+        } else {
+            Command::new(&self.claude_cmd)
         }
     }
 
@@ -141,6 +248,7 @@ impl AiAssistant for ClaudeAssistant {
         let model = session.model.clone();
         let message = message.to_string();
         let git_bash = self.git_bash_path.clone();
+        let claude_cmd = self.claude_cmd.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let args = vec![
@@ -153,7 +261,7 @@ impl AiAssistant for ClaudeAssistant {
                 model.clone(),
             ];
 
-            let mut cmd = Command::new("claude");
+            let mut cmd = Command::new(&claude_cmd);
             cmd.args(&args)
                 .current_dir(&cwd)
                 .env("CLAUDE_CODE_GIT_BASH_PATH", &git_bash)
@@ -210,6 +318,7 @@ impl AiAssistant for ClaudeAssistant {
         let cwd = session.cwd.clone();
         let model = session.model.clone();
         let git_bash = self.git_bash_path.clone();
+        let claude_cmd = self.claude_cmd.clone();
 
         callback(AiEvent {
             event_type: "start".to_string(),
@@ -231,7 +340,7 @@ impl AiAssistant for ClaudeAssistant {
                 model.clone(),
             ];
 
-            let mut cmd = Command::new("claude");
+            let mut cmd = Command::new(&claude_cmd);
             cmd.args(&args)
                 .current_dir(&cwd)
                 .env("CLAUDE_CODE_GIT_BASH_PATH", &git_bash)
@@ -426,7 +535,7 @@ impl AiAssistant for ClaudeAssistant {
             args.push(resume_id.to_string());
         }
 
-        let mut cmd = Command::new("claude");
+        let mut cmd = self.create_claude_command();
         cmd.args(&args)
             .current_dir(cwd)
             .env("CLAUDE_CODE_GIT_BASH_PATH", git_bash)
@@ -496,19 +605,29 @@ impl AiAssistant for ClaudeAssistant {
     }
 
     async fn is_available(&self) -> bool {
-        Command::new("claude")
-            .args(&["--version"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        let mut cmd = self.create_claude_command();
+        cmd.args(&["--version"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        tokio::task::spawn_blocking(move || {
+            cmd.output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
     }
 
     async fn version(&self) -> Option<String> {
-        Command::new("claude")
-            .args(&["--version"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|v| v.trim().to_string())
+        let mut cmd = self.create_claude_command();
+        cmd.args(&["--version"]);
+        tokio::task::spawn_blocking(move || {
+            cmd.output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|v| v.trim().to_string())
+        })
+        .await
+        .unwrap_or(None)
     }
 }

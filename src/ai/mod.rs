@@ -87,10 +87,14 @@ pub struct AssistantRegistry {
     /// name → assistant handle (each independently lockable)
     assistants: std::collections::HashMap<String, AssistantHandle>,
     default_name: String,
-    /// Cached availability results (name -> (available, version))
+    /// Cached availability results (name -> (available, version, timestamp))
     /// 使用 Mutex 实现内部可变性，这样 list_available 只需要 &self（读锁）
-    availability_cache: std::sync::Mutex<std::collections::HashMap<String, (bool, Option<String>)>>,
+    /// TTL: 缓存 5 分钟后自动过期，下次查询时重新检测
+    availability_cache: std::sync::Mutex<std::collections::HashMap<String, (bool, Option<String>, std::time::Instant)>>,
 }
+
+/// 缓存有效期：5 分钟
+const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl AssistantRegistry {
     pub fn new() -> Self {
@@ -154,30 +158,51 @@ impl AssistantRegistry {
         }).collect()
     }
 
-    /// List all assistants with availability check (cached)
+    /// List all assistants with availability check (cached, TTL 5 分钟)
     /// 只需要 &self，通过 Mutex 内部可变性更新缓存
     pub async fn list_available(&self) -> Vec<AssistantInfo> {
         let mut result = Vec::new();
         for (name, handle) in self.assistants.iter() {
-            let a = handle.read().unwrap();
+            // 先获取元数据（不依赖缓存）
+            let display_name = {
+                let a = handle.read().unwrap();
+                a.display_name().to_string()
+            };
+
+            // 检查缓存
             let cached = {
                 let cache = self.availability_cache.lock().unwrap();
                 cache.get(name).cloned()
             };
-            let (available, version) = if let Some((avail, ver)) = cached {
-                (avail, ver)
+
+            let (available, version) = if let Some((avail, ver, ts)) = cached {
+                if ts.elapsed() < CACHE_TTL {
+                    // 缓存未过期，直接使用
+                    (avail, ver)
+                } else {
+                    // 缓存已过期，重新检测
+                    let a = handle.read().unwrap();
+                    let avail = a.is_available().await;
+                    let ver = if avail { a.version().await } else { None };
+                    drop(a);
+                    let mut cache = self.availability_cache.lock().unwrap();
+                    cache.insert(name.clone(), (avail, ver.clone(), std::time::Instant::now()));
+                    (avail, ver)
+                }
             } else {
+                // 首次检测
+                let a = handle.read().unwrap();
                 let avail = a.is_available().await;
                 let ver = if avail { a.version().await } else { None };
-                {
-                    let mut cache = self.availability_cache.lock().unwrap();
-                    cache.insert(name.clone(), (avail, ver.clone()));
-                }
+                drop(a);
+                let mut cache = self.availability_cache.lock().unwrap();
+                cache.insert(name.clone(), (avail, ver.clone(), std::time::Instant::now()));
                 (avail, ver)
             };
+
             result.push(AssistantInfo {
                 name: name.clone(),
-                display_name: a.display_name().to_string(),
+                display_name,
                 is_default: *name == self.default_name,
                 available,
                 version,

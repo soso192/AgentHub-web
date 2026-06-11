@@ -40,31 +40,58 @@ impl CodexAssistant {
     }
 
     fn find_codex_cmd() -> String {
-        // Check CODEX_CMD env var
+        // 1. 环境变量
         if let Ok(path) = std::env::var("CODEX_CMD") {
             if std::path::Path::new(&path).exists() {
+                log::info!("[codex] found via CODEX_CMD: {}", path);
                 return path;
             }
         }
 
-        // Try running `codex` directly
-        if Command::new("codex").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
-            return "codex".to_string();
-        }
-
-        // Search common locations
+        // 2. 文件路径检查（优先，不需要 spawn 子进程）
         if let Some(home) = dirs::home_dir() {
-            let npm_paths = vec![
-                home.join("AppData").join("Roaming").join("npm").join("codex.cmd"),
-                home.join("AppData").join("Roaming").join("npm").join("codex"),
-            ];
+            let npm_paths = if cfg!(target_os = "windows") {
+                vec![
+                    home.join("AppData").join("Roaming").join("npm").join("codex.cmd"),
+                    home.join("AppData").join("Roaming").join("npm").join("codex.exe"),
+                    home.join("AppData").join("Roaming").join("npm").join("codex"),
+                ]
+            } else {
+                vec![
+                    home.join(".npm-global").join("bin").join("codex"),
+                    home.join(".local").join("bin").join("codex"),
+                ]
+            };
             for path in &npm_paths {
                 if path.exists() {
+                    log::info!("[codex] found at: {}", path.display());
                     return path.to_string_lossy().to_string();
                 }
             }
         }
 
+        // 3. PATH 中直接运行（放最后，因为需要 spawn 子进程）
+        if cfg!(target_os = "windows") {
+            for name in &["codex.cmd", "codex.exe", "codex"] {
+                if Command::new("cmd.exe").arg("/C").arg(name).arg("--version")
+                    .stdout(Stdio::null()).stderr(Stdio::null())
+                    .output().map(|o| o.status.success()).unwrap_or(false)
+                {
+                    log::info!("[codex] found in PATH as: {}", name);
+                    return name.to_string();
+                }
+            }
+        } else {
+            if Command::new("codex").arg("--version")
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .output().map(|o| o.status.success()).unwrap_or(false)
+            {
+                log::info!("[codex] found in PATH");
+                return "codex".to_string();
+            }
+        }
+
+        log::warn!("[codex] not found, falling back to 'codex'");
         "codex".to_string()
     }
 
@@ -478,20 +505,30 @@ impl AiAssistant for CodexAssistant {
     }
 
     async fn is_available(&self) -> bool {
-        Command::new(&self.codex_cmd)
-            .args(&["--version"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        let mut cmd = self.create_codex_command();
+        cmd.args(&["--version"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        tokio::task::spawn_blocking(move || {
+            cmd.output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
     }
 
     async fn version(&self) -> Option<String> {
-        Command::new(&self.codex_cmd)
-            .args(&["--version"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|v| v.trim().to_string())
+        let mut cmd = self.create_codex_command();
+        cmd.args(&["--version"]);
+        tokio::task::spawn_blocking(move || {
+            cmd.output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|v| v.trim().to_string())
+        })
+        .await
+        .unwrap_or(None)
     }
 }
 
