@@ -389,12 +389,25 @@ async function deleteSession(sessionId) {
     if (view) { view.remove(); sessionViews.delete(sessionId); }
     updateQueueUI();
 
+    // 如果面板模式中有该会话的面板，自动移除
+    if (splitViewManager.enabled) {
+        for (const [panelId, panel] of splitViewManager.panels) {
+            if (panel.sessionId === sessionId) {
+                splitViewManager.removePanel(panelId);
+                break;
+            }
+        }
+    }
+
     try {
         await fetch(`${API_BASE}/api/sessions/${sessionId}`, { method: 'DELETE' });
         if (currentSessionId === sessionId) {
             currentSessionId = null;
-            welcomeScreen.style.display = 'flex';
-            chatContainer.style.display = 'none';
+            // 面板模式下不显示欢迎页面
+            if (!splitViewManager.enabled) {
+                welcomeScreen.style.display = 'flex';
+                chatContainer.style.display = 'none';
+            }
             inputArea.style.display = 'none';
         }
         await loadSessions();
@@ -1813,6 +1826,9 @@ class SplitViewManager {
             layoutSelect.style.display = 'inline-block';  // 显示布局选择
             addBtn.style.display = 'inline-flex';    // 显示添加按钮
             syncBtn.style.display = 'inline-flex';   // 显示同步按钮
+
+            // 隐藏欢迎页面（避免和面板同时显示）
+            welcomeScreen.style.display = 'none';
             
             // 如果有当前会话且面板为空，自动添加为第一个面板
             if (currentSessionId && this.panels.size === 0) {
@@ -2046,10 +2062,19 @@ class SplitViewManager {
             if (panel.sessionId) {
                 cleanupSessionStreaming(panel.sessionId);
             }
+
+            // 如果删除的是同步源面板，自动退出同步模式
+            if (this.syncMode && panelId === this.syncSourcePanelId) {
+                this.syncSourcePanelId = null;
+                this.syncMode = false;
+                const syncBtn = document.getElementById('toggleSyncMode');
+                if (syncBtn) syncBtn.classList.remove('active');
+                document.querySelector('.sync-mode-indicator')?.remove();
+            }
+
             this.panels.delete(panelId);
 
             // 用 null 替换（保留位置），而非 splice 删除
-            // 这样其他面板的位置索引不会改变
             const orderIndex = this.panelOrder.indexOf(panelId);
             if (orderIndex !== -1) {
                 this.panelOrder[orderIndex] = null;
@@ -2061,7 +2086,7 @@ class SplitViewManager {
                 this.activePanelId = firstPanel || null;
             }
 
-            this.renderGrid();  // 重新渲染网格（renderGrid 会清理末尾的 null）
+            this.renderGrid();
         }
     }
 
@@ -2279,6 +2304,24 @@ class SplitViewManager {
         }
 
         this.updatePanelSyncState();  // 更新同步状态
+        this.updateSyncButtonState(); // 更新同步按钮可用状态
+    }
+
+    /**
+     * 更新同步按钮的可用状态
+     * 只有至少有 2 个面板时才能开启同步模式
+     */
+    updateSyncButtonState() {
+        const syncBtn = document.getElementById('toggleSyncMode');
+        if (!syncBtn) return;
+        const hasEnoughPanels = this.panels.size >= 2;
+        syncBtn.disabled = !hasEnoughPanels;
+        syncBtn.style.opacity = hasEnoughPanels ? '1' : '0.4';
+        syncBtn.style.cursor = hasEnoughPanels ? 'pointer' : 'not-allowed';
+        // 如果面板不足 2 个且同步模式开启，自动关闭
+        if (!hasEnoughPanels && this.syncMode) {
+            this.toggleSyncMode();
+        }
     }
 
     /**
@@ -2821,14 +2864,29 @@ function openAddPanelModal() {
         const icon = ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default;
         assistantSelect.innerHTML += `<option value="${a.name}">${icon} ${a.display_name}</option>`;
     });
-    
-    // ── 填充模型选择下拉框 ──
+
+    // ── 填充模型选择下拉框（当前助手的模型）──
     const modelSelect = document.getElementById('panelModelSelect');
     modelSelect.innerHTML = '';
     models.forEach(m => {
         modelSelect.innerHTML += `<option value="${m.id}">${m.name}</option>`;
     });
-    
+
+    // ── 切换助手时更新模型列表 ──
+    assistantSelect.onchange = async () => {
+        const selectedAssistant = assistantSelect.value;
+        try {
+            const res = await fetch(`${API_BASE}/api/models?assistant=${encodeURIComponent(selectedAssistant)}`);
+            const data = await res.json();
+            modelSelect.innerHTML = '';
+            (data.model_list || []).forEach(m => {
+                modelSelect.innerHTML += `<option value="${m.id}">${m.name}</option>`;
+            });
+        } catch (e) {
+            console.error('Failed to load models for assistant:', e);
+        }
+    };
+
     // 显示/隐藏新会话字段
     updateNewSessionFields();
     sessionSelect.onchange = updateNewSessionFields;
