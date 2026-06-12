@@ -149,6 +149,8 @@ async function loadSessions() {
         const data = await res.json();
         sessions = data.sessions || [];
         renderSessionList();
+        // 如果面板模式已开启，刷新面板标题（会话的 firstMessage 可能在流式完成后更新）
+        if (splitViewManager.enabled) splitViewManager.updatePanelHeaders();
     } catch (e) {
         console.error('Failed to load sessions:', e);
     }
@@ -221,6 +223,7 @@ function selectAssistant(name) {
     assistantSelector.value = name;
     renderAssistantCards();
     renderAssistantStatus();
+    updateAssistantSelectors();  // 同步更新新会话表单中的助手下拉框
     loadModels();
     updateSwitchButton();
 }
@@ -305,7 +308,11 @@ async function selectSession(sessionId) {
     // so the dropdown always reflects the current session's assistant.
     const sessionInfo = sessions.find(s => s.id === sessionId);
     if (sessionInfo) {
-        if (sessionInfo.assistant) { currentAssistant = sessionInfo.assistant; assistantSelector.value = sessionInfo.assistant; }
+        if (sessionInfo.assistant) {
+            currentAssistant = sessionInfo.assistant;
+            assistantSelector.value = sessionInfo.assistant;
+            updateAssistantSelectors(); // 同步更新新会话表单中的助手下拉框
+        }
         // 先加载当前助手的模型列表（loadModels 会根据 currentAssistant 请求后端）
         // 加载完成后，currentModel 被设为该助手的默认模型，models 数组被更新为该助手支持的模型列表
         await loadModels();
@@ -1006,9 +1013,16 @@ function handleStreamEvent(sessionId, event) {
     function ensureDiv() {
         // 检查 streamingDiv 是否仍在 DOM 中（面板模式下 renderGrid 会重建 DOM）
         if (st.streamingDiv && !document.body.contains(st.streamingDiv)) {
-            // DOM 已被重建，需要重新获取引用
             st.streamingDiv = null;
             st.contentDiv = null;
+        }
+
+        // 面板模式下，内容即将渲染，移除 Thinking 指示器
+        if (st.panelId) {
+            const chatDiv = document.getElementById(`panel-chat-${st.panelId}`);
+            if (chatDiv) {
+                chatDiv.querySelectorAll('.panel-thinking-indicator').forEach(el => el.remove());
+            }
         }
 
         if (!st.streamingDiv) {
@@ -1016,9 +1030,6 @@ function handleStreamEvent(sessionId, event) {
             if (st.panelId) {
                 const chatDiv = document.getElementById(`panel-chat-${st.panelId}`);
                 if (chatDiv) {
-                    // 移除 Thinking 指示器（内容即将开始渲染）
-                    const thinkingIndicator = chatDiv.querySelector('.panel-thinking-indicator');
-                    if (thinkingIndicator) thinkingIndicator.remove();
 
                     const div = document.createElement('div');
                     div.className = 'message assistant streaming';
@@ -1261,6 +1272,8 @@ function finishStreaming(sessionId) {
     processSessionQueue(sessionId);
     // 更新切换按钮状态（流式传输结束，可能可以切换了）
     updateSwitchButton();
+    // 刷新面板标题（会话的 firstMessage 可能在流式完成后从 null 变为实际内容）
+    if (splitViewManager.enabled) splitViewManager.updatePanelHeaders();
 }
 
 /**
@@ -1959,8 +1972,25 @@ class SplitViewManager {
                 chatContainer.style.flexDirection = 'column';
                 inputArea.style.display = 'block';
 
+                // 退出面板模式时，如果 AI 仍在流式传输，将 SSE 连接重定向回主视图
+                const isStreaming = streamingSessions.has(currentSessionId);
+                if (isStreaming) {
+                    typingIndicator.style.display = 'block';
+                    typingIndicator.querySelector('.assistant-name').textContent = currentAssistant;
+                    // 清除面板模式的 DOM 引用，让后续 SSE 事件渲染到主视图
+                    const st = streamingSessions.get(currentSessionId);
+                    if (st) {
+                        st.panelId = null;
+                        st.streamingDiv = null;
+                        st.contentDiv = null;
+                    }
+                } else {
+                    typingIndicator.style.display = 'none';
+                }
+
                 const view = getSessionView(currentSessionId);
                 view.innerHTML = '';
+                // 从后端 API 获取最新消息（可能包含面板模式下产生的消息）
                 fetch(`${API_BASE}/api/sessions/${currentSessionId}`)
                     .then(res => res.json())
                     .then(data => {
@@ -2154,8 +2184,24 @@ class SplitViewManager {
                           })();
         st.contentDiv = st.streamingDiv.querySelector('.message-content');
 
-        // 标记为面板模式（panelId），这样 handlePanelStreamEvent 可以处理后续事件
+        // 标记为面板模式（panelId），这样 handleStreamEvent 可以处理后续事件
         st.panelId = panelId;
+
+        // 接管时如果 assistant 为空（主视图创建的 SSE），补上助手名称
+        if (!st.assistant) {
+            st.assistant = sessions.find(s => s.id === sessionId)?.assistant || 'claude';
+        }
+
+        // 添加 "XXX Thinking..." 指示器到面板（start 事件已在主视图处理过，不会在面板中再次触发）
+        // 这样用户切换到面板模式时能看到 AI 正在思考的提示，而不是空白
+        if (!chatDiv.querySelector('.panel-thinking-indicator') && !st.hasContent) {
+            const icon = ASSISTANT_ICONS[st.assistant] || ASSISTANT_ICONS.default;
+            const thinkingDiv = document.createElement('div');
+            thinkingDiv.className = 'panel-thinking-indicator';
+            thinkingDiv.innerHTML = `<span class="assistant-name">${icon} ${st.assistant}</span> <span class="thinking-text">Thinking...</span>`;
+            chatDiv.appendChild(thinkingDiv);
+            chatDiv.scrollTop = chatDiv.scrollHeight;
+        }
 
         // 更新面板的流式状态指示器
         this.updatePanelStreaming(panelId, true);
@@ -2442,8 +2488,35 @@ class SplitViewManager {
     }
 
     /**
+     * 刷新所有面板的标题和模型显示
+     *
+     * 在 `sessions` 数据更新后调用（如流式完成后会话 firstMessage 从 null 变为实际内容）。
+     * 只更新面板头部 DOM 文本，不重新渲染整个面板，避免丢失流式状态。
+     */
+    updatePanelHeaders() {
+        document.querySelectorAll('.split-panel').forEach(el => {
+            const panelId = el.dataset.panelId;
+            const panel = this.panels.get(panelId);
+            if (!panel || !panel.sessionId) return;
+            const session = sessions.find(s => s.id === panel.sessionId);
+            if (!session) return;
+
+            const titleEl = el.querySelector('.panel-title');
+            const modelEl = el.querySelector('.panel-model');
+            if (titleEl) {
+                const newTitle = session.firstMessage?.slice(0, 30) || 'Untitled';
+                titleEl.textContent = newTitle;
+                titleEl.title = session.firstMessage || '';
+            }
+            if (modelEl && session.model) {
+                modelEl.textContent = session.model;
+            }
+        });
+    }
+
+    /**
      * 创建面板 DOM 元素
-     * 
+     *
      * 面板结构：
      * ┌─────────────────────────────┐
      * │ 面板头部 (panel-header)      │  <- 显示助手图标、标题、模型、状态、操作按钮
@@ -2462,8 +2535,9 @@ class SplitViewManager {
         div.className = `split-panel ${panelId === this.activePanelId ? 'active' : ''}`;
         div.dataset.panelId = panelId;
         
-        // 获取会话信息
-        const session = panel.sessionInfo || sessions.find(s => s.id === panel.sessionId);
+        // 获取会话信息（始终从最新 sessions 数组读取，避免使用 addPanel 时的缓存快照）
+        // panel.sessionInfo 是 addPanel 时保存的过期快照，可能 firstMessage 为 null
+        const session = sessions.find(s => s.id === panel.sessionId) || panel.sessionInfo;
         const assistant = session?.assistant || 'claude';
         const icon = ASSISTANT_ICONS[assistant] || ASSISTANT_ICONS.default;
         const title = session?.firstMessage?.slice(0, 30) || 'Untitled';
@@ -2979,7 +3053,8 @@ function openAddPanelModal() {
     assistantSelect.innerHTML = '';
     assistants.forEach(a => {
         const icon = ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default;
-        assistantSelect.innerHTML += `<option value="${a.name}">${icon} ${a.display_name}</option>`;
+        const status = a.available ? '' : ' ⚠️未安装';
+        assistantSelect.innerHTML += `<option value="${a.name}" ${a.available ? '' : 'disabled'}>${icon} ${a.display_name}${status}</option>`;
     });
 
     // ── 填充模型选择下拉框（当前助手的模型）──

@@ -72,14 +72,31 @@ impl PiAssistant {
     }
 
     pub fn new() -> Self {
-        // Find the pi CLI executable
         let pi_cmd = Self::find_pi_cmd();
+        // 从 models.json 读取默认模型（第一个可用的模型 ID）
+        let default_model = Self::read_default_model().unwrap_or_else(|| {
+            log::warn!("[pi] no models.json found, using 'unknown' as default model");
+            "unknown".to_string()
+        });
 
         Self {
             sessions: HashMap::new(),
-            default_model: "mimo-v2.5-pro".to_string(),
+            default_model,
             pi_cmd,
         }
+    }
+
+    /// 从 ~/.pi/agent/models.json 读取默认模型（第一个 provider 的第一个模型）
+    fn read_default_model() -> Option<String> {
+        let models_path = dirs::home_dir()?.join(".pi").join("agent").join("models.json");
+        let content = std::fs::read_to_string(models_path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let providers = root.get("providers")?.as_object()?;
+        let (_, first_provider) = providers.iter().next()?;
+        let models = first_provider.get("models")?.as_array()?;
+        let first_model = models.first()?;
+        let id = first_model.get("id")?.as_str()?;
+        Some(id.to_string())
     }
 
     /// Find the session file path from a UUID by searching ~/.pi/agent/sessions/
@@ -222,19 +239,44 @@ impl PiAssistant {
         log::warn!("[pi] not found, falling back to 'pi'");
         "pi".to_string()
     }
-}
 
-#[async_trait]
-impl AiAssistant for PiAssistant {
-    fn name(&self) -> &str {
-        "pi"
+    /// 从 ~/.pi/agent/models.json 动态读取可用模型列表
+    ///
+    /// Pi Agent 会在安装/更新时自动更新这个文件，所以它总是最新的。
+    /// 如果文件不存在或解析失败，返回 None（调用方会退到静态列表）。
+    fn discover_models_from_file() -> Option<Vec<ModelInfo>> {
+        let models_path = dirs::home_dir()?.join(".pi").join("agent").join("models.json");
+        let content = std::fs::read_to_string(models_path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let providers = root.get("providers")?.as_object()?;
+
+        let mut result = Vec::new();
+        for (provider_name, provider_config) in providers {
+            let models = provider_config.get("models")?.as_array()?;
+            for m in models {
+                let id = m.get("id")?.as_str()?;
+                let name = m.get("name").and_then(|n| n.as_str()).unwrap_or(id);
+                let max_tokens = m.get("compat")
+                    .and_then(|c| c.get("maxOutputTokens"))
+                    .and_then(|t| t.as_u64())
+                    .or_else(|| m.get("maxTokens").and_then(|t| t.as_u64()));
+
+                result.push(ModelInfo {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    provider: provider_name.clone(),
+                    max_tokens: max_tokens.map(|t| t as u32),
+                    supports_streaming: true,
+                    supports_tools: true,
+                });
+            }
+        }
+
+        if result.is_empty() { None } else { Some(result) }
     }
 
-    fn display_name(&self) -> &str {
-        "Pi Agent"
-    }
-
-    fn available_models(&self) -> Vec<ModelInfo> {
+    /// 静态模型列表（动态发现失败的兜底）
+    fn fallback_models() -> Vec<ModelInfo> {
         vec![
             ModelInfo {
                 id: "mimo-v2.5-pro".to_string(),
@@ -261,6 +303,30 @@ impl AiAssistant for PiAssistant {
                 supports_tools: true,
             },
         ]
+    }
+}
+
+#[async_trait]
+impl AiAssistant for PiAssistant {
+    fn name(&self) -> &str {
+        "pi"
+    }
+
+    fn display_name(&self) -> &str {
+        "Pi Agent"
+    }
+
+    /// 获取可用模型列表
+    ///
+    /// 优先从 ~/.pi/agent/models.json 动态读取（Pi Agent 自动维护这个文件），
+    /// 如果文件不存在或解析失败，退到静态列表确保用户不会看到空下拉框。
+    fn available_models(&self) -> Vec<ModelInfo> {
+        // 尝试从 models.json 动态发现
+        if let Some(models) = PiAssistant::discover_models_from_file() {
+            return models;
+        }
+        // 退到静态列表
+        PiAssistant::fallback_models()
     }
 
     fn default_model(&self) -> &str {
