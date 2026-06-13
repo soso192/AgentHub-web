@@ -30,7 +30,10 @@ impl Clone for CodexSession {
 impl CodexAssistant {
     pub fn new() -> Self {
         let codex_cmd = Self::find_codex_cmd();
-        let default_model = Self::read_default_model().unwrap_or_else(|| "qwen3.6-plus".to_string());
+        let default_model = Self::read_default_model().unwrap_or_else(|| {
+            log::warn!("[codex] no config.toml found, default model set to 'unknown'");
+            "unknown".to_string()
+        });
 
         Self {
             sessions: HashMap::new(),
@@ -118,6 +121,38 @@ impl CodexAssistant {
             Command::new(&self.codex_cmd)
         }
     }
+
+    /// 从 ~/.codex/models_cache.json 读取 Codex 支持的模型列表
+    ///
+    /// Codex 在启动和安装新模型时自动更新这个文件。
+    /// 只返回 visibility = "list" 的模型（正式发布的模型）。
+    fn discover_models_from_cache() -> Option<Vec<ModelInfo>> {
+        let path = dirs::home_dir()?.join(".codex").join("models_cache.json");
+        let content = std::fs::read_to_string(path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let models = root.get("models")?.as_array()?;
+
+        let mut result = Vec::new();
+        for m in models {
+            let slug = m.get("slug")?.as_str()?;
+            let name = m.get("display_name").and_then(|n| n.as_str()).unwrap_or(slug);
+            let provider = slug.split('-').next().unwrap_or("unknown");
+            // 只返回可见模型（visibility = "list"）
+            let visibility = m.get("visibility").and_then(|v| v.as_str()).unwrap_or("");
+            if visibility != "list" { continue; }
+
+            result.push(ModelInfo {
+                id: slug.to_string(),
+                name: name.to_string(),
+                provider: provider.to_string(),
+                max_tokens: None,
+                supports_streaming: true,
+                supports_tools: true,
+            });
+        }
+
+        if result.is_empty() { None } else { Some(result) }
+    }
 }
 
 #[async_trait]
@@ -131,28 +166,17 @@ impl AiAssistant for CodexAssistant {
     }
 
     fn available_models(&self) -> Vec<ModelInfo> {
+        // 优先从 models_cache.json 动态读取（Codex 自动维护这个文件）
+        if let Some(models) = CodexAssistant::discover_models_from_cache() {
+            return models;
+        }
+        // 退到静态列表
         vec![
             ModelInfo {
-                id: "qwen3.6-plus".to_string(),
-                name: "Qwen 3.6 Plus".to_string(),
-                provider: "dashscope".to_string(),
-                max_tokens: Some(128000),
-                supports_streaming: true,
-                supports_tools: true,
-            },
-            ModelInfo {
-                id: "o3".to_string(),
-                name: "O3".to_string(),
-                provider: "openai".to_string(),
-                max_tokens: Some(200000),
-                supports_streaming: true,
-                supports_tools: true,
-            },
-            ModelInfo {
-                id: "o4-mini".to_string(),
-                name: "O4 Mini".to_string(),
-                provider: "openai".to_string(),
-                max_tokens: Some(200000),
+                id: "unknown".to_string(),
+                name: "Unknown".to_string(),
+                provider: "unknown".to_string(),
+                max_tokens: None,
                 supports_streaming: true,
                 supports_tools: true,
             },

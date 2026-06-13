@@ -149,6 +149,8 @@ async function loadSessions() {
         const data = await res.json();
         sessions = data.sessions || [];
         renderSessionList();
+        // 如果面板模式已开启，刷新面板标题（会话的 firstMessage 可能在流式完成后更新）
+        if (splitViewManager.enabled) splitViewManager.updatePanelHeaders();
     } catch (e) {
         console.error('Failed to load sessions:', e);
     }
@@ -166,7 +168,7 @@ function updateAssistantSelectors() {
             const status = a.available ? '' : ' ⚠️未安装';
             const version = a.version ? ` v${a.version}` : '';
             opt.textContent = `${ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default} ${a.display_name}${version}${status}`;
-            if (!a.available) opt.style.color = '#999';
+            if (!a.available) { opt.style.color = '#999'; opt.disabled = true; }
             if (a.name === currentAssistant) opt.selected = true;
             select.appendChild(opt);
         });
@@ -221,6 +223,7 @@ function selectAssistant(name) {
     assistantSelector.value = name;
     renderAssistantCards();
     renderAssistantStatus();
+    updateAssistantSelectors();  // 同步更新新会话表单中的助手下拉框
     loadModels();
     updateSwitchButton();
 }
@@ -305,11 +308,31 @@ async function selectSession(sessionId) {
     // so the dropdown always reflects the current session's assistant.
     const sessionInfo = sessions.find(s => s.id === sessionId);
     if (sessionInfo) {
-        if (sessionInfo.assistant) { currentAssistant = sessionInfo.assistant; assistantSelector.value = sessionInfo.assistant; }
-        if (sessionInfo.model) { currentModel = sessionInfo.model; modelSelector.value = sessionInfo.model; statusDisplay.textContent = sessionInfo.model; }
+        if (sessionInfo.assistant) {
+            currentAssistant = sessionInfo.assistant;
+            assistantSelector.value = sessionInfo.assistant;
+            updateAssistantSelectors(); // 同步更新新会话表单中的助手下拉框
+        }
+        // 先加载当前助手的模型列表（loadModels 会根据 currentAssistant 请求后端）
+        // 加载完成后，currentModel 被设为该助手的默认模型，models 数组被更新为该助手支持的模型列表
         await loadModels();
         if (gen !== selectSessionGeneration) return;
-        if (sessionInfo.model) { currentModel = sessionInfo.model; modelSelector.value = sessionInfo.model; statusDisplay.textContent = sessionInfo.model; }
+        // 验证会话此前保存的模型是否仍然有效
+        // 场景：用户之前用了 Pi Agent + mimo-v2.5-pro，然后切换了助手，模型列表变了
+        // 如果会话保存的模型在当前助手的模型列表中存在，则沿用；否则用默认模型
+        if (sessionInfo.model) {
+            const isValidModel = models.some(m => m.id === sessionInfo.model);
+            if (isValidModel) {
+                // 模型有效，恢复会话的模型（比如切回 Pi 会话时恢复 "mimo-v2.5-pro"）
+                currentModel = sessionInfo.model;
+            } else {
+                // 模型无效，使用 loadModels() 刚才设置的当前助手默认模型
+                // 例如 Pi 会话的模型是 "minimax"（Claude 的模型），Pi 不认，就用 Pi 的默认模型
+                console.warn(`Model "${sessionInfo.model}" not valid for assistant "${currentAssistant}", using default "${currentModel}"`);
+            }
+            modelSelector.value = currentModel;
+            statusDisplay.textContent = currentModel;
+        }
     }
 
     // Get or create this session's DOM view
@@ -390,12 +413,11 @@ async function deleteSession(sessionId) {
     updateQueueUI();
 
     // 如果面板模式中有该会话的面板，自动移除
-    if (splitViewManager.enabled) {
-        for (const [panelId, panel] of splitViewManager.panels) {
-            if (panel.sessionId === sessionId) {
-                splitViewManager.removePanel(panelId);
-                break;
-            }
+    // 无论当前是否在面板模式，都要清理面板数据
+    for (const [panelId, panel] of splitViewManager.panels) {
+        if (panel.sessionId === sessionId) {
+            splitViewManager.removePanel(panelId);
+            break;
         }
     }
 
@@ -991,9 +1013,16 @@ function handleStreamEvent(sessionId, event) {
     function ensureDiv() {
         // 检查 streamingDiv 是否仍在 DOM 中（面板模式下 renderGrid 会重建 DOM）
         if (st.streamingDiv && !document.body.contains(st.streamingDiv)) {
-            // DOM 已被重建，需要重新获取引用
             st.streamingDiv = null;
             st.contentDiv = null;
+        }
+
+        // 面板模式下，内容即将渲染，移除 Thinking 指示器
+        if (st.panelId) {
+            const chatDiv = document.getElementById(`panel-chat-${st.panelId}`);
+            if (chatDiv) {
+                chatDiv.querySelectorAll('.panel-thinking-indicator').forEach(el => el.remove());
+            }
         }
 
         if (!st.streamingDiv) {
@@ -1001,9 +1030,6 @@ function handleStreamEvent(sessionId, event) {
             if (st.panelId) {
                 const chatDiv = document.getElementById(`panel-chat-${st.panelId}`);
                 if (chatDiv) {
-                    // 移除 Thinking 指示器（内容即将开始渲染）
-                    const thinkingIndicator = chatDiv.querySelector('.panel-thinking-indicator');
-                    if (thinkingIndicator) thinkingIndicator.remove();
 
                     const div = document.createElement('div');
                     div.className = 'message assistant streaming';
@@ -1246,6 +1272,8 @@ function finishStreaming(sessionId) {
     processSessionQueue(sessionId);
     // 更新切换按钮状态（流式传输结束，可能可以切换了）
     updateSwitchButton();
+    // 刷新面板标题（会话的 firstMessage 可能在流式完成后从 null 变为实际内容）
+    if (splitViewManager.enabled) splitViewManager.updatePanelHeaders();
 }
 
 /**
@@ -1279,6 +1307,22 @@ function cleanupSessionStreaming(sessionId) {
 
 // ===== Per-Session Queue =====
 
+/**
+ * 处理会话的消息队列
+ *
+ * 在流式传输完成后自动被 finishStreaming() 或 abortSession() 调用。
+ * 会从队列中取出下一条消息并发送。
+ *
+ * 路由逻辑（三种情况，确保消息发送到正确的视图）：
+ *   1. 会话在面板中 → sendToPanelWithMessage()：创建 SSE 连接并渲染到面板
+ *   2. 会话是当前会话 → sendToSession()：主视图正常发送
+ *   3. 其他情况 → sendToBackgroundSession()：后台发送，不切换当前视图
+ *
+ * 注意：每次只处理一条消息，发送后 updateQueueUI() 更新队列显示。
+ * 该函数会在下一个流完成时再次被调用，直到队列清空。
+ *
+ * @param {string} sessionId - 会话ID
+ */
 function processSessionQueue(sessionId) {
     const queue = messageQueues.get(sessionId);
     if (!queue || queue.length === 0) { messageQueues.delete(sessionId); updateQueueUI(sessionId); return; }
@@ -1286,7 +1330,7 @@ function processSessionQueue(sessionId) {
     const nextMsg = queue.shift();
     updateQueueUI(sessionId);
 
-    // 查找该会话是否在面板中
+    // 查找该会话是否在面板中（面板模式和主视图的 SSE 连接不同）
     const panelId = findPanelIdForSession(sessionId);
     if (panelId) {
         // 面板模式：通过面板发送，SSE 连接到面板
@@ -1298,6 +1342,24 @@ function processSessionQueue(sessionId) {
     }
 }
 
+/**
+ * 后台发送消息（不切换当前视图）
+ *
+ * 用于处理非当前会话的队列消息。当用户切换到其他会话后，
+ * 原会话的队列消息仍然需要被处理。这个函数在不切换当前视图的情况下，
+ * 将消息发送到后端并连接 SSE 接收回复。
+ *
+ * 与 sendToSession() 的区别：
+ *   - 不会切换当前视图（用户看不到发送过程）
+ *   - 不会更新主视图的 UI（typingIndicator、sendBtn 等）
+ *   - SSE 响应通过 connectSSE 渲染到后台会话的 DOM 视图
+ *
+ * 注意：用户消息必须在 POST 之前添加到会话的 DOM 视图中，
+ * 否则用户切回该会话时会发现"问的问题不见了"。
+ *
+ * @param {string} sessionId - 会话ID
+ * @param {string} message - 消息内容
+ */
 async function sendToBackgroundSession(sessionId, message) {
     try {
         // 先在会话的 DOM 视图中添加用户消息（如果视图已创建）
@@ -1342,13 +1404,24 @@ function addMessageToView(view, role, content, assistant) {
 
 /**
  * 更新队列 UI 显示
- * 队列显示在消息输入框上方（普通模式和面板模式一致）
+ *
+ * 队列系统工作流程：
+ * 1. 用户发送消息时，如果会话正在流式传输，消息不会被立即发送
+ * 2. 消息被加入 messageQueues Map（key = sessionId, value = 消息数组）
+ * 3. 队列 UI 显示在输入框上方，用户可以看到排队消息和数量
+ * 4. 当前流完成后，finishStreaming() 调用 processSessionQueue()
+ * 5. processSessionQueue() 取出第一条消息发送，循环直到队列清空
+ *
+ * 队列显示位置（与输入框上方一致）：
+ *   - 面板模式：panel-input 元素上方
+ *   - 主视图：inputArea 元素上方
  *
  * @param {string} [targetSessionId] - 指定要更新的会话ID（不传则更新所有有队列的会话）
  */
 function updateQueueUI(targetSessionId) {
     // 先清理不属于当前可见视图的队列元素
-    // （切换会话后，旧会话的队列 DOM 可能残留在新会话的视图中）
+    // 切换会话后，旧会话的队列 DOM 可能残留在新会话的视图中，
+    // 如果不清理会导致旧会话的队列显示在新会话的输入框上方
     document.querySelectorAll('[id^="queueStatus-"]').forEach(el => {
         const sid = el.id.replace('queueStatus-', '');
         const panelId = findPanelIdForSession(sid);
@@ -1532,6 +1605,20 @@ async function sendToSession(message, onDone) {
 
 // ===== Abort =====
 
+/**
+ * 中止会话的流式传输
+ *
+ * 中止原理：
+ *   1. 前端关闭 EventSource 并标记流为完成（阻止旧事件继续渲染）
+ *   2. 后端 POST /api/agent/{id}/abort → taskkill 杀掉子进程 → 清理 channel
+ *
+ * 关键顺序：cleanupSessionStreaming() 必须在 fetch 之前执行！
+ * 如果顺序反过来，旧 SSE 可能在 fetch 等待期间收到 result 事件，
+ * 此时 st.finished 仍为 false，事件会被渲染到 DOM 中。
+ * 当下一条队列消息开始时，这些旧内容会导致输出错位。
+ *
+ * @param {string} sessionId - 会话ID
+ */
 async function abortSession(sessionId) {
     sessionId = sessionId || currentSessionId;
     if (!sessionId) return;
@@ -1559,6 +1646,9 @@ async function createSession() {
     const model = modelSelectNew.value;
     newSessionForm.style.display = 'none'; cwdInput.value = '';
 
+    // 如果当前在面板模式，自动退出
+    if (splitViewManager.enabled) splitViewManager.toggle();
+
     // Show welcome screen, hide chat container
     welcomeScreen.style.display = 'flex';
     chatContainer.style.display = 'none';
@@ -1574,6 +1664,11 @@ async function createSession() {
     modelSelector.value = model;
     statusDisplay.textContent = model;
     updateSwitchButton();
+
+    // 更新文件浏览器路径为新会话的工作目录
+    currentBrowsePath = cwd;
+    document.getElementById('fileBrowserPath').textContent = cwd;
+    if (fileBrowserExpanded) loadFiles(cwd);
 
     sendBtn.classList.remove('streaming'); stopBtn.style.display = 'none'; typingIndicator.style.display = 'none';
     renderSessionList(); renderAssistantCards(); renderAssistantStatus(); messageInput.focus();
@@ -1675,7 +1770,16 @@ function setupEventListeners() {
     switchAssistantBtn.onclick = switchAssistant;
     stopBtn.onclick = () => abortSession(currentSessionId);
     modelSelector.onchange = async (e) => {
-        currentModel = e.target.value; statusDisplay.textContent = currentModel;
+        const selectedModel = e.target.value;
+        // 校验模型是否属于当前助手
+        const isValid = models.some(m => m.id === selectedModel);
+        if (!isValid) {
+            console.warn(`Model "${selectedModel}" not valid for assistant "${currentAssistant}"`);
+            modelSelector.value = currentModel; // 恢复为之前的模型
+            return;
+        }
+        currentModel = selectedModel;
+        statusDisplay.textContent = currentModel;
         if (currentSessionId) {
             try { await fetch(`${API_BASE}/api/agent/${currentSessionId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'set_model', model: currentModel }) }); }
             catch (e) { console.error('Failed to set model:', e); }
@@ -1829,38 +1933,82 @@ class SplitViewManager {
 
             // 隐藏欢迎页面（避免和面板同时显示）
             welcomeScreen.style.display = 'none';
-            
+
+            // ── 清理已删除会话残留的面板 ──
+            // 如果会话在面板外被删除（如左侧栏删除），面板数据可能没被清理。
+            // 进入面板模式时校验一次，移除所有引用已不存在会话的面板。
+            const sessionIds = new Set(sessions.map(s => s.id));
+            for (const [panelId, panel] of this.panels) {
+                if (panel.sessionId && !sessionIds.has(panel.sessionId)) {
+                    this.panels.delete(panelId);
+                    const idx = this.panelOrder.indexOf(panelId);
+                    if (idx !== -1) this.panelOrder[idx] = null;
+                }
+            }
+
             // 如果有当前会话且面板为空，自动添加为第一个面板
+            // addPanel 内部已经调用了 renderGrid + takeoverStreaming
+            // 所以不需要再调用 this.renderGrid()，否则会覆盖 takeover 的 DOM 引用
             if (currentSessionId && this.panels.size === 0) {
                 this.addPanel(currentSessionId);
+            } else {
+                this.renderGrid();  // 已有面板或没有会话时，只渲染网格
             }
-            
-            this.renderGrid();  // 渲染网格布局
         } else {
             // ── 禁用分屏模式 ──
-            singleView.style.display = 'flex';       // 显示单屏
             splitView.style.display = 'none';         // 隐藏分屏
             layoutSelect.style.display = 'none';      // 隐藏布局选择
             addBtn.style.display = 'none';            // 隐藏添加按钮
             syncBtn.style.display = 'none';           // 隐藏同步按钮
-            
+
             // 关闭同步模式
             this.syncMode = false;
             syncBtn.classList.remove('active');
             document.querySelector('.sync-mode-indicator')?.remove();
-            
-            // ── 重要：切换回单屏时重新加载当前会话的消息 ──
-            // 因为分屏和单屏使用不同的 DOM 容器，需要重新加载
+
             if (currentSessionId) {
+                // 有当前会话：显示单屏视图，重新加载消息
+                singleView.style.display = 'flex';
+                welcomeScreen.style.display = 'none';
+                chatContainer.style.display = 'flex';
+                chatContainer.style.flexDirection = 'column';
+                inputArea.style.display = 'block';
+
+                // 退出面板模式时，如果 AI 仍在流式传输，将 SSE 连接重定向回主视图
+                const isStreaming = streamingSessions.has(currentSessionId);
+                if (isStreaming) {
+                    typingIndicator.style.display = 'block';
+                    typingIndicator.querySelector('.assistant-name').textContent = currentAssistant;
+                    sendBtn.classList.add('streaming');
+                    stopBtn.style.display = 'inline-flex';
+                    // 清除面板模式的 DOM 引用，让后续 SSE 事件渲染到主视图
+                    const st = streamingSessions.get(currentSessionId);
+                    if (st) {
+                        st.panelId = null;
+                        st.streamingDiv = null;
+                        st.contentDiv = null;
+                    }
+                } else {
+                    typingIndicator.style.display = 'none';
+                    sendBtn.classList.remove('streaming');
+                    stopBtn.style.display = 'none';
+                }
+
                 const view = getSessionView(currentSessionId);
-                view.innerHTML = '';  // 清空现有内容
-                // 从后端 API 获取完整消息并渲染
+                view.innerHTML = '';
+                // 从后端 API 获取最新消息（可能包含面板模式下产生的消息）
                 fetch(`${API_BASE}/api/sessions/${currentSessionId}`)
                     .then(res => res.json())
                     .then(data => {
                         if (data.messages) renderMessagesInto(view, data.messages, data.assistant);
                     })
                     .catch(e => console.error('Failed to reload messages:', e));
+            } else {
+                // 没有当前会话：显示欢迎页面
+                singleView.style.display = 'flex';
+                welcomeScreen.style.display = 'flex';
+                chatContainer.style.display = 'none';
+                inputArea.style.display = 'none';
             }
         }
         
@@ -2042,8 +2190,24 @@ class SplitViewManager {
                           })();
         st.contentDiv = st.streamingDiv.querySelector('.message-content');
 
-        // 标记为面板模式（panelId），这样 handlePanelStreamEvent 可以处理后续事件
+        // 标记为面板模式（panelId），这样 handleStreamEvent 可以处理后续事件
         st.panelId = panelId;
+
+        // 接管时如果 assistant 为空（主视图创建的 SSE），补上助手名称
+        if (!st.assistant) {
+            st.assistant = sessions.find(s => s.id === sessionId)?.assistant || 'claude';
+        }
+
+        // 添加 "XXX Thinking..." 指示器到面板（start 事件已在主视图处理过，不会在面板中再次触发）
+        // 这样用户切换到面板模式时能看到 AI 正在思考的提示，而不是空白
+        if (!chatDiv.querySelector('.panel-thinking-indicator') && !st.hasContent) {
+            const icon = ASSISTANT_ICONS[st.assistant] || ASSISTANT_ICONS.default;
+            const thinkingDiv = document.createElement('div');
+            thinkingDiv.className = 'panel-thinking-indicator';
+            thinkingDiv.innerHTML = `<span class="assistant-name">${icon} ${st.assistant}</span> <span class="thinking-text">Thinking...</span>`;
+            chatDiv.appendChild(thinkingDiv);
+            chatDiv.scrollTop = chatDiv.scrollHeight;
+        }
 
         // 更新面板的流式状态指示器
         this.updatePanelStreaming(panelId, true);
@@ -2182,9 +2346,14 @@ class SplitViewManager {
 
     /**
      * 更新面板的同步状态视觉效果
-     * 
-     * 同步源面板：显示 "📤 Source" 标记
-     * 同步目标面板：添加绿色边框（sync-target CSS 类）
+     *
+     * 在同步模式下，每个面板有不同角色：
+     *   - 同步源面板（📤 Source）：用户在这个面板输入，消息会广播到所有其他面板
+     *   - 同步目标面板（绿色边框）：接收同源面板广播的消息
+     *
+     * 这个方法遍历所有面板 DOM 元素，根据 syncSourcePanelId 设置正确的视觉效果。
+     * 每次调用时先移除所有旧的 Source 标记，再为当前源面板添加新的标记。
+     * 这确保了切换同步源时，旧源面板的标记被清理。
      */
     updatePanelSyncState() {
         document.querySelectorAll('.split-panel').forEach(el => {
@@ -2325,8 +2494,35 @@ class SplitViewManager {
     }
 
     /**
+     * 刷新所有面板的标题和模型显示
+     *
+     * 在 `sessions` 数据更新后调用（如流式完成后会话 firstMessage 从 null 变为实际内容）。
+     * 只更新面板头部 DOM 文本，不重新渲染整个面板，避免丢失流式状态。
+     */
+    updatePanelHeaders() {
+        document.querySelectorAll('.split-panel').forEach(el => {
+            const panelId = el.dataset.panelId;
+            const panel = this.panels.get(panelId);
+            if (!panel || !panel.sessionId) return;
+            const session = sessions.find(s => s.id === panel.sessionId);
+            if (!session) return;
+
+            const titleEl = el.querySelector('.panel-title');
+            const modelEl = el.querySelector('.panel-model');
+            if (titleEl) {
+                const newTitle = session.firstMessage?.slice(0, 30) || 'Untitled';
+                titleEl.textContent = newTitle;
+                titleEl.title = session.firstMessage || '';
+            }
+            if (modelEl && session.model) {
+                modelEl.textContent = session.model;
+            }
+        });
+    }
+
+    /**
      * 创建面板 DOM 元素
-     * 
+     *
      * 面板结构：
      * ┌─────────────────────────────┐
      * │ 面板头部 (panel-header)      │  <- 显示助手图标、标题、模型、状态、操作按钮
@@ -2345,8 +2541,9 @@ class SplitViewManager {
         div.className = `split-panel ${panelId === this.activePanelId ? 'active' : ''}`;
         div.dataset.panelId = panelId;
         
-        // 获取会话信息
-        const session = panel.sessionInfo || sessions.find(s => s.id === panel.sessionId);
+        // 获取会话信息（始终从最新 sessions 数组读取，避免使用 addPanel 时的缓存快照）
+        // panel.sessionInfo 是 addPanel 时保存的过期快照，可能 firstMessage 为 null
+        const session = sessions.find(s => s.id === panel.sessionId) || panel.sessionInfo;
         const assistant = session?.assistant || 'claude';
         const icon = ASSISTANT_ICONS[assistant] || ASSISTANT_ICONS.default;
         const title = session?.firstMessage?.slice(0, 30) || 'Untitled';
@@ -2862,7 +3059,8 @@ function openAddPanelModal() {
     assistantSelect.innerHTML = '';
     assistants.forEach(a => {
         const icon = ASSISTANT_ICONS[a.name] || ASSISTANT_ICONS.default;
-        assistantSelect.innerHTML += `<option value="${a.name}">${icon} ${a.display_name}</option>`;
+        const status = a.available ? '' : ' ⚠️未安装';
+        assistantSelect.innerHTML += `<option value="${a.name}" ${a.available ? '' : 'disabled'}>${icon} ${a.display_name}${status}</option>`;
     });
 
     // ── 填充模型选择下拉框（当前助手的模型）──

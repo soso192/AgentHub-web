@@ -581,7 +581,7 @@ body {
    Input Area
    ══════════════════════════════════════════════════════════════ */
 
-.input-area { padding: 10px 16px; border-top: 1px solid var(--border); background: var(--bg); }
+.input-area { padding: 10px 16px; border-top: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
 .input-wrapper { display: flex; gap: 8px; align-items: flex-end; max-width: 860px; margin: 0 auto; }
 textarea {
     flex: 1; padding: 9px 14px; border: 1px solid var(--border);
