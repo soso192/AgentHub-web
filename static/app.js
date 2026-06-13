@@ -1947,11 +1947,13 @@ class SplitViewManager {
             }
 
             // 如果有当前会话且面板为空，自动添加为第一个面板
+            // addPanel 内部已经调用了 renderGrid + takeoverStreaming
+            // 所以不需要再调用 this.renderGrid()，否则会覆盖 takeover 的 DOM 引用
             if (currentSessionId && this.panels.size === 0) {
                 this.addPanel(currentSessionId);
+            } else {
+                this.renderGrid();  // 已有面板或没有会话时，只渲染网格
             }
-
-            this.renderGrid();  // 渲染网格布局
         } else {
             // ── 禁用分屏模式 ──
             splitView.style.display = 'none';         // 隐藏分屏
@@ -1977,6 +1979,8 @@ class SplitViewManager {
                 if (isStreaming) {
                     typingIndicator.style.display = 'block';
                     typingIndicator.querySelector('.assistant-name').textContent = currentAssistant;
+                    sendBtn.classList.add('streaming');
+                    stopBtn.style.display = 'inline-flex';
                     // 清除面板模式的 DOM 引用，让后续 SSE 事件渲染到主视图
                     const st = streamingSessions.get(currentSessionId);
                     if (st) {
@@ -1986,6 +1990,8 @@ class SplitViewManager {
                     }
                 } else {
                     typingIndicator.style.display = 'none';
+                    sendBtn.classList.remove('streaming');
+                    stopBtn.style.display = 'none';
                 }
 
                 const view = getSessionView(currentSessionId);
