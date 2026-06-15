@@ -10,8 +10,10 @@
 
 ![demo](static/demo.gif)
 
----
 
+---
+去下载!!!  https://github.com/soso192/AgentHub-web/releases
+赶快给我用起来!!!  https://github.com/soso192/AgentHub-web/releases
 ## ✨ 核心特性
 
 ### 🤖 多 Agent 统一管理
