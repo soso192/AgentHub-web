@@ -31,8 +31,10 @@ impl Clone for ClaudeSession {
 
 impl ClaudeAssistant {
     pub fn new() -> Self {
-        let default_model = Self::read_default_model()
-            .unwrap_or_else(|| "MiniMax-M2.7".to_string());
+        let default_model = Self::read_default_model().unwrap_or_else(|| {
+            log::warn!("[claude] no settings.json found, default model set to 'unknown'");
+            "unknown".to_string()
+        });
 
         let claude_cmd = Self::find_claude_cmd();
 
@@ -177,6 +179,53 @@ impl ClaudeAssistant {
                     .map(String::from)
             })
     }
+
+    /// 从 ~/.claude/settings.json 的环境变量中提取模型列表
+    ///
+    /// Claude 不像 Pi/Codex 那样有模型发现文件，但 settings.json 的 env 字段中
+    /// 会记录用户配置的各层级模型（Haiku/Sonnet/Opus 以及自定义模型）。
+    /// 收集这些模型作为可选列表。
+    fn discover_models_from_settings() -> Option<Vec<ModelInfo>> {
+        let settings_path = dirs::home_dir()?.join(".claude").join("settings.json");
+        let content = std::fs::read_to_string(settings_path).ok()?;
+        let settings: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+        let mut model_ids = Vec::new();
+
+        // 从环境变量中收集各层级模型
+        if let Some(env) = settings.get("env").and_then(|e| e.as_object()) {
+            let keys = ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"];
+            for key in &keys {
+                if let Some(val) = env.get(*key).and_then(|v| v.as_str()) {
+                    let trimmed = val.trim();
+                    if !trimmed.is_empty() && !model_ids.contains(&trimmed.to_string()) {
+                        model_ids.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+
+        // 从 model 字段读取层级名（如 "opus"），也作为一个选项
+        if let Some(m) = settings.get("model").and_then(|m| m.as_str()) {
+            let trimmed = m.trim();
+            if !trimmed.is_empty() && !model_ids.contains(&trimmed.to_string()) {
+                model_ids.push(trimmed.to_string());
+            }
+        }
+
+        if model_ids.is_empty() { return None; }
+
+        Some(model_ids.into_iter().map(|id| ModelInfo {
+            id: id.clone(),
+            name: id,
+            provider: "anthropic".to_string(),
+            max_tokens: Some(200000),
+            supports_streaming: true,
+            supports_tools: true,
+        }).collect())
+    }
 }
 
 #[async_trait]
@@ -190,37 +239,21 @@ impl AiAssistant for ClaudeAssistant {
     }
 
     fn available_models(&self) -> Vec<ModelInfo> {
-        let mut models = vec![
+        // 优先从 settings.json 的环境变量中读取模型列表
+        if let Some(models) = ClaudeAssistant::discover_models_from_settings() {
+            return models;
+        }
+        // 没有 settings.json，用 "unknown" 兜底
+        vec![
             ModelInfo {
-                id: self.default_model.clone(),
-                name: self.default_model.clone(),
+                id: "unknown".to_string(),
+                name: "Unknown".to_string(),
                 provider: "anthropic".to_string(),
-                max_tokens: Some(200000),
+                max_tokens: None,
                 supports_streaming: true,
                 supports_tools: true,
             },
-        ];
-
-        let standard_models = vec![
-            ("claude-sonnet-4-20250514", "Claude Sonnet 4"),
-            ("claude-opus-4-20250514", "Claude Opus 4"),
-            ("claude-haiku-3-20240307", "Claude Haiku 3"),
-        ];
-
-        for (id, name) in standard_models {
-            if !models.iter().any(|m| m.id == id) {
-                models.push(ModelInfo {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    provider: "anthropic".to_string(),
-                    max_tokens: Some(200000),
-                    supports_streaming: true,
-                    supports_tools: true,
-                });
-            }
-        }
-
-        models
+        ]
     }
 
     fn default_model(&self) -> &str {

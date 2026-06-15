@@ -31,12 +31,24 @@ impl Clone for PiSession {
 }
 
 impl PiAssistant {
+    /// 创建 Pi Agent CLI 子进程命令
+    ///
+    /// pi_cmd 有三种格式：
+    ///   1. "node:路径"  → 用 node.exe 执行 cli.js（pi-node 安装方式）
+    ///   2. "xxx.cmd"   → 用 cmd.exe /C 执行批处理文件（npm 全局安装）
+    ///   3. "pi"        → 直接调用 PATH 中的可执行文件
+    ///
+    /// 对于 node: 前缀的格式，优先使用 pi-node 目录下的 node.exe（避免依赖系统 PATH），
+    /// 如果找不到则退回到系统的 node。
     fn create_pi_command(&self) -> Command {
         if self.pi_cmd.starts_with("node:") {
+            // 格式: "node:C:\...\cli.js" — 截取前缀后得到 cli.js 路径
             let cli_js = &self.pi_cmd[5..];
+            // 从路径中提取 node_modules 目录的父目录（pi-node 根目录）
             let sep = if cli_js.contains('\\') { "\\node_modules\\" } else { "/node_modules/" };
             if let Some(idx) = cli_js.find(sep) {
                 let base_path = &cli_js[..idx];
+                // 拼出 pi-node 自带的 node.exe 路径
                 let node_exe = format!("{}{}node.exe", base_path, if cli_js.contains('\\') { "\\" } else { "/" });
                 if std::path::Path::new(&node_exe).exists() {
                     let mut cmd = Command::new(&node_exe);
@@ -44,27 +56,47 @@ impl PiAssistant {
                     return cmd;
                 }
             }
+            // 没有自带 node.exe，退到系统 PATH 中的 node
             let mut cmd = Command::new("node");
             cmd.arg(cli_js);
             cmd
         } else if self.pi_cmd.ends_with(".cmd") {
+            // .cmd 文件需要通过 cmd.exe /C 来执行
             let mut cmd = Command::new("cmd.exe");
             cmd.arg("/C").arg(&self.pi_cmd);
             cmd
         } else {
+            // 直接可执行文件（在 PATH 中）
             Command::new(&self.pi_cmd)
         }
     }
 
     pub fn new() -> Self {
-        // Find the pi CLI executable
         let pi_cmd = Self::find_pi_cmd();
+        // 从 models.json 读取默认模型（第一个可用的模型 ID）
+        let default_model = Self::read_default_model().unwrap_or_else(|| {
+            log::warn!("[pi] no models.json found, using 'unknown' as default model");
+            "unknown".to_string()
+        });
 
         Self {
             sessions: HashMap::new(),
-            default_model: "mimo-v2.5-pro".to_string(),
+            default_model,
             pi_cmd,
         }
+    }
+
+    /// 从 ~/.pi/agent/models.json 读取默认模型（第一个 provider 的第一个模型）
+    fn read_default_model() -> Option<String> {
+        let models_path = dirs::home_dir()?.join(".pi").join("agent").join("models.json");
+        let content = std::fs::read_to_string(models_path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let providers = root.get("providers")?.as_object()?;
+        let (_, first_provider) = providers.iter().next()?;
+        let models = first_provider.get("models")?.as_array()?;
+        let first_model = models.first()?;
+        let id = first_model.get("id")?.as_str()?;
+        Some(id.to_string())
     }
 
     /// Find the session file path from a UUID by searching ~/.pi/agent/sessions/
@@ -86,14 +118,19 @@ impl PiAssistant {
         None
     }
 
-    /// Read the provider name for a model from pi's models.json
+    /// 根据模型名查找对应的 API 提供商（xiaomi、anthropic 等）
+    ///
+    /// Pi Agent 的 models.json 中记录了每个模型所属的 provider。
+    /// 如果找不到，退到第一个有 API Key 配置的 provider。
+    /// 这个信息会作为 --provider 参数传给 Pi CLI，让它知道去向哪个 API 发请求。
     fn find_provider_for_model(model: &str) -> Option<String> {
+        // 读取 ~/.pi/agent/models.json
         let models_path = dirs::home_dir()?.join(".pi").join("agent").join("models.json");
         let content = std::fs::read_to_string(models_path).ok()?;
         let config: serde_json::Value = serde_json::from_str(&content).ok()?;
         let providers = config.get("providers")?.as_object()?;
 
-        // First try: find the exact model in a provider
+        // 第一轮：精确匹配模型名
         for (provider_name, provider_config) in providers {
             if let Some(models) = provider_config.get("models").and_then(|m| m.as_array()) {
                 for m in models {
@@ -104,7 +141,7 @@ impl PiAssistant {
             }
         }
 
-        // Fallback: use the first provider that has an API key configured
+        // 第二轮：退到第一个有 API Key 的 provider（模型可能在新旧配置之间迁移）
         for (provider_name, provider_config) in providers {
             if provider_config.get("apiKey").and_then(|k| k.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
                 log::warn!("[pi] model '{}' not found, falling back to provider '{}'", model, provider_name);
@@ -115,8 +152,21 @@ impl PiAssistant {
         None
     }
 
+    /// 查找 Pi Agent CLI 可执行文件路径
+    ///
+    /// 搜索优先级（按开销从小到大）：
+    ///   1. PI_CMD 环境变量（直接指定路径）
+    ///   2. pi-node 安装目录 ~/AppData/Local/pi-node/current/
+    ///   3. npm 全局安装路径 ~/AppData/Roaming/npm/
+    ///   4. PATH 中执行 cmd.exe /C pi --version（Windows）或 pi --version（Linux/macOS）
+    ///   5. fallback: "pi"
+    ///
+    /// 返回值格式：
+    ///   - "node:路径"  → 用 create_pi_command() 解析，通过 node.exe + cli.js 调用
+    ///   - "路径.cmd"   → 通过 cmd.exe /C 调用
+    ///   - "pi"         → 直接调用 PATH 中的可执行文件
     fn find_pi_cmd() -> String {
-        // 1. 环境变量
+        // 1. 环境变量指定路径（最高优先级，用户或管理员可以配置）
         if let Ok(pi_path) = std::env::var("PI_CMD") {
             if std::path::Path::new(&pi_path).exists() {
                 log::info!("[pi] found via PI_CMD: {}", pi_path);
@@ -124,17 +174,19 @@ impl PiAssistant {
             }
         }
 
-        // 2. 文件路径检查（优先，不需要 spawn 子进程）
+        // 2. 直接检查文件是否存在（不 spawn 子进程，更快更可靠）
         if let Some(home) = dirs::home_dir() {
-            // pi-node 安装路径（最常见的安装方式）
+            // 尝试 pi-node 本地安装（最常见的方式：pip 或 npm 全局安装的 pi-node）
             let pi_node = home.join("AppData").join("Local").join("pi-node").join("current");
             if pi_node.exists() {
+                // 优先使用 node.exe + cli.js 直接调用（避免 .cmd 文件的环境依赖）
                 let node_exe = pi_node.join("node.exe");
                 let cli_js = pi_node.join("node_modules").join("@earendil-works").join("pi-coding-agent").join("dist").join("cli.js");
                 if node_exe.exists() && cli_js.exists() {
                     log::info!("[pi] found via pi-node: {}", cli_js.display());
                     return format!("node:{}", cli_js.to_string_lossy());
                 }
+                // 退到 pi.cmd
                 let pi_cmd = pi_node.join("pi.cmd");
                 if pi_cmd.exists() {
                     log::info!("[pi] found pi.cmd: {}", pi_cmd.display());
@@ -142,7 +194,7 @@ impl PiAssistant {
                 }
             }
 
-            // npm 全局路径
+            // 尝试 npm 全局安装路径
             let npm_paths = if cfg!(target_os = "windows") {
                 vec![
                     home.join("AppData").join("Roaming").join("npm").join("pi.cmd"),
@@ -162,7 +214,8 @@ impl PiAssistant {
             }
         }
 
-        // 3. PATH 中直接运行（放最后，因为需要 spawn 子进程）
+        // 3. PATH 中运行 --version 检测（需要 spawn 子进程，放最后）
+        // Windows 上显式用 cmd.exe /C 调用，确保能解析 .cmd 文件
         if cfg!(target_os = "windows") {
             for name in &["pi.cmd", "pi"] {
                 if Command::new("cmd.exe").arg("/C").arg(name).arg("--version")
@@ -186,19 +239,44 @@ impl PiAssistant {
         log::warn!("[pi] not found, falling back to 'pi'");
         "pi".to_string()
     }
-}
 
-#[async_trait]
-impl AiAssistant for PiAssistant {
-    fn name(&self) -> &str {
-        "pi"
+    /// 从 ~/.pi/agent/models.json 动态读取可用模型列表
+    ///
+    /// Pi Agent 会在安装/更新时自动更新这个文件，所以它总是最新的。
+    /// 如果文件不存在或解析失败，返回 None（调用方会退到静态列表）。
+    fn discover_models_from_file() -> Option<Vec<ModelInfo>> {
+        let models_path = dirs::home_dir()?.join(".pi").join("agent").join("models.json");
+        let content = std::fs::read_to_string(models_path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let providers = root.get("providers")?.as_object()?;
+
+        let mut result = Vec::new();
+        for (provider_name, provider_config) in providers {
+            let models = provider_config.get("models")?.as_array()?;
+            for m in models {
+                let id = m.get("id")?.as_str()?;
+                let name = m.get("name").and_then(|n| n.as_str()).unwrap_or(id);
+                let max_tokens = m.get("compat")
+                    .and_then(|c| c.get("maxOutputTokens"))
+                    .and_then(|t| t.as_u64())
+                    .or_else(|| m.get("maxTokens").and_then(|t| t.as_u64()));
+
+                result.push(ModelInfo {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    provider: provider_name.clone(),
+                    max_tokens: max_tokens.map(|t| t as u32),
+                    supports_streaming: true,
+                    supports_tools: true,
+                });
+            }
+        }
+
+        if result.is_empty() { None } else { Some(result) }
     }
 
-    fn display_name(&self) -> &str {
-        "Pi Agent"
-    }
-
-    fn available_models(&self) -> Vec<ModelInfo> {
+    /// 静态模型列表（动态发现失败的兜底）
+    fn fallback_models() -> Vec<ModelInfo> {
         vec![
             ModelInfo {
                 id: "mimo-v2.5-pro".to_string(),
@@ -225,6 +303,30 @@ impl AiAssistant for PiAssistant {
                 supports_tools: true,
             },
         ]
+    }
+}
+
+#[async_trait]
+impl AiAssistant for PiAssistant {
+    fn name(&self) -> &str {
+        "pi"
+    }
+
+    fn display_name(&self) -> &str {
+        "Pi Agent"
+    }
+
+    /// 获取可用模型列表
+    ///
+    /// 优先从 ~/.pi/agent/models.json 动态读取（Pi Agent 自动维护这个文件），
+    /// 如果文件不存在或解析失败，退到静态列表确保用户不会看到空下拉框。
+    fn available_models(&self) -> Vec<ModelInfo> {
+        // 尝试从 models.json 动态发现
+        if let Some(models) = PiAssistant::discover_models_from_file() {
+            return models;
+        }
+        // 退到静态列表
+        PiAssistant::fallback_models()
     }
 
     fn default_model(&self) -> &str {
@@ -746,6 +848,11 @@ impl AiAssistant for PiAssistant {
         }
     }
 
+    /// 检测 Pi Agent 是否已安装（通过 CLI --version 退出码判断）
+    ///
+    /// 使用 create_pi_command() 构建命令，确保兼容 node: 前缀和 .cmd 文件。
+    /// 用 spawn_blocking 包裹，避免同步子进程阻塞 tokio 异步运行时。
+    /// stdout/stderr 重定向到 null（我们只关心退出码，不关心输出内容）。
     async fn is_available(&self) -> bool {
         let mut cmd = self.create_pi_command();
         cmd.args(&["--version"])
@@ -760,6 +867,10 @@ impl AiAssistant for PiAssistant {
         .unwrap_or(false)
     }
 
+    /// 获取 Pi Agent 的版本号（通过 CLI --version 的 stdout）
+    ///
+    /// 只在 is_available() 返回 true 时才会被调用（由 list_available() 控制）。
+    /// 同样是同步子进程，用 spawn_blocking 隔离。
     async fn version(&self) -> Option<String> {
         let mut cmd = self.create_pi_command();
         cmd.args(&["--version"]);

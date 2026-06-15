@@ -1,5 +1,22 @@
-// Shared stream-json event parsing for all agents
-// Both Claude CLI and Pi Agent use the same stream-json format
+// ══════════════════════════════════════════════════════════════
+//  Shared stream-json event parser for all AI agents
+//
+//  Claude CLI and Pi Agent both output structured JSON events to stdout.
+//  This module parses those events and broadcasts them through a
+//  shared broadcast channel, which feeds both the SSE endpoint
+//  (real-time push to frontend) and the event saver (persist to disk).
+//
+//  Event types:
+//    system/init → "start" — streaming session initialized
+//    assistant   → "thinking" / "tool_call" / "chunk" — content blocks
+//    user        → "tool_result" — tool execution output
+//    result      → "result" / "error" — session completed
+//
+//  Returns: (agent_session_id, result_sent)
+//    - agent_session_id: native session ID for --resume support
+//    - result_sent: whether a terminal event (result/error) was broadcast
+//      (used by callers to trigger on_result_callback for early cleanup)
+// ══════════════════════════════════════════════════════════════
 
 use tokio::sync::broadcast;
 use serde_json::Value;
@@ -14,9 +31,17 @@ pub struct StreamResult {
     pub result_sent: bool,
 }
 
-/// Process one line of stream-json output and broadcast the corresponding SSE event.
-/// Returns (agent_session_id, result_sent) where result_sent indicates if a
-/// "result" or "error" event was broadcast (used for on_result_callback).
+/// Parse one line of the agent's JSON output and broadcast SSE events.
+///
+/// Returns (agent_session_id, result_sent) to let the caller know:
+///   1. Whether a native session ID was captured (for --resume)
+///   2. Whether a terminal event was broadcast (for on_result_callback)
+///
+/// Previously this function only returned Option<String> (session ID),
+/// which meant Claude/Codex had no way to know when the result was sent.
+/// Now it returns both values, allowing all agents to call on_result_callback
+/// immediately when the result event is broadcast — enabling faster cleanup
+/// of streaming_sessions and more accurate isStreaming status.
 pub fn process_stream_line(
     line: &str,
     session_id: &str,
@@ -38,6 +63,9 @@ pub fn process_stream_line(
     let mut result_sent = false;
 
     match event_type {
+        // ── Session init: capture native session ID for --resume ──
+        // This allows the agent to resume the session next time
+        // instead of starting fresh, preserving conversation history.
         "system" if subtype == Some("init") => {
             if let Some(sid) = event.get("session_id").and_then(|s| s.as_str()) {
                 agent_session_id = Some(sid.to_string());
@@ -49,6 +77,9 @@ pub fn process_stream_line(
                 "model": model
             }));
         }
+        // ── Assistant message: thinking + tool_use + text blocks ──
+        // Claude sends these as content blocks inside an "assistant" event.
+        // Each block type is broadcast as a separate SSE event.
         "assistant" => {
             if let Some(message_obj) = event.get("message") {
                 if let Some(content_arr) = message_obj.get("content").and_then(|c| c.as_array()) {
@@ -89,6 +120,9 @@ pub fn process_stream_line(
                 }
             }
         }
+        // ── User message (tool results from Claude) ──
+        // Claude sends tool results as "user" type messages with
+        // "tool_result" content blocks.
         "user" => {
             if let Some(message_obj) = event.get("message") {
                 if let Some(content_arr) = message_obj.get("content").and_then(|c| c.as_array()) {
@@ -109,6 +143,11 @@ pub fn process_stream_line(
                 }
             }
         }
+        // ── Result: final response or error ──
+        // This is a terminal event. After this:
+        //   - result_sent = true signals the caller to invoke on_result_callback
+        //   - The frontend finishes streaming and closes the SSE connection
+        //   - The session is cleaned up from streaming_sessions
         "result" => {
             let result_text = event.get("result").and_then(|r| r.as_str()).unwrap_or("");
             let is_error = event.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
@@ -137,8 +176,15 @@ pub fn process_stream_line(
     (agent_session_id, result_sent)
 }
 
-/// Send a JSON event through the broadcast channel.
-/// Logs send failures at warn level (indicates receivers disconnected).
+/// 统一的事件发送函数
+///
+/// 所有 Agent（Claude、Pi、Codex）都通过这个函数发送 SSE 事件。
+/// 之前每个 Agent 有自己的 send_*_event 函数（send_pi_event、send_codex_event），
+/// 日志级别不一致。现在统一使用 streaming::send_event，trace 级别记录成功，
+/// warn 级别记录失败，方便调试。
+///
+/// broadcast::Sender 是 Arc 包装的，多个克隆共享同一个底层 channel。
+/// 当所有 receiver 都断开连接后，send 会返回错误（前端的 EventSource 已关闭）。
 pub fn send_event(tx: Option<&broadcast::Sender<String>>, event: serde_json::Value) {
     if let Some(tx) = tx {
         let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
