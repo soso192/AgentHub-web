@@ -224,7 +224,7 @@
             el.textContent = workflowStatusLabel(patchState.workflow.status || '');
             el.className = `workflow-result-status workflow-status-${patchEscape(patchState.workflow.status || 'pending')}`;
         }
-        function renderWorkflowStepMarkup(steps, currentStep, runId, canRerun) {
+        function renderWorkflowStepMarkup(steps, currentStep, runId) {
             return (steps || []).map(step => {
                 const status = step.status || 'pending';
                 const active = Number(step.step_order) === Number(currentStep);
@@ -232,16 +232,14 @@
                 if (step.claude_target === 'local' && step.local_session_id && ['success', 'failed', 'waiting_confirmation'].includes(status)) actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-resume-step="${patchEscape(step.step_order)}">继续会话</button>`);
                 actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-run-id="${patchEscape(runId)}" data-workflow-summary-step="${patchEscape(step.step_order)}">查看摘要</button>`);
                 actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-run-id="${patchEscape(runId)}" data-workflow-result-step="${patchEscape(step.step_order)}">查看结果</button>`);
-                if (canRerun) actions.push(`<button type="button" class="patch-secondary-btn workflow-rerun-btn" data-workflow-rerun-run="${patchEscape(runId)}" data-workflow-rerun-step="${patchEscape(step.step_order)}">重新执行</button>`);
                 const flowTitle = step.flow_name ? `${step.flow_code || ''} ${step.flow_name}` : (step.flow_code || '');
                 return `<div class="workflow-step ${active ? 'active' : ''}"><strong class="workflow-step-no">步骤 ${step.step_order}</strong><span class="workflow-step-info" title="${patchEscape(flowTitle)}"><b>${patchEscape(step.flow_code || '')}</b>${step.flow_name ? `<small>${patchEscape(step.flow_name)}</small>` : ''}</span><span class="workflow-step-status workflow-status-${patchEscape(status)}">${patchEscape(workflowStatusLabel(status))}</span>${actions.length ? `<div class="workflow-step-actions">${actions.join('')}</div>` : ''}</div>`;
             }).join('');
         }
         function renderWorkflowSteps() {
             const state = patchState.workflow;
-            const canRerun = ['success', 'failed', 'cancelled'].includes(state.status);
             const stepsEl = document.getElementById('workflowHistorySteps');
-            if (stepsEl) stepsEl.innerHTML = renderWorkflowStepMarkup(state.steps, state.currentStep, state.runId, canRerun);
+            if (stepsEl) stepsEl.innerHTML = renderWorkflowStepMarkup(state.steps, state.currentStep, state.runId);
         }
         function applyWorkflowSnapshot(snapshot) {
             if (!snapshot) return;
@@ -497,8 +495,6 @@
                 if (workflowSummary) { showWorkflowStepSummary(workflowSummary.dataset.workflowRunId || patchState.workflow.runId, workflowSummary.dataset.workflowSummaryStep); return; }
                 const workflowResult = event.target.closest('[data-workflow-result-step]');
                 if (workflowResult) { showWorkflowStepResult(workflowResult.dataset.workflowRunId || patchState.workflow.runId, workflowResult.dataset.workflowResultStep); return; }
-                const workflowRerunStep = event.target.closest('[data-workflow-rerun-step]');
-                if (workflowRerunStep) { rerunWorkflow(workflowRerunStep.dataset.workflowRerunRun, workflowRerunStep.dataset.workflowRerunStep); return; }
                 const workflowResumeStep = event.target.closest('[data-workflow-resume-step]');
                 if (workflowResumeStep) {
                     const stepOrder = workflowResumeStep.dataset.workflowResumeStep;
