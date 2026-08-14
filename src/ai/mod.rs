@@ -73,6 +73,25 @@ pub trait AiAssistant: Send + Sync {
     /// Check if the assistant is available (e.g., CLI is installed)
     async fn is_available(&self) -> bool;
 
+    /// Execute an independent, non-session prompt.
+    async fn execute_once(&self, _system_prompt: &str, _user_prompt: &str, _cwd: &str, _model: Option<&str>) -> Result<String, String> {
+        Err("independent execution is not supported".to_string())
+    }
+
+    /// Execute a one-off prompt and also capture the underlying agent session id
+    /// (e.g. Claude's native session_id from the system/init stream event), so the
+    /// caller can later resume the same conversation with `--resume`.
+    /// Returns (result text, optional agent session id).
+    async fn execute_once_with_session(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _cwd: &str,
+        _model: Option<&str>,
+    ) -> Result<(String, Option<String>), String> {
+        Err("independent execution is not supported".to_string())
+    }
+
     /// Get the version of the assistant
     async fn version(&self) -> Option<String>;
 }

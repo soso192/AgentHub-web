@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CC-Web 补丁中心提供补丁检索、上传、智能开发和工作流管理。">
+    <meta name="theme-color" content="#f7f8fa">
+    <title>补丁中心 · CC-Web</title>
+    <script>try{if(localStorage.getItem('cc-web-help-panel')==='closed'){document.documentElement.classList.add('help-panel-closed');}}catch(e){}</script>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="patch-page">
+        <header class="patch-topbar">
+            <div class="patch-brand">⚡ CC-Web</div>
+            <nav class="app-mode-toggle" aria-label="应用模式">
+                <button class="mode-btn" type="button" onclick="location.href='/'">聊天</button>
+                <button class="mode-btn active" type="button" aria-current="page">补丁</button>
+            </nav>
+            <div class="patch-topbar-actions">
+                <span id="patchApiStatus" class="patch-api-status">未连接</span>
+                <span id="patchCurrentUser" class="patch-api-status"></span>
+                <button id="patchUserSettings" class="patch-secondary-btn" hidden>用户设置</button>
+                <button id="patchLogout" class="patch-secondary-btn" hidden>退出</button>
+                <button id="patchHelpToggle" class="icon-btn" type="button" title="使用说明" aria-label="打开使用说明" aria-expanded="false">❓</button>
+                <button id="patchThemeToggle" class="theme-btn" type="button" title="切换主题" aria-label="切换主题">🌙</button>
+            </div>
+        </header>
+
+        <main class="patch-main">
+            <div id="patchLoginCard" class="patch-card">
+                <h2>登录 patch_search</h2>
+                <label class="sr-only" for="patchLoginServer">服务端地址</label>
+                <input id="patchLoginServer" class="patch-input" autocomplete="off" spellcheck="false" placeholder="服务端地址">
+                <div class="patch-search-row">
+                    <input id="patchLoginUsername" class="patch-input" autocomplete="username" placeholder="用户名">
+                    <input id="patchLoginPassword" class="patch-input" type="password" autocomplete="current-password" placeholder="密码">
+                    <button id="patchLoginBtn" class="patch-primary-btn">登录</button>
+                </div>
+                <div id="patchLoginMessage" class="patch-message"></div>
+            </div>
+            <div id="patchAuthenticatedContent" hidden>
+            <div class="patch-auth-layout">
+                <aside class="patch-user-sidebar">
+                    <section class="patch-card patch-user-summary">
+                        <h3>我的数据</h3>
+                        <div id="patchUserMetrics" class="patch-user-metrics">正在加载...</div>
+                    </section>
+                    <section class="patch-card patch-leaderboard">
+                        <h3>贡献榜 TOP 10</h3>
+                        <div id="patchLeaderboard" class="patch-leaderboard-list">正在加载...</div>
+                    </section>
+                    <section class="patch-card patch-leaderboard">
+                        <h3>活跃榜 TOP 10</h3>
+                        <div id="patchActivityLeaderboard" class="patch-leaderboard-list">正在加载...</div>
+                    </section>
+                </aside>
+                <div class="patch-auth-content">
+            <div class="patch-tabs" role="tablist">
+                <button class="patch-tab active" data-tab="search">普通检索</button>
+                <button class="patch-tab" data-tab="upload">补丁上传</button>
+                <button class="patch-tab" data-tab="mine">我的补丁</button>
+                <button class="patch-tab" data-tab="smart">智能开发</button>
+                <button id="patchFlowTab" class="patch-tab" data-tab="flow" hidden>流程设置</button>
+                <button id="patchPromptTab" class="patch-tab" data-tab="prompt" hidden>提示词设置</button>
+                <button id="patchTemplateTab" class="patch-tab" data-tab="template" hidden>流程模板设置</button>
+                <button id="patchAnalysisTab" class="patch-tab" data-tab="analysis" hidden>待分析补丁</button>
+                <button id="patchProductTab" class="patch-tab" data-tab="product" hidden>产品版本管理</button>
+                <button class="patch-tab" data-tab="directory">工作目录</button>
+            </div>
+
+            <section id="patchTabSearch" class="patch-tab-panel active">
+                <div class="patch-card patch-search-card">
+                    <div class="patch-search-row patch-search-toolbar" id="patchSearchToolbar">
+                        <label class="sr-only" for="patchKeyword">搜索已分析补丁包</label>
+                        <input id="patchKeyword" class="patch-input" type="search" placeholder="搜索补丁名称、描述、类名或关键词">
+                        <button id="patchSearchBtn" class="patch-primary-btn">搜索</button>
+                        <button id="patchAdvancedToggle" class="patch-secondary-btn" type="button" aria-expanded="false">高级搜索</button>
+                    </div>
+                    <div id="patchAdvancedPanel" class="patch-advanced-panel" hidden>
+                        <div class="patch-advanced-grid">
+                            <label class="patch-advanced-field">补丁名称<input id="patchAdvName" class="patch-input" type="text" placeholder="按补丁名称模糊匹配" autocomplete="off"></label>
+                            <label class="patch-advanced-field">产品名称<select id="patchAdvProduct" class="patch-input"><option value="">全部产品</option></select></label>
+                            <label class="patch-advanced-field">版本号<input id="patchAdvVersion" class="patch-input" type="text" placeholder="按版本号模糊匹配" autocomplete="off"></label>
+                            <label class="patch-advanced-field">关键词<input id="patchAdvKeyword" class="patch-input" type="text" placeholder="按关键词模糊匹配" autocomplete="off"></label>
+                            <label class="patch-advanced-field">描述<input id="patchAdvDescription" class="patch-input" type="text" placeholder="按描述模糊匹配" autocomplete="off"></label>
+                            <div class="patch-advanced-actions"><button id="patchAdvBack" type="button" class="patch-secondary-btn">返回</button><button id="patchAdvReset" type="button" class="patch-secondary-btn">重置</button><button id="patchAdvSearch" type="button" class="patch-primary-btn">高级搜索</button></div>
+                        </div>
+                    </div>
+                    <div id="patchSearchMessage" class="patch-message"></div>
+                </div>
+                <div class="patch-card patch-table-card">
+                    <div class="patch-table-header"><h2>已分析补丁包</h2><span id="patchTotal"></span></div>
+                    <div class="patch-table-wrap">
+                        <table class="patch-table patch-search-table">
+                            <thead><tr><th>名称</th><th>产品名称</th><th>版本号</th><th>格式</th><th>大小</th><th>分析时间</th><th>操作</th></tr></thead>
+                            <tbody id="patchTableBody"><tr><td colspan="7" class="patch-empty">正在加载...</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="patch-pagination">
+                        <button id="patchPrevBtn" class="patch-secondary-btn">上一页</button>
+                        <span id="patchPageInfo">第 1 页</span>
+                        <button id="patchNextBtn" class="patch-secondary-btn">下一页</button>
+                    </div>
+                </div>
+            </section>
+
+            <section id="patchTabUpload" class="patch-tab-panel">
+                <div id="patchDropZone" class="patch-card patch-drop-zone">
+                    <div class="patch-drop-icon">⇧</div>
+                    <h2>拖拽补丁包到这里</h2>
+                    <p>支持 ZIP / RAR，可批量上传</p>
+                    <button id="patchChooseBtn" class="patch-primary-btn">点击选择文件</button>
+                    <input id="patchFileInput" type="file" accept=".zip,.rar" multiple hidden>
+                </div>
+                <div id="patchUploadResults" class="patch-card patch-upload-results" hidden></div>
+            </section>
+
+            <section id="patchTabMine" class="patch-tab-panel">
+                <div class="patch-card patch-table-card">
+                    <div class="patch-table-header patch-mine-header"><h2>我的补丁</h2><span id="patchMineTotal"></span><button id="patchMineRefresh" class="patch-secondary-btn">刷新</button></div>
+                    <div class="patch-table-wrap">
+                        <table class="patch-table patch-mine-table">
+                            <thead><tr><th>名称</th><th>产品名称</th><th>版本号</th><th>格式</th><th>大小</th><th>状态</th><th>操作</th></tr></thead>
+                            <tbody id="patchMineBody"><tr><td colspan="7" class="patch-empty">正在加载...</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="patch-pagination">
+                        <button id="patchMinePrev" class="patch-secondary-btn">上一页</button>
+                        <span id="patchMinePageInfo">第 1 页</span>
+                        <button id="patchMineNext" class="patch-secondary-btn">下一页</button>
+                    </div>
+                </div>
+            </section>
+
+            <section id="patchTabSmart" class="patch-tab-panel">
+                <div class="patch-card smart-dev-card">
+                    <div class="smart-dev-head"><div><h2>智能开发</h2><p>选择流程模板并输入业务需求，启动后实时查看每步执行进度与输出。</p></div></div>
+                    <label class="sr-only" for="workflowTemplateSelect">流程模板</label>
+                    <div class="patch-search-row"><select id="workflowTemplateSelect" class="patch-input"><option value="">加载流程模板中...</option></select></div>
+                    <p id="workflowTemplateDesc" class="smart-dev-desc" hidden></p>
+                    <label class="sr-only" for="workflowBusinessInput">业务需求</label>
+                    <textarea id="workflowBusinessInput" class="patch-input workflow-input" rows="5" placeholder="输入业务需求或问题"></textarea>
+                    <div class="patch-detail-actions"><button id="workflowStart" class="patch-primary-btn">开始流程</button></div>
+                </div>
+                <div class="patch-card workflow-history-card">
+                    <div class="patch-table-header workflow-history-header"><div><h3>流程运行记录</h3><p>查看当前登录用户创建的所有智能开发流程。</p></div><button id="workflowHistoryRefresh" class="patch-secondary-btn">刷新</button></div>
+                    <div class="patch-table-wrap"><table class="patch-table workflow-history-table"><thead><tr><th>流程模板</th><th>业务需求</th><th>状态</th><th>步骤</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="workflowHistoryBody"><tr><td colspan="6" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-pagination"><button id="workflowHistoryPrev" class="patch-secondary-btn">上一页</button><span id="workflowHistoryPageInfo">第 1 页</span><button id="workflowHistoryNext" class="patch-secondary-btn">下一页</button></div>
+                </div>
+            </section>
+
+            <section id="patchTabFlow" class="patch-tab-panel">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>流程设置</h2><p>可管理自己的流程；管理员共享流程仅可查看和使用。</p></div><button id="patchNewFlow" class="patch-primary-btn">新增流程</button></div>
+                    <div id="patchFlowMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>编码</th><th>名称</th><th>调用位置</th><th>保存上下文</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchFlowBody"></tbody></table></div>
+                </div>
+            </section>
+
+            <section id="patchTabPrompt" class="patch-tab-panel">
+                <div class="patch-card admin-panel prompt-data-panel">
+                    <div class="admin-section-header"><div><h2>提示词设置</h2><p>可管理自己的提示词；管理员共享提示词仅可查看和使用。</p></div><button id="patchNewPrompt" class="patch-primary-btn">新增提示词</button></div>
+                    <div id="patchPromptMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>名称</th><th>描述</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchPromptBody"></tbody></table></div>
+                </div>
+            </section>
+
+            <section id="patchTabAnalysis" class="patch-tab-panel">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>待分析补丁</h2><p>选择状态不是“分析完成”的补丁包，批量执行分析。</p></div><div class="patch-analysis-actions"><button id="patchAnalysisRefresh" class="patch-secondary-btn">刷新</button><button id="patchAnalysisStart" class="patch-primary-btn" disabled>开始分析</button></div></div>
+                    <div class="patch-analysis-toolbar"><label><input id="patchAnalysisSelectAll" type="checkbox"> 全选</label><label class="patch-analysis-count">前 <input id="patchAnalysisSelectCount" type="number" min="0" max="1000" placeholder="N" title="输入数字后回车，按列表顺序选中前 N 个补丁包"> 个</label><span id="patchAnalysisSelected">已选择 0 个</span><span id="patchAnalysisProgress"></span></div>
+                    <div id="patchAnalysisMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th><input id="patchAnalysisHeaderSelect" type="checkbox"></th><th>名称</th><th>格式</th><th>大小</th><th>状态</th><th>上传时间</th><th>最近更新时间</th></tr></thead><tbody id="patchAnalysisBody"><tr><td colspan="7" class="patch-empty">暂无数据</td></tr></tbody></table></div>
+                </div>
+            </section>
+
+            <section id="patchTabProduct" class="patch-tab-panel">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>产品版本管理</h2><p>维护产品名称与版本号字典，补丁上传和编辑时通过下拉选择。删除产品不影响历史补丁数据。</p></div><button id="patchNewProduct" class="patch-primary-btn">新增产品</button></div>
+                    <div id="patchProductMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>产品名称</th><th>排序</th><th>版本数</th><th>操作</th></tr></thead><tbody id="patchProductBody"><tr><td colspan="4" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                </div>
+            </section>
+
+            <section id="patchTabDirectory" class="patch-tab-panel">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>工作目录</h2><p>管理当前用户可用的工作目录。管理员创建的内置目录仅可查看和使用。</p></div><button id="patchNewDirectory" class="patch-primary-btn">新增目录</button></div>
+                    <div id="patchDirectoryMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>编码</th><th>名称</th><th>路径</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="patchDirectoryBody"></tbody></table></div>
+                </div>
+            </section>
+
+            <section id="patchTabTemplate" class="patch-tab-panel">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>流程模板设置</h2><p>可管理自己的模板；管理员共享模板仅可查看和使用。</p></div><button id="patchNewTemplate" class="patch-primary-btn">新增模板</button></div>
+                    <div id="patchTemplateMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>编码</th><th>名称</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchTemplateBody"></tbody></table></div>
+                </div>
+            </section>
+                </div>
+            </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Usage Guide Panel -->
+    <aside id="patchHelpPanel" class="help-panel" aria-label="使用说明" aria-hidden="false">
+        <div class="help-panel-header">
+            <h2>使用说明</h2>
+            <button id="patchHelpCollapse" class="help-panel-toggle" type="button" title="收起说明" aria-label="收起说明" aria-expanded="true">›</button>
+        </div>
+        <div class="help-panel-body">
+            <section>
+                <h3>补丁中心</h3>
+                <ul>
+                    <li>登录后可在<b>普通检索</b>按名称、描述、类名或关键词搜索已分析补丁。</li>
+                    <li><b>补丁上传</b>支持拖拽或选择 zip/rar，多个文件可批量上传。</li>
+                    <li>上传后的补丁需要管理员执行分析才会出现在检索结果中。</li>
+                </ul>
+            </section>
+            <section>
+                <h3>智能开发</h3>
+                <ul>
+                    <li>选择<b>流程模板</b>并输入业务需求后点击开始流程。</li>
+                    <li>每个步骤执行完成后需要点击<b>下一步</b>才会继续。</li>
+                    <li>点<b>结束流程</b>会终止后续步骤，历史记录仍会保留。</li>
+                </ul>
+            </section>
+            <section>
+                <h3>注意事项</h3>
+                <ul>
+                    <li>流程、提示词、模板和目录管理仅管理员可操作。</li>
+                    <li>删除配置前请确认，操作<b>不可恢复</b>。</li>
+                    <li>连接状态异常时可刷新页面或重新登录。</li>
+                    <li>主题偏好保存在本地，两页共享同一设置。</li>
+                </ul>
+            </section>
+        </div>
+    </aside>
+    <button id="patchHelpReopen" class="help-panel-reopen" type="button" title="打开使用说明" aria-label="打开使用说明" aria-expanded="false" hidden>❓</button>
+
+    <div id="patchUploadModal" class="modal-overlay" hidden>
+        <div class="modal patch-upload-modal">
+            <div class="modal-header"><h3>确认上传补丁包</h3><button id="patchUploadClose" class="modal-close">×</button></div>
+            <div id="patchUploadItems" class="patch-upload-items"></div>
+            <div class="modal-footer"><button id="patchUploadCancel" class="btn-cancel">取消</button><button id="patchUploadStart" class="btn-primary">开始上传</button></div>
+        </div>
+    </div>
+
+    <div id="patchDirectoryModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal"><div class="modal-header"><h3>工作目录</h3><button id="patchDirectoryClose" class="modal-close">×</button></div><form id="patchDirectoryForm" class="patch-admin-form"><label>编码<input name="code" required></label><label>名称<input name="name" required></label><label>路径<input name="path" required placeholder="服务器允许的目录路径"></label><label id="patchDirectoryBuiltinLabel"><input type="checkbox" name="is_builtin"> 管理员内置目录</label></form><div class="modal-footer"><button id="patchDirectoryCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchDirectoryForm" class="btn-primary">保存</button></div></div>
+    </div>
+
+    <div id="patchAdminModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3 id="patchAdminModalTitle">新增配置</h3><button id="patchAdminClose" class="modal-close">×</button></div>
+            <form id="patchAdminForm" class="patch-admin-form"></form>
+            <div class="modal-footer"><button id="patchAdminCancel" type="button" class="btn-cancel">取消</button><button id="patchAdminSave" type="submit" form="patchAdminForm" class="btn-primary">保存</button></div>
+        </div>
+    </div>
+
+    <div id="patchProductModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3>产品信息</h3><button id="patchProductClose" class="modal-close">×</button></div>
+            <form id="patchProductForm" class="patch-admin-form"><label>产品名称<span class="patch-required">*</span><input name="name" maxlength="128" required placeholder="如：业务系统名称"></label><label>排序<input name="sort_order" type="number" min="0" value="0" title="数字越小越靠前"></label></form>
+            <div class="modal-footer"><button id="patchProductCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchProductForm" class="btn-primary">保存</button></div>
+        </div>
+    </div>
+
+    <div id="patchProductVersionModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3 id="patchProductVersionTitle">版本管理</h3><button id="patchProductVersionClose" class="modal-close">×</button></div>
+            <div class="patch-admin-form">
+                <div class="patch-version-add"><label>新增版本<span class="patch-required">*</span><input id="patchNewVersionInput" maxlength="64" placeholder="如：1.0"></label><button id="patchNewVersionAdd" type="button" class="patch-secondary-btn">添加</button></div>
+                <div id="patchVersionList" class="patch-version-list"></div>
+            </div>
+            <div class="modal-footer"><button id="patchProductVersionDone" type="button" class="btn-primary">完成</button></div>
+        </div>
+    </div>
+
+    <div id="patchDetailModal" class="modal-overlay" hidden>
+        <div class="modal patch-detail-modal">
+            <div class="modal-header"><h3>补丁详情</h3><button id="patchDetailClose" class="modal-close">×</button></div>
+            <div id="patchDetailContent" class="patch-detail-content"></div>
+        </div>
+    </div>
+
+    <div id="patchEditModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3>修改补丁信息</h3><button id="patchEditClose" class="modal-close">×</button></div>
+            <input id="patchEditId" type="hidden">
+            <form id="patchEditForm" class="patch-admin-form">
+                <label>名称<span class="patch-required">*</span><input id="patchEditName" maxlength="255" required></label>
+                <label>产品名称<span class="patch-required">*</span><select id="patchEditProduct" required><option value="">请选择产品</option></select></label>
+                <label>版本号<span class="patch-required">*</span><input id="patchEditVersion" list="patchEditVersionList" maxlength="64" required placeholder="选择或输入版本号"><datalist id="patchEditVersionList"></datalist></label>
+                <label>描述<textarea id="patchEditDescription" rows="4"></textarea></label>
+                <label>关键词<input id="patchEditKeyword" maxlength="2048" placeholder="多个关键词用逗号分隔"></label>
+                <label id="patchEditStatusField" hidden>状态<span class="patch-required">*</span><select id="patchEditStatus" class="patch-input"><option value="0">待分析</option><option value="1">分析中</option><option value="2">分析完成</option><option value="3">分析失败</option></select></label>
+                <p id="patchEditResetNote" class="patch-muted">保存后补丁将重置为“待分析”状态，需要重新分析。</p>
+            </form>
+            <div class="modal-footer"><button id="patchEditCancel" type="button" class="btn-cancel">取消</button><button id="patchEditSave" type="submit" form="patchEditForm" class="btn-primary">保存</button></div>
+        </div>
+    </div>
+
+    <div id="patchUserSettingsModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal patch-user-settings-modal">
+            <div class="modal-header"><h3>用户设置</h3><button id="patchUserSettingsClose" class="modal-close">×</button></div>
+            <div class="patch-user-profile"><h4>个人信息</h4><dl id="patchUserProfile" class="patch-user-profile-grid">正在加载...</dl></div>
+            <form id="patchChangePasswordForm" class="patch-admin-form"><h4>修改密码</h4><label>当前密码<input name="current_password" type="password" autocomplete="current-password" required></label><label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="8" required></label><label>确认新密码<input name="confirm_password" type="password" autocomplete="new-password" minlength="8" required></label><p class="patch-muted">新密码至少 8 位，且需包含字母和数字。修改后需重新登录。</p><div id="patchChangePasswordMessage" class="patch-message"></div><div class="modal-footer"><button id="patchUserSettingsCancel" type="button" class="btn-cancel">取消</button><button type="submit" class="btn-primary">修改密码</button></div></form>
+        </div>
+    </div>
+
+    <div id="patchConfirmModal" class="modal-overlay patch-notice-overlay" role="alertdialog" aria-modal="true" aria-labelledby="patchConfirmTitle" hidden>
+        <div class="modal app-notice-modal">
+            <h3 id="patchConfirmTitle">确认操作</h3>
+            <p id="patchConfirmMessage"></p>
+            <div class="modal-footer"><button id="patchConfirmCancel" type="button" class="btn-cancel">取消</button><button id="patchConfirmAccept" type="button" class="btn-primary">确认</button></div>
+        </div>
+    </div>
+
+    <div id="patchDownloadModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="patchDownloadTitle" hidden>
+        <div class="modal patch-download-modal">
+            <div class="modal-header"><h3 id="patchDownloadTitle">下载补丁包</h3><button id="patchDownloadClose" class="modal-close" type="button" aria-label="关闭">×</button></div>
+            <div class="modal-body patch-download-body">
+                <div class="patch-download-field"><label>下载地址</label><div id="patchDownloadUrl" class="patch-download-url"></div></div>
+                <div class="patch-download-field"><label>文件名</label><div id="patchDownloadFile" class="patch-download-file"></div></div>
+                <div class="patch-download-field"><label>下载进度</label><div class="patch-download-progress"><span id="patchDownloadBar"></span></div><div class="patch-download-stats"><span id="patchDownloadPercent">0%</span><span id="patchDownloadSize"></span></div></div>
+            </div>
+            <div class="modal-footer"><button id="patchDownloadCancel" type="button" class="btn-cancel">取消</button></div>
+        </div>
+    </div>
+
+    <div id="patchErrorModal" class="modal-overlay patch-notice-overlay" role="alertdialog" aria-modal="true" aria-labelledby="patchErrorTitle" hidden>
+        <div class="modal patch-notice-modal">
+            <button id="patchErrorClose" class="patch-notice-close" type="button" aria-label="关闭">×</button>
+            <div class="patch-notice-icon" aria-hidden="true">!</div>
+            <div class="patch-notice-content">
+                <h3 id="patchErrorTitle">操作失败</h3>
+                <p id="patchErrorMessage"></p>
+            </div>
+            <div class="patch-notice-footer">
+                <button id="patchErrorConfirm" type="button" class="patch-primary-btn">我知道了</button>
+            </div>
+        </div>
+    </div>
+    <script src="/patches.js"></script>
+</body>
+</html>

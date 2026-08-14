@@ -228,6 +228,122 @@ impl ClaudeAssistant {
     }
 }
 
+/// 判断一条 assistant 文本消息是否只是「后台任务通知」到来后的短收尾语。
+/// 判定规则：消息本身较短(<300 字符)，且其前一条非空消息是 user 的 <task-notification>。
+fn is_trailing_ack(seq: &[(bool, bool, String)], idx: usize) -> bool {
+    if seq[idx].2.trim().chars().count() >= 300 {
+        return false;
+    }
+    let mut j = idx;
+    while j > 0 {
+        j -= 1;
+        let (is_assistant, is_task_notification, text) = &seq[j];
+        if text.trim().is_empty() {
+            continue;
+        }
+        if *is_assistant {
+            return false; // 前面是另一条 assistant 消息，不是针对后台通知的收尾
+        }
+        return *is_task_notification;
+    }
+    false
+}
+
+/// `claude --print` 只返回最后一次 assistant 文本消息。若会话中途启动过后台 Bash
+/// （run_in_background），其 <task-notification> 会在主交付结果产出之后才注入会话，
+/// claude 会追加一条短收尾语，导致 --print 拿到的是收尾而不是真正的主交付内容。
+/// 这里读取本次运行对应的项目会话 jsonl，跳过这类收尾，返回最后一个实质结果。
+fn read_substantive_result(cwd: &str) -> Option<String> {
+    // cwd -> 会话目录 slug，如 D:\patch-patches -> D--patch-patches
+    let mut normalized = cwd.to_string();
+    if let Some(stripped) = normalized.strip_prefix(r"\\?\") {
+        normalized = stripped.to_string();
+    } else if let Some(stripped) = normalized.strip_prefix(r"\\.\") {
+        normalized = stripped.to_string();
+    }
+    let slug: String = normalized.replace([':', '\\', '/'], "-");
+    let project_dir = dirs::home_dir()?.join(".claude").join("projects").join(slug);
+    let entries = std::fs::read_dir(project_dir).ok()?;
+    let mut latest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if let Ok(metadata) = entry.metadata() {
+            if let Ok(modified) = metadata.modified() {
+                if latest.as_ref().map_or(true, |(time, _)| modified > *time) {
+                    latest = Some((modified, path));
+                }
+            }
+        }
+    }
+    let (_, path) = latest?;
+    let content = std::fs::read_to_string(path).ok()?;
+
+    // 按顺序收集非空条目：(is_assistant, is_task_notification_user, text)
+    let mut seq: Vec<(bool, bool, String)> = Vec::new();
+    for line in content.lines() {
+        let value: serde_json::Value = serde_json::from_str(line).ok()?;
+        if value.get("type").and_then(|v| v.as_str()) != Some("user")
+            && value.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(message) = value.get("message") else { continue };
+        let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let content = message.get("content");
+        if role == "assistant" {
+            let mut text = String::new();
+            if let Some(blocks) = content.and_then(|c| c.as_array()) {
+                for block in blocks {
+                    if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                            text.push_str(t);
+                        }
+                    }
+                }
+            }
+            if !text.trim().is_empty() {
+                seq.push((true, false, text));
+            }
+        } else if role == "user" {
+            let raw = match content {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(serde_json::Value::Array(blocks)) => {
+                    let mut parts = Vec::new();
+                    for block in blocks {
+                        if block.get("type").and_then(|v| v.as_str()) == Some("tool_result") {
+                            parts.push("__tool_result__".to_string());
+                        } else if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                            parts.push(t.to_string());
+                        }
+                    }
+                    parts.join("\n")
+                }
+                _ => String::new(),
+            };
+            if !raw.trim().is_empty() {
+                let is_task_notification = raw.contains("<task-notification>");
+                seq.push((false, is_task_notification, raw));
+            }
+        }
+    }
+
+    let mut idx = seq.len();
+    while idx > 0 {
+        idx -= 1;
+        let (is_assistant, _, text) = &seq[idx];
+        if !is_assistant || text.trim().is_empty() {
+            continue;
+        }
+        if is_trailing_ack(&seq, idx) {
+            continue;
+        }
+        return Some(text.trim().to_string());
+    }
+    None
+}
+
 #[async_trait]
 impl AiAssistant for ClaudeAssistant {
     fn name(&self) -> &str {
@@ -254,6 +370,106 @@ impl AiAssistant for ClaudeAssistant {
                 supports_tools: true,
             },
         ]
+    }
+
+    async fn execute_once(&self, system_prompt: &str, user_prompt: &str, cwd: &str, model: Option<&str>) -> Result<String, String> {
+        let (text, _) = self.execute_once_with_session(system_prompt, user_prompt, cwd, model).await?;
+        Ok(text)
+    }
+
+    /// 与 execute_once 相同的一次性执行，但额外捕获本次 claude CLI 进程自身的
+    /// `system/init` 事件里的 session_id，用于后续 `--resume`。
+    /// 会话 id 来自本进程的 stream-json 输出，与工作目录下其他会话互不影响，无歧义。
+    async fn execute_once_with_session(&self, system_prompt: &str, user_prompt: &str, cwd: &str, model: Option<&str>) -> Result<(String, Option<String>), String> {
+        let prompt = format!("[System Prompt]\n{}\n\n[User Prompt]\n{}", system_prompt, user_prompt);
+        let cwd_str = cwd.to_string();
+        let cwd = std::path::PathBuf::from(cwd);
+        if !cwd.is_dir() {
+            return Err("working directory does not exist".to_string());
+        }
+        let selected_model = model.filter(|value| !value.trim().is_empty()).unwrap_or(&self.default_model).to_string();
+        let git_bash = self.git_bash_path.clone();
+        let claude_cmd = self.claude_cmd.clone();
+        tokio::task::spawn_blocking(move || {
+            let args = [
+                "--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--model",
+                selected_model.as_str(),
+            ];
+            let mut cmd = if claude_cmd.starts_with("node:") {
+                let mut command = Command::new("node");
+                command.arg(&claude_cmd[5..]);
+                command
+            } else if claude_cmd.ends_with(".cmd") && cfg!(target_os = "windows") {
+                let mut command = Command::new("cmd.exe");
+                command.arg("/C").arg(&claude_cmd);
+                command
+            } else {
+                Command::new(&claude_cmd)
+            };
+            cmd.args(args)
+                .current_dir(&cwd)
+                .env("CLAUDE_CODE_GIT_BASH_PATH", git_bash)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = cmd.spawn().map_err(|error| format!("failed to start ClaudeCode: {}", error))?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(prompt.as_bytes()).map_err(|error| format!("failed to send prompt: {}", error))?;
+            }
+            let stdout = child.stdout.take().expect("stdout should be piped");
+            let reader = std::io::BufReader::new(stdout);
+            use std::io::BufRead;
+
+            let mut agent_session_id: Option<String> = None;
+            let mut result_text: Option<String> = None;
+            let mut error_text: Option<String> = None;
+
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => continue,
+                };
+                let event: serde_json::Value = match serde_json::from_str(&line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                let subtype = event.get("subtype").and_then(|s| s.as_str());
+                match event_type {
+                    "system" if subtype == Some("init") => {
+                        if let Some(sid) = event.get("session_id").and_then(|s| s.as_str()) {
+                            agent_session_id = Some(sid.to_string());
+                            log::debug!("[claude] execute_once_with_session: session_id={}", sid);
+                        }
+                    }
+                    "result" => {
+                        let text = event.get("result").and_then(|r| r.as_str()).unwrap_or("");
+                        let is_error = event.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                        if is_error {
+                            error_text = Some(text.to_string());
+                        } else {
+                            result_text = Some(text.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let _ = child.wait();
+
+            if let Some(err) = error_text {
+                return Err(err);
+            }
+            // result 事件为空时（如中途后台任务通知后的收尾语），退回读取会话 jsonl 的实质结果
+            let result = result_text
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| text.trim().to_string())
+                .or_else(|| read_substantive_result(&cwd_str));
+            match result {
+                Some(text) => Ok((text, agent_session_id)),
+                None => Err("ClaudeCode produced no output".to_string()),
+            }
+        }).await.map_err(|error| format!("task error: {}", error))?
     }
 
     fn default_model(&self) -> &str {

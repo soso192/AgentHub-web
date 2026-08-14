@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CC-Web 智能开发流程运行详情，支持实时查看执行进度与步骤输出。">
+    <meta name="theme-color" content="#f7f8fa">
+    <title>流程运行详情 · CC-Web</title>
+    <script>try{if(localStorage.getItem('cc-web-help-panel')==='closed'){document.documentElement.classList.add('help-panel-closed');}}catch(e){}</script>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="patch-page">
+        <header class="patch-topbar">
+            <div class="patch-brand">⚡ CC-Web</div>
+            <nav class="app-mode-toggle" aria-label="应用模式">
+                <button class="mode-btn" type="button" onclick="location.href='/'">聊天</button>
+                <button class="mode-btn active" type="button" onclick="location.href='/patches.html?tab=smart'" aria-current="page">补丁</button>
+            </nav>
+            <div class="patch-topbar-actions">
+                <span id="patchCurrentUser" class="patch-api-status"></span>
+                <button id="patchBackBtn" type="button" class="patch-secondary-btn">返回</button>
+                <button id="patchThemeToggle" class="theme-btn" type="button" title="切换主题" aria-label="切换主题">🌙</button>
+            </div>
+        </header>
+
+        <main class="patch-main">
+            <div class="patch-card workflow-run-page">
+                <div class="workflow-run-header">
+                    <div><h2 id="workflowHistoryTitle">流程运行详情</h2><span id="workflowHistorySubtitle" class="workflow-result-subtitle"></span></div>
+                    <div class="workflow-run-actions"><button id="workflowHistoryRerun" type="button" class="patch-secondary-btn" hidden>重新执行</button><button id="workflowHistoryNext" type="button" class="patch-primary-btn" hidden>下一步</button></div>
+                </div>
+                <div id="workflowHistoryMeta" class="workflow-result-meta"></div>
+                <div id="workflowHistoryInput" class="workflow-history-input"></div>
+                <div id="workflowHistorySteps" class="workflow-steps"></div>
+                <div id="workflowHistoryOutputBox" class="workflow-result-output"><div class="workflow-output-toolbar"><button id="workflowHistoryCopy" type="button" class="patch-secondary-btn workflow-copy-btn">复制</button><button id="workflowHistoryFullscreen" type="button" class="patch-secondary-btn workflow-copy-btn" title="全屏查看">⛶</button></div><pre id="workflowHistoryOutput" class="workflow-result-code"></pre></div>
+                <div class="workflow-run-footer"><button id="workflowCancel" type="button" class="patch-secondary-btn">结束流程</button></div>
+            </div>
+        </main>
+    </div>
+
+    <div id="workflowResultModal" class="modal-overlay" hidden>
+        <div class="modal workflow-result-modal">
+            <div class="modal-header"><div><h3 id="workflowResultTitle">步骤结果</h3><span id="workflowResultSubtitle" class="workflow-result-subtitle"></span></div><button id="workflowResultClose" class="modal-close">×</button></div>
+            <div class="workflow-result-body"><div id="workflowResultMeta" class="workflow-result-meta"></div><div id="workflowResultError" class="workflow-result-error" hidden></div><div id="workflowResultOutput" class="workflow-result-output"><div class="workflow-output-toolbar"><button id="workflowResultCopy" type="button" class="patch-secondary-btn workflow-copy-btn">复制</button><button id="workflowResultFullscreen" type="button" class="patch-secondary-btn workflow-copy-btn" title="全屏查看">⛶</button></div><pre id="workflowResultContent" class="workflow-result-code">正在加载...</pre></div></div>
+        </div>
+    </div>
+
+    <div id="workflowSummaryModal" class="modal-overlay" hidden>
+        <div class="modal workflow-result-modal">
+            <div class="modal-header"><div><h3 id="workflowSummaryTitle">步骤摘要</h3><span id="workflowSummarySubtitle" class="workflow-result-subtitle"></span></div><button id="workflowSummaryClose" class="modal-close">×</button></div>
+            <div class="workflow-result-body"><div id="workflowSummaryOutput" class="workflow-result-output"><div class="workflow-output-toolbar"><button id="workflowSummaryCopy" type="button" class="patch-secondary-btn workflow-copy-btn" hidden>复制</button><button id="workflowSummaryFullscreen" type="button" class="patch-secondary-btn workflow-copy-btn" title="全屏查看" hidden>⛶</button></div><pre id="workflowSummaryContent" class="workflow-result-code">正在加载...</pre></div></div>
+        </div>
+    </div>
+
+    <div id="patchConfirmModal" class="modal-overlay patch-notice-overlay" role="alertdialog" aria-modal="true" aria-labelledby="patchConfirmTitle" hidden>
+        <div class="modal app-notice-modal">
+            <h3 id="patchConfirmTitle">确认操作</h3>
+            <p id="patchConfirmMessage"></p>
+            <div class="modal-footer"><button id="patchConfirmCancel" type="button" class="btn-cancel">取消</button><button id="patchConfirmAccept" type="button" class="btn-primary">确认</button></div>
+        </div>
+    </div>
+
+    <div id="patchErrorModal" class="modal-overlay patch-notice-overlay" role="alertdialog" aria-modal="true" aria-labelledby="patchErrorTitle" hidden>
+        <div class="modal patch-notice-modal">
+            <button id="patchErrorClose" class="patch-notice-close" type="button" aria-label="关闭">×</button>
+            <div class="patch-notice-icon" aria-hidden="true">!</div>
+            <div class="patch-notice-content">
+                <h3 id="patchErrorTitle">操作失败</h3>
+                <p id="patchErrorMessage"></p>
+            </div>
+            <div class="patch-notice-footer">
+                <button id="patchErrorConfirm" type="button" class="patch-primary-btn">我知道了</button>
+            </div>
+        </div>
+    </div>
+    <script>
+    (function () {
+        'use strict';
+        const PATCH_SEARCH_API = 'http://10.4.122.39:13587';
+        const PATCH_SEARCH_API_KEY = 'cc-web-patch-search-api';
+        const PATCH_TOKEN_KEY = 'patch-search-access-token';
+        const patchState = { theme: 'light', authInvalidated: false, workflow: { runId: '', steps: [], currentStep: 0, status: '', source: null, lastEventId: 0, localExecutions: new Set() }, workflowSnapshot: null };
+
+        function patchApiBase() {
+            let saved = '';
+            try { saved = localStorage.getItem(PATCH_SEARCH_API_KEY) || ''; } catch {}
+            return saved.trim() || PATCH_SEARCH_API;
+        }
+        function patchApiUrl(path) { return `${patchApiBase().replace(/\/+$/, '')}${path}`; }
+        function patchToken() { return localStorage.getItem(PATCH_TOKEN_KEY) || ''; }
+        function patchEscape(value) {
+            const div = document.createElement('div');
+            div.textContent = value == null ? '' : String(value);
+            return div.innerHTML;
+        }
+        function patchFormatDateTime(value) {
+            if (value == null || value === '') return '-';
+            const date = value instanceof Date ? value : new Date(value);
+            if (Number.isNaN(date.getTime())) return String(value);
+            const pad = n => String(n).padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+        }
+        function patchCloseError() { document.getElementById('patchErrorModal').hidden = true; }
+        function patchShowError(message, title = '操作失败') {
+            if (patchState.authInvalidated) return;
+            document.getElementById('patchErrorTitle').textContent = title;
+            document.getElementById('patchErrorMessage').textContent = message || '发生未知错误，请稍后重试。';
+            document.getElementById('patchErrorModal').hidden = false;
+            requestAnimationFrame(() => document.getElementById('patchErrorConfirm').focus());
+        }
+        function patchConfirm(message, title = '确认操作') {
+            return new Promise(resolve => {
+                const modal = document.getElementById('patchConfirmModal');
+                const close = accepted => { modal.hidden = true; resolve(accepted); };
+                document.getElementById('patchConfirmTitle').textContent = title;
+                document.getElementById('patchConfirmMessage').textContent = message;
+                document.getElementById('patchConfirmCancel').onclick = () => close(false);
+                document.getElementById('patchConfirmAccept').onclick = () => close(true);
+                modal.onclick = event => { if (event.target === modal) close(false); };
+                modal.hidden = false;
+                requestAnimationFrame(() => document.getElementById('patchConfirmAccept').focus());
+            });
+        }
+        async function patchRequest(path, options = {}) {
+            const headers = new Headers(options.headers || {});
+            const requestToken = patchToken();
+            if (requestToken) headers.set('Authorization', `Bearer ${requestToken}`);
+            const response = await fetch(patchApiUrl(path), {...options, headers});
+            const payload = await response.json().catch(() => ({}));
+            if (response.status === 401) {
+                if (patchToken() === requestToken) patchHandleUnauthorized();
+                throw new Error('登录已失效，请重新登录');
+            }
+            if (response.status === 403) throw new Error('权限不足');
+            if (!response.ok || payload.code !== 0) throw new Error(payload.message || payload.detail || '请求失败');
+            return payload.data;
+        }
+        function patchHandleUnauthorized() {
+            if (patchState.authInvalidated) return;
+            patchState.authInvalidated = true;
+            localStorage.removeItem(PATCH_TOKEN_KEY);
+            closeWorkflowStream();
+            setTimeout(() => { location.href = '/patches.html'; }, 0);
+        }
+        function patchSetTheme(theme) {
+            patchState.theme = theme;
+            document.documentElement.dataset.theme = theme;
+            localStorage.setItem('cc-web-theme', theme);
+            document.getElementById('patchThemeToggle').textContent = theme === 'dark' ? '☀️' : '🌙';
+        }
+        function patchInitTheme() {
+            const saved = localStorage.getItem('cc-web-theme');
+            patchSetTheme(saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+        }
+        function workflowStatusLabel(status) {
+            return {pending: '待执行', running: '执行中', waiting_confirmation: '待确认', success: '已完成', failed: '失败', cancelled: '已取消'}[status] || status || '未知';
+        }
+        function patchUnescapeString(value) {
+            const map = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', '"': '"', "'": "'", '/': '/', '\\': '\\' };
+            let current = value;
+            for (let round = 0; round < 5; round++) {
+                let changed = false;
+                const decoded = current.replace(/\\(u[0-9a-fA-F]{4}|.)/g, (raw, code) => {
+                    if (code[0] === 'u' && code.length === 5) { changed = true; return String.fromCharCode(parseInt(code.slice(1), 16)); }
+                    if (Object.prototype.hasOwnProperty.call(map, code)) { changed = true; return map[code]; }
+                    return raw;
+                });
+                current = decoded;
+                if (!changed) break;
+            }
+            return current;
+        }
+        function patchJsonReadable(value, depth) {
+            const pad = '  '.repeat(depth);
+            if (value === null || value === undefined) return 'null';
+            if (typeof value === 'string') return patchUnescapeString(value);
+            if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+            if (Array.isArray(value)) {
+                if (value.length === 0) return '[]';
+                return '[\n' + value.map((item, i) => `${pad}  ${i}: ${patchJsonReadable(item, depth + 1)}`).join('\n') + '\n' + pad + ']';
+            }
+            if (typeof value === 'object') {
+                const keys = Object.keys(value);
+                if (keys.length === 0) return '{}';
+                return '{\n' + keys.map(key => `${pad}  ${key}: ${patchJsonReadable(value[key], depth + 1)}`).join('\n') + '\n' + pad + '}';
+            }
+            return String(value);
+        }
+        function patchDecodeResultText(value) {
+            if (value == null) return '';
+            let text = value;
+            if (typeof text !== 'string') { try { text = JSON.stringify(text, null, 2); } catch { text = String(text); } }
+            const trimmed = text.trim();
+            try { return patchJsonReadable(JSON.parse(trimmed), 0); } catch {}
+            return text.replace(/```json\s*([\s\S]*?)```/gi, (match, inner) => {
+                try { return '```json\n' + patchJsonReadable(JSON.parse(inner.trim()), 0) + '\n```'; }
+                catch { return match; }
+            });
+        }
+        function copyTextToClipboard(text) {
+            if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+            return new Promise((resolve, reject) => {
+                const ta = document.createElement('textarea');
+                ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                document.body.appendChild(ta); ta.select();
+                try { document.execCommand('copy') ? resolve() : reject(new Error('复制失败')); }
+                catch (err) { reject(err); }
+                finally { document.body.removeChild(ta); }
+            });
+        }
+        function copyWorkflowOutput(btn, source) {
+            const text = typeof source === 'string' ? source : (source && source.textContent) || '';
+            if (!text) return;
+            const original = btn.textContent;
+            copyTextToClipboard(text).then(() => { btn.textContent = '已复制'; btn.classList.add('copied'); }).catch(() => { btn.textContent = '复制失败'; });
+            setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 1500);
+        }
+        function closeWorkflowStream() { if (patchState.workflow.source) { patchState.workflow.source.abort(); patchState.workflow.source = null; } }
+
+        function renderWorkflowStatus() {
+            const el = document.getElementById('workflowHistoryStatus');
+            if (!el) return;
+            el.textContent = workflowStatusLabel(patchState.workflow.status || '');
+            el.className = `workflow-result-status workflow-status-${patchEscape(patchState.workflow.status || 'pending')}`;
+        }
+        function renderWorkflowStepMarkup(steps, currentStep, runId, canRerun) {
+            return (steps || []).map(step => {
+                const status = step.status || 'pending';
+                const active = Number(step.step_order) === Number(currentStep);
+                const actions = [];
+                if (step.claude_target === 'local' && step.local_session_id && ['success', 'failed', 'waiting_confirmation'].includes(status)) actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-resume-step="${patchEscape(step.step_order)}">继续会话</button>`);
+                actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-run-id="${patchEscape(runId)}" data-workflow-summary-step="${patchEscape(step.step_order)}">查看摘要</button>`);
+                actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-run-id="${patchEscape(runId)}" data-workflow-result-step="${patchEscape(step.step_order)}">查看结果</button>`);
+                if (canRerun) actions.push(`<button type="button" class="patch-secondary-btn workflow-rerun-btn" data-workflow-rerun-run="${patchEscape(runId)}" data-workflow-rerun-step="${patchEscape(step.step_order)}">重新执行</button>`);
+                const flowTitle = step.flow_name ? `${step.flow_code || ''} ${step.flow_name}` : (step.flow_code || '');
+                return `<div class="workflow-step ${active ? 'active' : ''}"><strong class="workflow-step-no">步骤 ${step.step_order}</strong><span class="workflow-step-info" title="${patchEscape(flowTitle)}"><b>${patchEscape(step.flow_code || '')}</b>${step.flow_name ? `<small>${patchEscape(step.flow_name)}</small>` : ''}</span><span class="workflow-step-status workflow-status-${patchEscape(status)}">${patchEscape(workflowStatusLabel(status))}</span>${actions.length ? `<div class="workflow-step-actions">${actions.join('')}</div>` : ''}</div>`;
+            }).join('');
+        }
+        function renderWorkflowSteps() {
+            const state = patchState.workflow;
+            const canRerun = ['success', 'failed', 'cancelled'].includes(state.status);
+            const stepsEl = document.getElementById('workflowHistorySteps');
+            if (stepsEl) stepsEl.innerHTML = renderWorkflowStepMarkup(state.steps, state.currentStep, state.runId, canRerun);
+        }
+        function applyWorkflowSnapshot(snapshot) {
+            if (!snapshot) return;
+            patchState.workflow.runId = snapshot.id;
+            patchState.workflow.steps = snapshot.steps || [];
+            patchState.workflow.status = snapshot.status || '';
+            patchState.workflow.currentStep = snapshot.current_step || 1;
+            patchState.workflowSnapshot = snapshot;
+            const finished = ['success', 'failed', 'cancelled'].includes(patchState.workflow.status);
+            const next = document.getElementById('workflowHistoryNext');
+            if (next) { next.hidden = finished; next.disabled = !snapshot.can_confirm; }
+            const rerun = document.getElementById('workflowHistoryRerun');
+            if (rerun) rerun.hidden = !finished;
+            const cancel = document.getElementById('workflowCancel');
+            if (cancel) cancel.disabled = finished;
+            renderWorkflowStatus();
+            const current = patchState.workflow.steps.find(step => Number(step.step_order) === Number(patchState.workflow.currentStep)) || patchState.workflow.steps.slice(-1)[0];
+            const output = document.getElementById('workflowHistoryOutput');
+            if (output) output.textContent = patchDecodeResultText(current?.output_result || snapshot.result || snapshot.error_message || '当前流程暂无输出。');
+            const copy = document.getElementById('workflowHistoryCopy');
+            const fsMain = document.getElementById('workflowHistoryFullscreen');
+            const hasOutput = !!(output && output.textContent && output.textContent !== '当前流程暂无输出。');
+            if (copy) copy.hidden = !hasOutput;
+            if (fsMain) fsMain.hidden = !hasOutput;
+            const total = (patchState.workflow.steps || []).length;
+            const progress = document.getElementById('workflowHistoryProgress');
+            if (progress) {
+                const status = patchState.workflow.status;
+                const cur = patchState.workflow.currentStep || 0;
+                let text = '';
+                if (status === 'success') text = `已完成 ${total} 步`;
+                else if (status === 'pending') text = '待执行';
+                else if (status === 'failed' || status === 'cancelled') text = `进行到第 ${cur} / ${total} 步`;
+                else text = `第 ${cur} / ${total} 步`;
+                progress.textContent = text;
+            }
+            renderWorkflowSteps();
+        }
+        const WORKFLOW_FULLSCREEN_TARGETS = [
+            { output: 'workflowResultOutput', button: 'workflowResultFullscreen' },
+            { output: 'workflowHistoryOutputBox', button: 'workflowHistoryFullscreen' },
+            { output: 'workflowSummaryOutput', button: 'workflowSummaryFullscreen' }
+        ];
+        function exitWorkflowFullscreen(outputId) {
+            const target = document.getElementById(outputId);
+            if (document.fullscreenElement !== target) return;
+            const exit = document.exitFullscreen ? document.exitFullscreen() : (document.webkitExitFullscreen && document.webkitExitFullscreen());
+            if (exit && exit.catch) exit.catch(() => {});
+        }
+        function toggleWorkflowFullscreen(outputId, buttonId) {
+            const target = document.getElementById(outputId);
+            if (!target) return;
+            if (document.fullscreenElement === target) { exitWorkflowFullscreen(outputId); return; }
+            const req = target.requestFullscreen ? target.requestFullscreen() : (target.webkitRequestFullscreen && target.webkitRequestFullscreen());
+            if (req && req.catch) req.catch(() => {});
+        }
+        function syncWorkflowFullscreenButtons() {
+            for (const item of WORKFLOW_FULLSCREEN_TARGETS) {
+                const btn = document.getElementById(item.button);
+                if (!btn) continue;
+                const active = document.fullscreenElement === document.getElementById(item.output);
+                btn.textContent = active ? '✕' : '⛶';
+                btn.title = active ? '退出全屏' : '全屏查看';
+            }
+        }
+        async function showWorkflowStepResult(runId, stepOrder) {
+            const modal = document.getElementById('workflowResultModal');
+            const content = document.getElementById('workflowResultContent');
+            const error = document.getElementById('workflowResultError');
+            const copyBtn = document.getElementById('workflowResultCopy');
+            const fsBtn = document.getElementById('workflowResultFullscreen');
+            modal.hidden = false; content.textContent = '正在查询步骤结果...'; error.hidden = true; copyBtn.hidden = true; if (fsBtn) fsBtn.hidden = true;
+            try {
+                const result = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepOrder)}/result`);
+                document.getElementById('workflowResultTitle').textContent = `步骤 ${result.step_order} 结果`;
+                document.getElementById('workflowResultSubtitle').textContent = result.flow_name ? `${result.flow_code} - ${result.flow_name}` : result.flow_code || '';
+                document.getElementById('workflowResultMeta').innerHTML = `<span class="workflow-result-status">${patchEscape(result.status || 'unknown')}</span><span>开始：${patchFormatDateTime(result.started_at)}</span><span>完成：${patchFormatDateTime(result.finished_at)}</span>`;
+                if (result.error_message) { error.hidden = false; error.textContent = result.error_message; }
+                const value = result.output_result ?? result.output_context;
+                content.textContent = value == null || value === '' ? '当前步骤尚未产生输出。' : patchDecodeResultText(value);
+                const empty = content.textContent === '当前步骤尚未产生输出。';
+                copyBtn.hidden = empty; if (fsBtn) fsBtn.hidden = empty;
+            } catch (err) { content.textContent = ''; error.hidden = false; error.textContent = err.message; copyBtn.hidden = true; if (fsBtn) fsBtn.hidden = true; }
+        }
+        function extractProgressSummary(value) {
+            // 步骤输出可能是对象、JSON 字符串或多层转义字符串；也可能被包在 markdown 代码块围栏里(可能带前缀说明文字)
+            let data = value;
+            if (typeof data === 'string') {
+                const trimmed = data.trim();
+                const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+                data = fenced ? fenced[1].trim() : trimmed;
+            }
+            for (let round = 0; round < 4; round++) {
+                if (data && typeof data === 'object' && !Array.isArray(data)) break;
+                if (typeof data !== 'string') break;
+                try { data = JSON.parse(data.trim()); } catch { break; }
+            }
+            if (data && typeof data === 'object' && !Array.isArray(data) && Object.prototype.hasOwnProperty.call(data, 'progress_summary')) {
+                const summary = data.progress_summary;
+                if (summary == null || summary === '') return null;
+                return typeof summary === 'string' ? summary : JSON.stringify(summary, null, 2);
+            }
+            return null;
+        }
+        async function showWorkflowStepSummary(runId, stepOrder) {
+            const modal = document.getElementById('workflowSummaryModal');
+            const content = document.getElementById('workflowSummaryContent');
+            const copyBtn = document.getElementById('workflowSummaryCopy');
+            const fsBtn = document.getElementById('workflowSummaryFullscreen');
+            modal.hidden = false; content.textContent = '正在加载...';
+            if (copyBtn) copyBtn.hidden = true; if (fsBtn) fsBtn.hidden = true;
+            const step = (patchState.workflow.steps || []).find(item => Number(item.step_order) === Number(stepOrder));
+            document.getElementById('workflowSummaryTitle').textContent = `步骤 ${stepOrder} 摘要`;
+            document.getElementById('workflowSummarySubtitle').textContent = step ? (step.flow_name ? `${step.flow_code} - ${step.flow_name}` : step.flow_code || '') : '';
+            try {
+                const result = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepOrder)}/result`);
+                if (!['success', 'failed', 'cancelled', 'waiting_confirmation'].includes(result.status)) { content.textContent = '正在执行中，请稍后'; return; }
+                const summary = extractProgressSummary(result.output_result ?? result.output_context);
+                content.textContent = summary == null ? '当前步骤无摘要' : summary;
+                const usable = summary != null;
+                if (copyBtn) copyBtn.hidden = !usable; if (fsBtn) fsBtn.hidden = !usable;
+            } catch (err) { content.textContent = err.message; }
+        }
+        async function nextWorkflowStep() {
+            const order = patchState.workflow.currentStep;
+            const next = document.getElementById('workflowHistoryNext');
+            if (next) next.disabled = true;
+            const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(patchState.workflow.runId)}/next`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({step_order: order})});
+            applyWorkflowSnapshot(snapshot);
+        }
+        async function cancelWorkflow() {
+            const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(patchState.workflow.runId)}/cancel`, {method:'POST'});
+            closeWorkflowStream();
+            applyWorkflowSnapshot(snapshot);
+        }
+        async function rerunWorkflow(runId, stepOrder, wholeFlow = false) {
+            const step = Number(stepOrder);
+            const confirmed = await patchConfirm(wholeFlow ? '确定要重新执行该流程吗？将清除所有步骤的输出，并从第一步重新开始。' : `确定要重新执行步骤 ${step} 及其后所有步骤吗？这些步骤的输出将被清除。`, '重新执行');
+            if (!confirmed) return;
+            try {
+                await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/rerun`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({step_order: step})});
+                patchState.workflow.lastEventId = 0;
+                const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}`);
+                applyWorkflowSnapshot(snapshot);
+                connectWorkflowStream();
+            } catch (error) { patchShowError(error.message, '重新执行失败'); }
+        }
+        function connectWorkflowStream() {
+            closeWorkflowStream();
+            const streamRunId = patchState.workflow.runId;
+            const controller = new AbortController();
+            patchState.workflow.source = controller;
+            (async () => {
+                const response = await fetch(patchApiUrl(`/api/workflows/runs/${encodeURIComponent(streamRunId)}/stream`), {headers: {Authorization: `Bearer ${patchToken()}`, 'Last-Event-ID': String(patchState.workflow.lastEventId || 0)}, signal: controller.signal});
+                if (!response.ok) { if (response.status === 401) patchHandleUnauthorized(); throw new Error('流程连接失败'); }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                const dispatch = async (eventName, dataText) => {
+                    const data = JSON.parse(dataText || '{}');
+                    const step = patchState.workflow.steps.find(item => Number(item.step_order) === Number(data.step_order));
+                    if (eventName === 'step_started') { patchState.workflow.currentStep = data.step_order; patchState.workflow.status = 'running'; if (step) step.status = 'running'; }
+                    if (eventName === 'local_call_required') { patchState.workflow.status = 'waiting_confirmation'; if (step) step.status = 'waiting_confirmation'; }
+                    if (eventName === 'step_completed') { patchState.workflow.status = 'waiting_confirmation'; if (step) step.status = 'waiting_confirmation'; const outEl = document.getElementById('workflowHistoryOutput'); if (outEl) { outEl.textContent = patchDecodeResultText(data.text || data.result || {}); const c = document.getElementById('workflowHistoryCopy'); const f = document.getElementById('workflowHistoryFullscreen'); const has = !!(outEl.textContent && outEl.textContent !== '当前流程暂无输出。'); if (c) c.hidden = !has; if (f) f.hidden = !has; } const nextEl = document.getElementById('workflowHistoryNext'); if (nextEl) { nextEl.hidden = false; nextEl.disabled = false; } }
+                    if (eventName === 'workflow_completed' || eventName === 'workflow_cancelled' || eventName === 'workflow_error') { patchState.workflow.status = eventName === 'workflow_completed' ? 'success' : eventName.replace('workflow_', ''); if (step) step.status = eventName === 'workflow_completed' ? 'success' : (eventName === 'workflow_error' ? 'failed' : 'cancelled'); const nextEl = document.getElementById('workflowHistoryNext'); if (nextEl) nextEl.hidden = true; const cancelEl = document.getElementById('workflowCancel'); if (cancelEl) cancelEl.disabled = true; }
+                    renderWorkflowStatus(); renderWorkflowSteps();
+                    if (eventName === 'local_call_required') {
+                        const executionId = `${streamRunId}-${data.step_order}`;
+                        const current = await patchRequest(`/api/workflows/runs/${encodeURIComponent(streamRunId)}`);
+                        const currentStep = current.steps.find(item => Number(item.step_order) === Number(data.step_order));
+                        if (!currentStep || currentStep.status !== 'running' || patchState.workflow.localExecutions.has(executionId)) return;
+                        patchState.workflow.localExecutions.add(executionId);
+                        try {
+                            const resultResponse = await fetch('/api/local-claude/execute', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({execution_id: executionId, system_prompt: '', user_prompt: data.prompt || '', cwd: data.cwd})});
+                            const result = await resultResponse.json();
+                            const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(streamRunId)}/steps/${data.step_order}/local-result`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({execution_token:data.execution_token, text:result.text || '', error:result.error || null, session_id:result.session_id || null})});
+                            applyWorkflowSnapshot(snapshot);
+                        } catch (error) { patchShowError(error.message, '本地流程执行失败'); }
+                        finally { patchState.workflow.localExecutions.delete(executionId); }
+                    }
+                };
+                while (!controller.signal.aborted) {
+                    const {value, done} = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, {stream: true});
+                    const messages = buffer.split(/\n\n/); buffer = messages.pop() || '';
+                    for (const message of messages) {
+                        let eventName = 'message'; let dataText = ''; let eventId = 0;
+                        for (const line of message.split('\n')) { if (line.startsWith('id:')) eventId = Number(line.slice(3).trim()); if (line.startsWith('event:')) eventName = line.slice(6).trim(); if (line.startsWith('data:')) dataText += line.slice(5).trim(); }
+                        if (eventId) patchState.workflow.lastEventId = eventId;
+                        await dispatch(eventName, dataText);
+                        if (['step_completed', 'step_confirmed', 'workflow_advanced', 'workflow_completed', 'workflow_cancelled', 'workflow_error', 'step_cancelled'].includes(eventName)) {
+                            const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(streamRunId)}`);
+                            applyWorkflowSnapshot(snapshot);
+                        }
+                    }
+                }
+            })().catch(error => { if (error.name !== 'AbortError') patchShowError(error.message, '流程连接失败'); });
+        }
+        async function openWorkflowHistory(runId) {
+            const meta = document.getElementById('workflowHistoryMeta');
+            const input = document.getElementById('workflowHistoryInput');
+            const steps = document.getElementById('workflowHistorySteps');
+            const output = document.getElementById('workflowHistoryOutput');
+            closeWorkflowStream();
+            const previousRunId = patchState.workflow.runId;
+            patchState.workflow.runId = String(runId);
+            if (previousRunId && previousRunId !== String(runId)) patchState.workflow.lastEventId = 0;
+            meta.innerHTML = ''; input.textContent = '正在加载业务需求...'; steps.innerHTML = ''; output.textContent = '正在加载流程状态...';
+            document.getElementById('workflowHistorySubtitle').textContent = '';
+            try {
+                const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}`);
+                if (patchState.workflow.runId !== String(runId)) return;
+                document.getElementById('workflowHistorySubtitle').textContent = `运行 ID：${snapshot.id || runId}`;
+                meta.innerHTML = `<span class="workflow-result-status workflow-status-${patchEscape(snapshot.status || 'pending')}" id="workflowHistoryStatus">${patchEscape(workflowStatusLabel(snapshot.status))}</span><span id="workflowHistoryProgress" class="workflow-run-progress"></span><span>模板：${patchEscape(snapshot.template_name || snapshot.template_id || '-')}</span><span>创建：${patchFormatDateTime(snapshot.created_at)}</span><span>更新：${patchFormatDateTime(snapshot.updated_at)}</span>`;
+                input.innerHTML = `<strong>业务需求</strong><p>${patchEscape(snapshot.business_input || '-')}</p>`;
+                applyWorkflowSnapshot(snapshot);
+                if (!['success', 'failed', 'cancelled'].includes(snapshot.status)) connectWorkflowStream();
+            } catch (error) { patchShowError(error.message, '流程详情加载失败'); }
+        }
+        function initPage() {
+            patchInitTheme();
+            const token = patchToken();
+            const runId = new URLSearchParams(location.search).get('run_id');
+            if (!token || !runId) { location.href = '/patches.html'; return; }
+            patchRequest('/api/auth/me').then(me => {
+                document.getElementById('patchCurrentUser').textContent = `${me.display_name || me.username} (${me.role})`;
+            }).catch(() => {});
+            openWorkflowHistory(runId);
+            document.getElementById('patchBackBtn').onclick = () => { location.href = '/patches.html?tab=smart'; };
+            document.getElementById('patchThemeToggle').onclick = () => patchSetTheme(patchState.theme === 'dark' ? 'light' : 'dark');
+            document.getElementById('workflowHistoryNext').onclick = () => nextWorkflowStep().catch(error => patchShowError(error.message, '流程执行失败'));
+            document.getElementById('workflowHistoryRerun').onclick = () => { const snap = patchState.workflowSnapshot; const first = (snap?.steps || [])[0]; if (snap && first) rerunWorkflow(snap.id || snap.run_id, first.step_order, true); };
+            document.getElementById('workflowCancel').onclick = () => cancelWorkflow().catch(error => patchShowError(error.message, '流程结束失败'));
+            document.getElementById('workflowHistoryCopy').onclick = () => copyWorkflowOutput(document.getElementById('workflowHistoryCopy'), document.getElementById('workflowHistoryOutput'));
+            document.getElementById('workflowHistoryFullscreen').onclick = () => toggleWorkflowFullscreen('workflowHistoryOutputBox', 'workflowHistoryFullscreen');
+            document.getElementById('workflowResultClose').onclick = () => { exitWorkflowFullscreen('workflowResultOutput'); document.getElementById('workflowResultModal').hidden = true; };
+            document.getElementById('workflowResultCopy').onclick = () => copyWorkflowOutput(document.getElementById('workflowResultCopy'), document.getElementById('workflowResultContent'));
+            document.getElementById('workflowResultFullscreen').onclick = () => toggleWorkflowFullscreen('workflowResultOutput', 'workflowResultFullscreen');
+            document.getElementById('workflowResultModal').onclick = event => { if (event.target.id === 'workflowResultModal') { exitWorkflowFullscreen('workflowResultOutput'); event.currentTarget.hidden = true; } };
+            document.getElementById('workflowSummaryClose').onclick = () => { exitWorkflowFullscreen('workflowSummaryOutput'); document.getElementById('workflowSummaryModal').hidden = true; };
+            document.getElementById('workflowSummaryCopy').onclick = () => copyWorkflowOutput(document.getElementById('workflowSummaryCopy'), document.getElementById('workflowSummaryContent'));
+            document.getElementById('workflowSummaryFullscreen').onclick = () => toggleWorkflowFullscreen('workflowSummaryOutput', 'workflowSummaryFullscreen');
+            document.getElementById('workflowSummaryModal').onclick = event => { if (event.target.id === 'workflowSummaryModal') { exitWorkflowFullscreen('workflowSummaryOutput'); event.currentTarget.hidden = true; } };
+            document.addEventListener('fullscreenchange', syncWorkflowFullscreenButtons);
+            document.addEventListener('webkitfullscreenchange', syncWorkflowFullscreenButtons);
+            document.getElementById('patchErrorClose').onclick = patchCloseError;
+            document.getElementById('patchErrorConfirm').onclick = patchCloseError;
+            document.getElementById('patchErrorModal').onclick = event => { if (event.target.id === 'patchErrorModal') patchCloseError(); };
+            document.addEventListener('keydown', event => { if (event.key === 'Escape' && !document.getElementById('patchErrorModal').hidden) patchCloseError(); });
+            document.addEventListener('click', event => {
+                const workflowSummary = event.target.closest('[data-workflow-summary-step]');
+                if (workflowSummary) { showWorkflowStepSummary(workflowSummary.dataset.workflowRunId || patchState.workflow.runId, workflowSummary.dataset.workflowSummaryStep); return; }
+                const workflowResult = event.target.closest('[data-workflow-result-step]');
+                if (workflowResult) { showWorkflowStepResult(workflowResult.dataset.workflowRunId || patchState.workflow.runId, workflowResult.dataset.workflowResultStep); return; }
+                const workflowRerunStep = event.target.closest('[data-workflow-rerun-step]');
+                if (workflowRerunStep) { rerunWorkflow(workflowRerunStep.dataset.workflowRerunRun, workflowRerunStep.dataset.workflowRerunStep); return; }
+                const workflowResumeStep = event.target.closest('[data-workflow-resume-step]');
+                if (workflowResumeStep) {
+                    const stepOrder = workflowResumeStep.dataset.workflowResumeStep;
+                    const step = (patchState.workflow.steps || []).find(item => Number(item.step_order) === Number(stepOrder));
+                    if (step && step.local_session_id) {
+                        const resumeQuery = `resume=1&sid=${encodeURIComponent(step.local_session_id)}&cwd=${encodeURIComponent(step.resolved_directory || '')}`;
+                        location.href = `index.html?${resumeQuery}`;
+                    }
+                    return;
+                }
+            });
+        }
+        initPage();
+    })();
+    </script>
+</body>
+</html>

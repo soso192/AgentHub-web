@@ -1,31 +1,34 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CC-Web - AI Coding Assistant Hub</title>
+    <meta name="description" content="CC-Web 是用于管理 AI 编程助手会话、文件和协作面板的本地工作台。">
+    <meta name="theme-color" content="#f7f8fa">
+    <title>CC-Web · AI 编程工作台</title>
+    <script>try{if(localStorage.getItem('cc-web-help-panel')==='closed'){document.documentElement.classList.add('help-panel-closed');}}catch(e){}</script>
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
     <div id="app">
-        <div class="sidebar" id="sidebar">
+        <aside class="sidebar" id="sidebar" aria-label="会话与文件">
             <div class="sidebar-header">
-                <h2>Sessions</h2>
-                <button id="newSessionBtn" title="New Session">+</button>
+                <h2>会话</h2>
+                <button id="newSessionBtn" type="button" title="新建会话" aria-label="新建会话">+</button>
             </div>
             <div id="newSessionForm" class="new-session-form" style="display:none;">
                 <div class="form-group">
-                    <label>Assistant</label>
+                    <label for="assistantSelectNew">助手</label>
                     <select id="assistantSelectNew" class="form-select">
                         <!-- Populated dynamically -->
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Working Directory</label>
-                    <input type="text" id="cwdInput" placeholder="e.g., C:/Users/you/project">
+                    <label for="cwdInput">工作目录</label>
+                    <input type="text" id="cwdInput" placeholder="例如：C:/Users/you/project">
                 </div>
                 <div class="form-group">
-                    <label>Model</label>
+                    <label for="modelSelectNew">模型</label>
                     <select id="modelSelectNew" class="form-select">
                         <!-- Populated dynamically -->
                     </select>
@@ -57,16 +60,20 @@
                     <!-- Shows available assistants -->
                 </div>
             </div>
-        </div>
+        </aside>
 
-        <div class="main">
-            <div class="topbar">
-                <button id="toggleSidebar" class="icon-btn">☰</button>
+        <main class="main">
+            <header class="topbar">
+                <button id="toggleSidebar" class="icon-btn" type="button" aria-label="打开会话与文件">☰</button>
                 <span class="logo">⚡ CC-Web</span>
-                
+                <nav class="app-mode-toggle" aria-label="应用模式">
+                    <button class="mode-btn active" type="button" onclick="location.href='/'" aria-current="page">聊天</button>
+                    <button class="mode-btn" type="button" onclick="location.href='/patches.html'">补丁</button>
+                </nav>
+
                 <!-- Assistant Selector -->
                 <div class="topbar-selector">
-                    <label>Assistant:</label>
+                    <label for="assistantSelector">助手</label>
                     <select id="assistantSelector" class="topbar-select">
                         <!-- Populated dynamically -->
                     </select>
@@ -75,19 +82,20 @@
                 
                 <!-- Model Selector -->
                 <div class="topbar-selector">
-                    <label>Model:</label>
+                    <label for="modelSelector">模型</label>
                     <select id="modelSelector" class="topbar-select">
                         <!-- Populated dynamically -->
                     </select>
                 </div>
                 
-                <span id="statusDisplay" class="status-display"></span>
-                <button id="themeToggle" class="theme-btn" title="Toggle theme">🌙</button>
+                <span id="statusDisplay" class="status-display" role="status" aria-live="polite"></span>
+                <button id="helpToggle" class="icon-btn" type="button" title="使用说明" aria-label="打开使用说明" aria-expanded="false">❓</button>
+                <button id="themeToggle" class="theme-btn" type="button" title="切换主题" aria-label="切换主题">🌙</button>
                 
                 <!-- Split View Controls -->
                 <div class="split-view-controls">
-                    <button id="toggleSplitView" class="icon-btn" title="Toggle Split View">⊞</button>
-                    <select id="splitLayoutSelect" class="topbar-select" style="display:none; min-width: 80px;">
+                    <button id="toggleSplitView" class="icon-btn" type="button" title="切换分屏" aria-label="切换分屏">⊞</button>
+                    <select id="splitLayoutSelect" class="topbar-select" aria-label="分屏布局" style="display:none; min-width: 80px;">
                         <option value="1x1">1×1</option>
                         <option value="2x1">2×1</option>
                         <option value="1x2">1×2</option>
@@ -95,37 +103,38 @@
                         <option value="3x2">3×2</option>
                         <option value="3x3">3×3</option>
                     </select>
-                    <button id="addPanelBtn" class="icon-btn" title="Add Panel" style="display:none;">+</button>
-                    <button id="toggleSyncMode" class="sync-btn" title="Toggle Sync Mode" style="display:none;">🔗 Sync</button>
+                    <button id="addPanelBtn" class="icon-btn" type="button" title="添加面板" aria-label="添加面板" style="display:none;">+</button>
+                    <button id="toggleSyncMode" class="sync-btn" type="button" title="切换同步模式" style="display:none;">🔗 同步</button>
                 </div>
-            </div>
+            </header>
 
             <div class="welcome-screen" id="welcomeScreen">
                 <h1>⚡ CC-Web</h1>
-                <p>AI Coding Assistant Hub</p>
+                <p>用于组织 AI 编程会话、文件与协作面板的本地工作台。</p>
                 <div class="assistant-cards" id="assistantCards">
                     <!-- Populated dynamically -->
                 </div>
                 <ol>
-                    <li>Select an <strong>AI Assistant</strong> above</li>
-                    <li>Click <strong>+</strong> to create a new session</li>
-                    <li>Start coding with your preferred AI!</li>
+                    <li>选择一个 <strong>AI 助手</strong></li>
+                    <li>点击 <strong>＋</strong> 创建会话</li>
+                    <li>输入需求并开始编程协作</li>
                 </ol>
             </div>
 
             <!-- Single View (default) -->
             <div class="single-view-container" id="singleViewContainer">
-                <div class="chat-container" id="chatContainer" style="display:none;">
-                    <div id="typingIndicator" class="typing-indicator" style="display:none;">
-                        <span class="assistant-name"></span> Thinking...
+                <div class="chat-container" id="chatContainer" role="log" aria-live="polite" aria-relevant="additions text" style="display:none;">
+                    <div id="typingIndicator" class="typing-indicator" role="status" aria-live="polite" style="display:none;">
+                        <span class="assistant-name"></span> 正在思考…
                     </div>
                 </div>
 
                 <div class="input-area" id="inputArea" style="display:none;">
                     <div class="input-wrapper">
-                        <textarea id="messageInput" placeholder="Message..." rows="1"></textarea>
-                        <button id="sendBtn" class="send-btn">Send</button>
-                        <button id="stopBtn" class="stop-btn" style="display:none;">⏹ Stop</button>
+                        <label class="sr-only" for="messageInput">消息内容</label>
+                        <textarea id="messageInput" placeholder="输入消息，Enter 发送，Shift + Enter 换行" rows="1"></textarea>
+                        <button id="sendBtn" class="send-btn" type="button">发送</button>
+                        <button id="stopBtn" class="stop-btn" type="button" style="display:none;">⏹ 停止</button>
                     </div>
                 </div>
             </div>
@@ -134,8 +143,63 @@
             <div class="split-view-container" id="splitViewContainer" style="display:none;">
                 <div class="split-grid" id="splitGrid"></div>
             </div>
+        </main>
+    </div>
+
+    <div id="appNoticeModal" class="modal-overlay app-notice-overlay" role="alertdialog" aria-modal="true" aria-labelledby="appNoticeTitle" style="display:none;">
+        <div class="modal app-notice-modal">
+            <button id="appNoticeClose" class="patch-notice-close" type="button" aria-label="关闭">×</button>
+            <div class="patch-notice-icon" aria-hidden="true">!</div>
+            <h3 id="appNoticeTitle">操作提示</h3>
+            <p id="appNoticeMessage"></p>
+            <div class="modal-footer"><button id="appNoticeConfirm" class="btn-primary" type="button">我知道了</button></div>
         </div>
     </div>
+
+    <div id="appConfirmModal" class="modal-overlay app-notice-overlay" role="alertdialog" aria-modal="true" aria-labelledby="appConfirmTitle" style="display:none;">
+        <div class="modal app-notice-modal">
+            <h3 id="appConfirmTitle">确认操作</h3>
+            <p id="appConfirmMessage"></p>
+            <div class="modal-footer"><button id="appConfirmCancel" class="btn-cancel" type="button">取消</button><button id="appConfirmAccept" class="btn-primary" type="button">确认</button></div>
+        </div>
+    </div>
+
+    <!-- Usage Guide Panel -->
+    <aside id="helpPanel" class="help-panel" aria-label="使用说明" aria-hidden="false">
+        <div class="help-panel-header">
+            <h2>使用说明</h2>
+            <button id="helpCollapse" class="help-panel-toggle" type="button" title="收起说明" aria-label="收起说明" aria-expanded="true">›</button>
+        </div>
+        <div class="help-panel-body">
+            <section>
+                <h3>开始使用</h3>
+                <ul>
+                    <li>左侧栏管理<b>会话</b>与<b>文件</b>，点击 ＋ 新建会话。</li>
+                    <li>顶栏选择<b>助手</b>与<b>模型</b>；切换助手会保留当前上下文。</li>
+                    <li>输入消息：<kbd>Enter</kbd> 发送，<kbd>Shift</kbd>＋<kbd>Enter</kbd> 换行。</li>
+                    <li>回复过程中可点<b>停止</b>，新消息会自动排队。</li>
+                </ul>
+            </section>
+            <section>
+                <h3>分屏模式</h3>
+                <ul>
+                    <li>点击 ⊞ 开启分屏，可选择 1×1、2×2、3×3 等布局。</li>
+                    <li>每个面板独立会话；开启<b>同步模式</b>后消息会广播到所有面板。</li>
+                    <li>移动端分屏自动降级为单列，逐个滑动查看。</li>
+                </ul>
+            </section>
+            <section>
+                <h3>注意事项</h3>
+                <ul>
+                    <li>切换会话不会丢失消息，删除会话<b>不可恢复</b>。</li>
+                    <li>刷新页面后会自动恢复最近会话与正在流式输出的内容。</li>
+                    <li>连接异常时请查看顶栏状态提示，必要时刷新重试。</li>
+                    <li>主题偏好保存在本地，深色/浅色均可完整使用。</li>
+                </ul>
+            </section>
+        </div>
+    </aside>
+    <button id="helpReopen" class="help-panel-reopen" type="button" title="打开使用说明" aria-label="打开使用说明" aria-expanded="false" hidden>❓</button>
 
     <!-- Add Panel Modal -->
     <div id="addPanelModal" class="modal-overlay" style="display:none;">

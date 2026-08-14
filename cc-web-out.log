@@ -1,0 +1,9 @@
+🚀 CC-Web server starting...
+📍 http://localhost:3030
+   ✅ Claude (deepseek-v4-flash)
+   ✅ Pi Agent (deepseek-v4-flash)
+   ✅ Codex (unknown)
+   📂 13 session(s) restored
+   🔗 Listening on 0.0.0.0:3030
+   📝 Logs: ~/.cc-web/logs/
+

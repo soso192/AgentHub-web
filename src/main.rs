@@ -1,13 +1,14 @@
 use actix_web::{web, App, HttpServer};
 use actix_cors::Cors;
 use std::sync::RwLock;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch, Mutex};
 
 mod api;
 mod ai;
 mod models;
 mod static_files;
 mod logging;
+mod claude_history;
 
 use ai::{AssistantRegistry, AiAssistant};
 use ai::claude::ClaudeAssistant;
@@ -25,6 +26,19 @@ pub struct StreamingState {
     pub last_updated: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalExecutionFingerprint {
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub cwd: String,
+    pub model: Option<String>,
+}
+
+pub struct LocalExecution {
+    pub fingerprint: LocalExecutionFingerprint,
+    pub result_tx: watch::Sender<Option<Result<(String, Option<String>), String>>>,
+}
+
 pub struct AppState {
     pub registry: RwLock<AssistantRegistry>,
     pub sessions: RwLock<std::collections::HashMap<String, models::Session>>,
@@ -35,6 +49,8 @@ pub struct AppState {
     pub streaming_sessions: RwLock<std::collections::HashSet<String>>,
     /// Streaming state cache for real-time consistency
     pub streaming_state: RwLock<std::collections::HashMap<String, StreamingState>>,
+    /// Local workflow executions keyed by the caller-provided idempotency key.
+    pub local_executions: Mutex<std::collections::HashMap<String, LocalExecution>>,
 }
 
 /// Get the path to the sessions data file
@@ -139,6 +155,7 @@ async fn main() -> std::io::Result<()> {
         running_pids: RwLock::new(std::collections::HashMap::new()),
         streaming_sessions: RwLock::new(std::collections::HashSet::new()),
         streaming_state: RwLock::new(std::collections::HashMap::new()),
+        local_executions: Mutex::new(std::collections::HashMap::new()),
     });
 
     println!("   🔗 Listening on 0.0.0.0:3030");
@@ -173,6 +190,8 @@ async fn main() -> std::io::Result<()> {
             .route("/api/agent/{id}/events", web::get().to(api::agent::events))
             .route("/api/files", web::get().to(api::files::list_files))
             .route("/api/files/{path:.*}", web::get().to(api::files::read_file))
+            .route("/api/local-claude/execute", web::post().to(api::local_claude::execute))
+            .route("/api/local-claude/{execution_id}/cancel", web::post().to(api::local_claude::cancel))
             // 调试 API：返回所有会话的实时状态快照
             .route("/api/debug/state", web::get().to(debug_state))
             // Static files (fallback)

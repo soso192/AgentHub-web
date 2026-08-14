@@ -38,6 +38,32 @@ function toggleTheme() {
     setTheme(current === 'dark' ? 'light' : 'dark');
 }
 
+function showAppNotice(message, title = '操作提示') {
+    const modal = document.getElementById('appNoticeModal');
+    document.getElementById('appNoticeTitle').textContent = title;
+    document.getElementById('appNoticeMessage').textContent = message;
+    modal.style.display = 'flex';
+    requestAnimationFrame(() => document.getElementById('appNoticeConfirm').focus());
+}
+
+function closeAppNotice() {
+    document.getElementById('appNoticeModal').style.display = 'none';
+}
+
+function confirmAppAction(message, title = '确认操作') {
+    return new Promise(resolve => {
+        const modal = document.getElementById('appConfirmModal');
+        const close = accepted => { modal.style.display = 'none'; resolve(accepted); };
+        document.getElementById('appConfirmTitle').textContent = title;
+        document.getElementById('appConfirmMessage').textContent = message;
+        document.getElementById('appConfirmCancel').onclick = () => close(false);
+        document.getElementById('appConfirmAccept').onclick = () => close(true);
+        modal.onclick = event => { if (event.target === modal) close(false); };
+        modal.style.display = 'flex';
+        requestAnimationFrame(() => document.getElementById('appConfirmAccept').focus());
+    });
+}
+
 // ===== DOM References =====
 const sidebar = document.getElementById('sidebar');
 const toggleSidebar = document.getElementById('toggleSidebar');
@@ -100,11 +126,44 @@ async function init() {
     renderAssistantCards();
     renderAssistantStatus();
     
+    // 恢复"继续会话"跳转的本地 ClaudeCode 会话（workflow_run.html 的继续会话按钮）
+    if (await resumeSessionFromUrl()) return;
+
     // Auto-select the most recent session on page load
     if (sessions.length > 0 && !currentSessionId) {
         const latestSession = sessions[0]; // Already sorted by modified time, newest first
         await selectSession(latestSession.id);
     }
+}
+
+// 通过 URL 参数 resume=1&sid=...&cwd=... 恢复本地 ClaudeCode 会话。
+// 创建带 resume_session_id 的会话，首次消息将自动 --resume 恢复上下文；
+// 不自动发送消息，由用户继续输入。
+async function resumeSessionFromUrl() {
+    const params = new URLSearchParams(location.search);
+    if (params.get('resume') !== '1') return false;
+    const sid = params.get('sid');
+    const cwd = params.get('cwd') || '';
+    if (!sid) return false;
+    try {
+        const res = await fetch(`${API_BASE}/api/agent/new`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cwd, message: null, model: null, assistant: currentAssistant, resume_session_id: sid })
+        });
+        const data = await res.json();
+        if (data.success) {
+            currentSessionId = data.sessionId;
+            currentAssistant = data.assistant || currentAssistant;
+            await loadSessions(); renderSessionList();
+            await selectSession(data.sessionId);
+            if (history.replaceState) history.replaceState(null, '', location.pathname + location.hash);
+            return true;
+        }
+        console.error('Failed to resume session:', data.error);
+    } catch (e) {
+        console.error('Failed to resume session:', e);
+    }
+    return false;
 }
 
 async function loadAssistants() {
@@ -202,7 +261,7 @@ function renderAssistantCards() {
             <div class="name">${a.display_name}</div>
             <div class="desc">${ASSISTANT_DESCS[a.name] || ASSISTANT_DESCS.default}</div>
             ${badge}`;
-        card.onclick = a.available ? () => selectAssistant(a.name) : () => alert(`⚠️ ${a.display_name} 未在本地安装，请先安装对应的 CLI 工具。`);
+        card.onclick = a.available ? () => selectAssistant(a.name) : () => showAppNotice(`⚠️ ${a.display_name} 未在本地安装，请先安装对应的 CLI 工具。`);
         assistantCards.appendChild(card);
     });
 }
@@ -281,7 +340,7 @@ function renderSessionList() {
         };
         div.querySelector('.delete-btn').onclick = async (e) => {
             e.stopPropagation();
-            if (confirm('Delete this session?')) await deleteSession(session.id);
+            if (await confirmAppAction('删除后无法恢复该会话及其消息记录。', '删除会话')) await deleteSession(session.id);
         };
         sessionList.appendChild(div);
     });
@@ -455,7 +514,7 @@ async function switchAssistant() {
     const session = sessions.find(s => s.id === currentSessionId);
     if (!session || session.assistant === newAssistant) return;
     const info = assistants.find(a => a.name === newAssistant);
-    if (info && !info.available) { alert(`⚠️ ${info.display_name} 未在本地安装，无法切换。`); return; }
+    if (info && !info.available) { showAppNotice(`⚠️ ${info.display_name} 未在本地安装，无法切换。`); return; }
 
     // Show immediate visual feedback before making the request
     const fromName = session.assistant;
@@ -526,12 +585,12 @@ async function switchAssistant() {
         } else {
             const indicator = document.getElementById(indicatorId);
             if (indicator) indicator.remove();
-            alert('Switch failed: ' + (data.error || 'Unknown error'));
+            showAppNotice('Switch failed: ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
         const indicator = document.getElementById(indicatorId);
         if (indicator) indicator.remove();
-        alert('Switch error: ' + e.message);
+        showAppNotice('Switch error: ' + e.message);
     }
     finally { switchAssistantBtn.disabled = false; switchAssistantBtn.textContent = '🔄 Switch'; }
 }
@@ -1641,7 +1700,7 @@ async function abortSession(sessionId) {
 
 async function createSession() {
     const cwd = cwdInput.value.trim();
-    if (!cwd) { alert('Please enter a working directory'); return; }
+    if (!cwd) { showAppNotice('Please enter a working directory'); return; }
     const assistant = assistantSelectNew.value || currentAssistant;
     const model = modelSelectNew.value;
     newSessionForm.style.display = 'none'; cwdInput.value = '';
@@ -1735,8 +1794,8 @@ async function viewFile(filePath) {
     try {
         const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filePath)}`);
         const data = await res.json();
-        if (data.success) showFileContent(filePath, data.content); else alert(data.error);
-    } catch (e) { alert('Failed to read file'); }
+        if (data.success) showFileContent(filePath, data.content); else showAppNotice(data.error);
+    } catch (e) { showAppNotice('Failed to read file'); }
 }
 
 function showFileContent(filePath, content) {
@@ -1751,6 +1810,9 @@ function showFileContent(filePath, content) {
 // ===== Event Listeners =====
 
 function setupEventListeners() {
+    document.getElementById('appNoticeClose').onclick = closeAppNotice;
+    document.getElementById('appNoticeConfirm').onclick = closeAppNotice;
+    document.getElementById('appNoticeModal').onclick = event => { if (event.target.id === 'appNoticeModal') closeAppNotice(); };
     toggleSidebar.onclick = () => sidebar.classList.toggle('closed');
     newSessionBtn.onclick = () => { newSessionForm.style.display = newSessionForm.style.display === 'none' ? 'block' : 'none'; };
     cancelSessionBtn.onclick = () => { newSessionForm.style.display = 'none'; cwdInput.value = ''; };
@@ -1847,6 +1909,27 @@ function initFileBrowserResize() {
         localStorage.setItem('cc-web-file-browser-height', fileBrowser.offsetHeight);
     });
 }
+
+// 使用说明面板：登录时默认展开；刷新保留当前状态（同步应用，避免刷新时闪一下）
+function setupHelpPanel() {
+    const helpPanel = document.getElementById('helpPanel');
+    const setHelpPanel = (open) => {
+        document.documentElement.classList.toggle('help-panel-closed', !open);
+        helpPanel.classList.toggle('closed', !open);
+        helpPanel.setAttribute('aria-hidden', String(!open));
+        document.getElementById('helpToggle').setAttribute('aria-expanded', String(open));
+        document.getElementById('helpCollapse').setAttribute('aria-expanded', String(open));
+        document.getElementById('helpReopen').hidden = open;
+    };
+    const saveHelpState = (open) => { try { localStorage.setItem('cc-web-help-panel', open ? 'open' : 'closed'); } catch {} };
+    document.getElementById('helpToggle').onclick = () => { setHelpPanel(true); saveHelpState(true); };
+    document.getElementById('helpReopen').onclick = () => { setHelpPanel(true); saveHelpState(true); };
+    document.getElementById('helpCollapse').onclick = () => { setHelpPanel(false); saveHelpState(false); };
+    let stored = '';
+    try { stored = localStorage.getItem('cc-web-help-panel') || ''; } catch {}
+    setHelpPanel(stored !== 'closed');
+}
+setupHelpPanel();
 
 init();
 
@@ -2046,7 +2129,7 @@ class SplitViewManager {
         const maxPanels = this.getMaxPanelsForLayout();
         // 检查是否达到当前布局的最大面板数
         if (this.panels.size >= maxPanels) {
-            alert(`Maximum ${maxPanels} panels for ${this.layout} layout`);
+            showAppNotice(`Maximum ${maxPanels} panels for ${this.layout} layout`);
             return null;
         }
 
@@ -3134,7 +3217,7 @@ async function confirmAddPanel() {
         const model = document.getElementById('panelModelSelect').value;
         
         if (!cwd) {
-            alert('Please enter a working directory');
+            showAppNotice('Please enter a working directory');
             return;
         }
         
@@ -3150,11 +3233,11 @@ async function confirmAddPanel() {
                 sessionId = data.sessionId;
                 await loadSessions();  // 刷新会话列表
             } else {
-                alert('Failed to create session: ' + data.error);
+                showAppNotice('Failed to create session: ' + data.error);
                 return;
             }
         } catch (e) {
-            alert('Failed to create session: ' + e.message);
+            showAppNotice('Failed to create session: ' + e.message);
             return;
         }
     } else {

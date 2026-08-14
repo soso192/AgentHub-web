@@ -3,6 +3,9 @@ use actix_web::{HttpRequest, HttpResponse, http::header};
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const STYLE_CSS: &str = include_str!("../static/style.css");
 const APP_JS: &str = include_str!("../static/app.js");
+const PATCHES_HTML: &str = include_str!("../static/patches.html");
+const PATCHES_JS: &str = include_str!("../static/patches.js");
+const WORKFLOW_RUN_HTML: &str = include_str!("../static/workflow_run.html");
 
 /// Generate ETag based on content hash for cache validation
 fn generate_etag(content: &str) -> String {
@@ -20,6 +23,9 @@ pub async fn serve(req: HttpRequest) -> HttpResponse {
         "/" | "/index.html" => (INDEX_HTML, "text/html; charset=utf-8"),
         "/style.css" => (STYLE_CSS, "text/css; charset=utf-8"),
         "/app.js" => (APP_JS, "application/javascript; charset=utf-8"),
+        "/patches.html" => (PATCHES_HTML, "text/html; charset=utf-8"),
+        "/patches.js" => (PATCHES_JS, "application/javascript; charset=utf-8"),
+        "/workflow_run.html" => (WORKFLOW_RUN_HTML, "text/html; charset=utf-8"),
         _ => {
             return HttpResponse::NotFound().body("Not Found");
         }

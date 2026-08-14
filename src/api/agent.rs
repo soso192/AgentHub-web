@@ -103,7 +103,18 @@ pub async fn new_session(
 
     let now = Utc::now();
 
+    // 继续会话：resume_session_id 存在时，把对应 claude 会话的历史消息解析进会话窗口展示。
+    // 仅用于展示，claude 的上下文仍由 --resume 自带；start_prompt 也会因 agent_session_id
+    // 存在而跳过 auto_history，不会把历史重复发给 claude。
     let mut messages = Vec::new();
+    if let Some(ref sid) = req.resume_session_id {
+        messages = crate::claude_history::load_history(sid, &assistant_name);
+        if messages.is_empty() {
+            log::warn!("[new_session] resume session {} has no history messages (jsonl missing or empty)", sid);
+        } else {
+            log::info!("[new_session] loaded {} history messages from claude session {}", messages.len(), sid);
+        }
+    }
     if let Some(ref msg) = req.message {
         messages.push(Message {
             role: "user".to_string(),
@@ -123,7 +134,7 @@ pub async fn new_session(
         created_at: now,
         updated_at: now,
         history_context: None,
-        agent_session_id: None,
+        agent_session_id: req.resume_session_id.clone(),
         history_already_sent: false,
     };
 

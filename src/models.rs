@@ -55,6 +55,9 @@ pub struct NewSessionRequest {
     pub message: Option<String>,
     pub model: Option<String>,
     pub assistant: Option<String>,
+    /// Native agent session id (e.g. Claude's session_id) to resume on the first message.
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
