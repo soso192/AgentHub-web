@@ -431,7 +431,7 @@
                         for (const line of message.split('\n')) { if (line.startsWith('id:')) eventId = Number(line.slice(3).trim()); if (line.startsWith('event:')) eventName = line.slice(6).trim(); if (line.startsWith('data:')) dataText += line.slice(5).trim(); }
                         if (eventId) patchState.workflow.lastEventId = eventId;
                         await dispatch(eventName, dataText);
-                        if (['step_completed', 'step_confirmed', 'workflow_advanced', 'workflow_completed', 'workflow_cancelled', 'workflow_error', 'step_cancelled'].includes(eventName)) {
+                        if (['step_completed', 'step_confirmed', 'workflow_advanced', 'workflow_completed', 'workflow_cancelled', 'workflow_error', 'step_cancelled', 'template_updated'].includes(eventName)) {
                             const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(streamRunId)}`);
                             applyWorkflowSnapshot(snapshot);
                         }
