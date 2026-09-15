@@ -292,7 +292,7 @@
     </div>
 
     <div id="patchDirectoryModal" class="modal-overlay" hidden>
-        <div class="modal patch-admin-modal"><div class="modal-header"><h3>工作目录</h3><button id="patchDirectoryClose" class="modal-close">×</button></div><form id="patchDirectoryForm" class="patch-admin-form"><label>编码<input name="code" required></label><label>名称<input name="name" required></label><label>路径<input name="path" required placeholder="服务器允许的目录路径"></label><label id="patchDirectoryBuiltinLabel"><input type="checkbox" name="is_builtin"> 管理员内置目录</label></form><div class="modal-footer"><button id="patchDirectoryCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchDirectoryForm" class="btn-primary">保存</button></div></div>
+        <div class="modal patch-admin-modal"><div class="modal-header"><h3>工作目录</h3><button id="patchDirectoryClose" class="modal-close">×</button></div><form id="patchDirectoryForm" class="patch-admin-form"><label>编码<input name="code" required></label><label>名称<input name="name" required></label><p class="patch-muted">内置目录仅供服务器 ClaudeCode 使用，必须是服务器上已存在的绝对路径，仅管理员可建；个人目录用于本地 ClaudeCode 步骤，填运行 cc-web 电脑上的目录，可在「智能开发 → 启动流程」时选用。</p><label>路径<input name="path" required placeholder="内置目录填服务器上已存在的绝对路径；个人目录填运行 cc-web 电脑上的目录"></label><label id="patchDirectoryBuiltinLabel"><input type="checkbox" name="is_builtin"> 管理员内置目录（仅管理员可勾选）</label></form><div class="modal-footer"><button id="patchDirectoryCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchDirectoryForm" class="btn-primary">保存</button></div></div>
     </div>
 
     <div id="patchAdminModal" class="modal-overlay" hidden>
@@ -334,9 +334,9 @@
             <div class="modal-header"><h3>修改补丁信息</h3><button id="patchEditClose" class="modal-close">×</button></div>
             <input id="patchEditId" type="hidden">
             <form id="patchEditForm" class="patch-admin-form">
-                <label>名称<span class="patch-required">*</span><input id="patchEditName" maxlength="255" required></label>
-                <label>产品名称<span class="patch-required">*</span><select id="patchEditProduct" required><option value="">请选择产品</option></select></label>
-                <label>版本号<span class="patch-required">*</span><input id="patchEditVersion" list="patchEditVersionList" maxlength="64" required placeholder="选择或输入版本号"><datalist id="patchEditVersionList"></datalist></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">名称<span class="patch-required">*</span></span><input id="patchEditName" maxlength="255" required></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">产品名称<span class="patch-required">*</span></span><select id="patchEditProduct" required><option value="">请选择产品</option></select></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">版本号<span class="patch-required">*</span></span><input id="patchEditVersion" list="patchEditVersionList" maxlength="64" required placeholder="选择或输入版本号"><datalist id="patchEditVersionList"></datalist></label>
                 <label>描述<textarea id="patchEditDescription" rows="4"></textarea></label>
                 <label>关键词<input id="patchEditKeyword" maxlength="2048" placeholder="多个关键词用逗号分隔"></label>
                 <label id="patchEditStatusField" hidden>状态<span class="patch-required">*</span><select id="patchEditStatus" class="patch-input"><option value="0">待分析</option><option value="1">分析中</option><option value="2">分析完成</option><option value="3">分析失败</option></select></label>
@@ -371,6 +371,15 @@
                 <div class="patch-download-field"><label>下载进度</label><div class="patch-download-progress"><span id="patchDownloadBar"></span></div><div class="patch-download-stats"><span id="patchDownloadPercent">0%</span><span id="patchDownloadSize"></span></div></div>
             </div>
             <div class="modal-footer"><button id="patchDownloadCancel" type="button" class="btn-cancel">取消</button></div>
+        </div>
+    </div>
+
+    <div id="patchWorkflowDirModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="patchWorkflowDirTitle" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3 id="patchWorkflowDirTitle">选择本地工作目录</h3><button id="patchWorkflowDirClose" class="modal-close" type="button" aria-label="关闭">×</button></div>
+            <p class="patch-muted">本地 ClaudeCode 步骤将在你的机器上执行，请为每个步骤选择已有目录，或改用手动填写本机绝对路径。</p>
+            <div id="patchWorkflowDirBody" class="patch-admin-form"></div>
+            <div class="modal-footer"><button id="patchWorkflowDirCancel" type="button" class="btn-cancel">取消</button><button id="patchWorkflowDirConfirm" type="button" class="btn-primary">开始流程</button></div>
         </div>
     </div>
 

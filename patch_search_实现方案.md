@@ -1,8 +1,9 @@
 # 补丁包检索系统完整实现方案
 
-> 版本：v3.1 ｜ 日期：2026-08-14  
+> 版本：v3.2 ｜ 日期：2026-09-11  
 > 状态：核心功能已实现并部署（前后端联调完成），本版按当前代码与数据库表结构同步更新  
-> 说明：本文档汇总补丁检索、上传、分析、登录认证、提示词管理、可配置智能检索流程、运行记录和部署约束。智能检索步骤不固定写死，由流程模板配置决定。
+> 说明：本文档汇总补丁检索、上传、分析、登录认证、提示词管理、可配置智能检索流程、运行记录和部署约束。智能检索步骤不固定写死，由流程模板配置决定。  
+> v3.2 更新：新增「运行时工作目录绑定（方案 A）」——`local` 步骤的工作目录改为启动流程时由使用者逐步骤选择已有目录或手填本机路径；工作目录管理新增「删除」（物理删除，区别于「停用」软删除）；修正 `local` 步骤执行期间整条流程的状态显示（显示"执行中"而非"待确认"）。
 
 ---
 
@@ -18,7 +19,7 @@
 4. **我的补丁**：查看、编辑、删除自己上传的补丁；编辑保存后补丁重置为“待分析”状态并清空旧分析结果。
 5. **管理员分析**：管理员在“待分析补丁”页批量分析，或通过命令行脚本 `scripts/analyze_batch.py` 分析，调用 ClaudeCode 分析补丁并更新数据库。
 6. **可配置智能检索**：管理员配置流程、提示词、流程模板和执行步骤；用户执行时每步完成后手动点击“下一步”继续。
-7. **工作目录管理**：按用户隔离工作目录，流程只保存工作目录 `code`，执行前按当前用户 ID 解析实际目录；管理员可维护内置目录，普通用户只能查看和使用内置目录。
+7. **工作目录管理**：按用户隔离工作目录。`server` 流程只保存工作目录 `code`，执行前按当前用户 ID 解析实际目录；`local` 流程的工作目录为运行时参数，启动流程时由使用者在弹窗中逐步骤选择自己的目录或手填本机绝对路径。管理员可维护内置目录，普通用户只能查看和使用内置目录。目录支持「停用」（软删除，`status=0`）和「删除」（物理删除）。
 8. **流程/提示词/模板所有权模型**：管理员创建的配置对所有用户共享（只读），普通用户可创建和管理自己的配置；运行记录严格按创建用户隔离，管理员运行不对普通用户共享。
 9. **管理员补丁管理**：管理员在"普通检索"操作列对任意补丁提供"编辑/删除"按钮；编辑弹窗可直接修改补丁状态（0 待分析 / 1 分析中 / 2 分析完成 / 3 分析失败）。普通用户不可见这些按钮，也不能编辑、删除他人补丁。
 
@@ -200,7 +201,7 @@ LIMIT ? OFFSET ?;
 - 描述。
 - 调用目标：客户端本地 ClaudeCode / 服务器 A ClaudeCode。
 - 是否保存上下文。
-- 工作目录 `directory_code`：只保存逻辑 code，不保存某个用户的实际 path。
+- 工作目录 `directory_code`：只保存逻辑 code，不保存某个用户的实际 path。`server` 目标必填；`local` 目标可留空（表单提示"本地 ClaudeCode 可留空，启动流程时由使用者逐步骤选择或手动填写本机路径"），启动时由使用者绑定。
 
 删除约束：被任一流程模板步骤引用（`workflow_template_step.flow_id`）的流程不能删除；`code` 作为模板变量和历史运行记录快照的稳定引用，不可修改。
 
@@ -242,10 +243,14 @@ LIMIT ? OFFSET ?;
 
 ### 3.11 工作目录管理
 
-- 普通用户可创建、编辑、停用自己创建的非内置目录。
-- 管理员可创建内置目录（`is_builtin=1`）；内置目录对所有用户可见可用，只读。
+- 普通用户可创建、编辑、停用、删除自己创建的非内置目录。
+- 管理员可创建内置目录（`is_builtin=1`）；内置目录对所有用户可见可用，只读（普通用户操作列显示"只读"）。
 - 目录字段：编码、名称、路径、类型、状态。
-- 目录路径必须是服务器上存在的绝对目录路径。
+- 目录路径：**内置目录**（仅管理员）必须是服务器 A 上真实存在的绝对目录路径；**个人目录**（普通用户）指向运行 cc-web 的**客户端机器**上的绝对路径，服务端**只校验非空与绝对路径**、不校验存在性，实际存在性在执行 `local` 步骤时由 cc-web 校验。
+- 操作列按钮（非只读行）：`编辑`、`停用`、`删除`。
+  - `停用`：软删除，`DELETE /api/workflows/directories/{id}` → `status=0`；记录保留，被模板/历史运行按 `code` 引用时仍可解析（启用状态过滤下不可选）。
+  - `删除`：物理删除，`DELETE /api/workflows/directories/{id}/permanent`；点击后弹确认框（`patchConfirm`）提示"删除后无法恢复。若有流程模板或运行记录引用该目录，相关流程将无法再解析此工作目录"，确认后才执行。
+- 目录列表同时展示内置目录和当前用户自己的目录（`is_builtin=1 OR created_by_user_id=当前用户`），不过滤 `status`，停用目录仍以"停用"状态显示。
 
 ### 3.12 用户设置
 
@@ -256,7 +261,7 @@ LIMIT ? OFFSET ?;
 
 ## 四、数据库设计
 
-数据库为 `patch`，当前完整结构见 `schema/current_schema.sql`。以下按该文件列出各表。
+数据库为 `patch`，当前完整结构见 `schema/current_schema.sql`。以下按该文件列出各表。增量迁移脚本见 `schema/migration_runtime_directory_binding.sql`（运行时工作目录绑定，见第十九章）。
 
 ### 4.1 补丁表 `patch_info`
 
@@ -363,7 +368,8 @@ CREATE TABLE `workflow_directory` (
 - 管理员可以创建、编辑和停用内置目录及普通目录。
 - 查询时优先匹配当前用户自己的启用目录，再匹配管理员内置启用目录。
 - `path` 必须是服务器上存在的绝对目录路径，经 `Path.resolve()` 标准化；拒绝空路径、相对路径、不存在路径和文件路径。
-- 停用使用 `status=0`，不物理删除（`DELETE` 接口实际执行停用）。
+- 停用使用 `status=0`（`DELETE /api/workflows/directories/{id}` 实际执行停用），不物理删除。
+- 物理删除使用 `DELETE /api/workflows/directories/{id}/permanent`，直接 `DELETE FROM workflow_directory`；`workflow_run_step.directory_id` 外键为 `ON DELETE SET NULL`，历史运行记录保留但目录引用置空。权限与停用一致：个人目录仅本人、内置目录仅管理员。
 
 ### 4.4 流程表 `workflow_flow`
 
@@ -374,7 +380,7 @@ CREATE TABLE `workflow_flow` (
   `name` varchar(255) NOT NULL COMMENT '流程名称',
   `description` text COMMENT '流程用途说明',
   `claude_target` varchar(32) NOT NULL COMMENT 'ClaudeCode 调用目标：local 或 server',
-  `directory_code` varchar(128) NOT NULL COMMENT '工作目录业务编码，执行时按当前用户解析实际目录',
+  `directory_code` varchar(128) DEFAULT NULL COMMENT '工作目录业务编码，执行时按当前用户解析实际目录；local 目标可为空，运行时绑定',
   `save_context` tinyint(4) NOT NULL DEFAULT '1' COMMENT '是否保存该流程最近一次上下文快照：0 否、1 是',
   `context` longtext COMMENT '流程最近一次上下文快照，仅供查看',
   `result` longtext COMMENT '流程最近一次模型输出结果快照，仅供查看',
@@ -397,7 +403,7 @@ CREATE TABLE `workflow_flow` (
 | `name` | VARCHAR(255) | 否 | 流程展示名称。 |
 | `description` | TEXT | 是 | 流程用途说明。 |
 | `claude_target` | VARCHAR(32) | 否 | ClaudeCode 调用目标：`local` 或 `server`。 |
-| `directory_code` | VARCHAR(128) | 否 | 工作目录业务编码；执行时按当前用户解析实际目录。 |
+| `directory_code` | VARCHAR(128) | 是 | 工作目录业务编码；`server` 目标必填，执行时按当前用户解析实际目录；`local` 目标可为空，启动流程时由使用者逐步骤绑定（见第十九章「方案 A」）。 |
 | `save_context` | TINYINT | 否 | 是否允许该步骤输出作为后续步骤上下文：0 否、1 是。 |
 | `context` / `result` | LONGTEXT | 是 | 流程最近快照，仅供查看；当前代码运行时不会自动更新这两个字段，运行数据保存在 `workflow_run_step`。 |
 | `created_by_user_id` | BIGINT UNSIGNED | 是 | 流程创建用户 ID，外键关联 `user_account.id`。 |
@@ -560,11 +566,12 @@ CREATE TABLE `workflow_run` (
 CREATE TABLE `workflow_run_step` (
   `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '运行步骤内部唯一 ID',
   `run_id` char(36) NOT NULL COMMENT '所属流程运行 UUID',
-  `template_step_id` bigint(20) unsigned NOT NULL COMMENT '启动时采用的模板步骤 ID',
+  `template_step_id` bigint(20) unsigned DEFAULT NULL COMMENT '所属模板步骤 ID；模板步骤被删除时置空，运行中的流程跳过该步骤',
   `step_order` int(11) NOT NULL COMMENT '本次运行中的步骤顺序',
   `flow_code` varchar(128) NOT NULL COMMENT '本步骤使用的流程编码快照',
-  `directory_code` varchar(128) NOT NULL COMMENT '本步骤工作目录编码快照',
-  `directory_type` varchar(32) NOT NULL COMMENT '目录来源：user 或 builtin',
+  `directory_code` varchar(128) DEFAULT NULL COMMENT '本步骤工作目录编码快照；local 手动填写路径时为空',
+  `directory_id` bigint(20) unsigned DEFAULT NULL COMMENT '本步骤使用的用户目录 ID 快照；内置目录或手动路径为空',
+  `directory_type` varchar(32) NOT NULL COMMENT '目录来源：user、builtin 或 manual（运行时手动填写路径）',
   `resolved_directory` varchar(1024) NOT NULL COMMENT '执行时解析出的目录路径或受控目录 key 快照',
   `status` varchar(32) NOT NULL DEFAULT 'pending' COMMENT '步骤状态：pending、running、waiting_confirmation、success、failed、cancelled',
   `rendered_user_prompt` longtext COMMENT '解析变量后的用户提示词快照',
@@ -576,17 +583,20 @@ CREATE TABLE `workflow_run_step` (
   `token_expires_at` datetime DEFAULT NULL COMMENT '一次性执行令牌过期时间',
   `execution_user_id` bigint(20) unsigned DEFAULT NULL COMMENT '允许使用该执行令牌的用户 ID',
   `token_used_at` datetime DEFAULT NULL COMMENT '执行令牌消费时间，用于防止重放',
+  `local_session_id` varchar(128) DEFAULT NULL COMMENT '本地 ClaudeCode 会话 id，用于继续会话',
   `started_at` datetime DEFAULT NULL COMMENT '步骤开始执行时间',
   `finished_at` datetime DEFAULT NULL COMMENT '步骤完成、失败或取消时间',
   `confirmed_at` datetime DEFAULT NULL COMMENT '用户点击下一步确认的时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_workflow_run_step` (`run_id`,`step_order`),
-  KEY `idx_workflow_run_step_status` (`run_id`,`status`),
+  UNIQUE KEY `uk_workflow_run_step` (`run_id`,`step_order`) COMMENT '保证同一运行步骤顺序唯一',
+  KEY `idx_workflow_run_step_status` (`run_id`,`status`) COMMENT '按运行和步骤状态查询',
   KEY `fk_workflow_run_step_template_step` (`template_step_id`),
   KEY `idx_workflow_run_step_execution_user` (`execution_user_id`),
+  KEY `fk_workflow_run_step_directory` (`directory_id`),
   CONSTRAINT `fk_workflow_run_step_execution_user` FOREIGN KEY (`execution_user_id`) REFERENCES `user_account` (`id`),
+  CONSTRAINT `fk_workflow_run_step_directory` FOREIGN KEY (`directory_id`) REFERENCES `workflow_directory` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_workflow_run_step_run` FOREIGN KEY (`run_id`) REFERENCES `workflow_run` (`id`),
-  CONSTRAINT `fk_workflow_run_step_template_step` FOREIGN KEY (`template_step_id`) REFERENCES `workflow_template_step` (`id`)
+  CONSTRAINT `fk_workflow_run_step_template_step` FOREIGN KEY (`template_step_id`) REFERENCES `workflow_template_step` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='流程运行步骤明细表';
 ```
 
@@ -596,11 +606,12 @@ CREATE TABLE `workflow_run_step` (
 |---|---|---|---|
 | `id` | BIGINT UNSIGNED | 否 | 自增主键，运行步骤唯一标识。 |
 | `run_id` | CHAR(36) | 否 | 所属运行实例 ID，外键关联 `workflow_run.id`。 |
-| `template_step_id` | BIGINT UNSIGNED | 否 | 启动时采用的模板步骤 ID，外键关联 `workflow_template_step.id`。 |
+| `template_step_id` | BIGINT UNSIGNED | 是 | 所属模板步骤 ID，外键关联 `workflow_template_step.id`（`ON DELETE SET NULL`）；模板步骤被删除时置空，运行中的流程跳过该步骤。 |
 | `step_order` | INT | 否 | 在本次运行中的执行顺序；同一运行内唯一。 |
 | `flow_code` | VARCHAR(128) | 否 | 本步骤实际使用的流程 code 快照，支持按 code 引用结果。 |
-| `directory_code` | VARCHAR(128) | 否 | 从流程配置继承的工作目录 code 快照。 |
-| `directory_type` | VARCHAR(32) | 否 | 目录来源：`user` 或 `builtin`。 |
+| `directory_code` | VARCHAR(128) | 是 | 从流程配置继承的工作目录 code 快照；`local` 步骤运行时手填本机路径时为空。 |
+| `directory_id` | BIGINT UNSIGNED | 是 | 运行时绑定的工作目录 ID（个人/内置目录）；手填路径时为空。外键关联 `workflow_directory.id`（`ON DELETE SET NULL`）。 |
+| `directory_type` | VARCHAR(32) | 否 | 目录来源：`user`、`builtin` 或 `manual`（运行时手填本机路径）。 |
 | `resolved_directory` | VARCHAR(1024) | 否 | 执行时解析出的实际目录路径或受控目录 key 快照。 |
 | `status` | VARCHAR(32) | 否 | 步骤状态：`pending`、`running`、`waiting_confirmation`、`success`、`failed`、`cancelled`。确认后直接置为 `success`，无单独的 `confirmed` 状态。 |
 | `rendered_user_prompt` | LONGTEXT | 是 | 本次实际解析变量后的用户提示词快照。 |
@@ -612,6 +623,7 @@ CREATE TABLE `workflow_run_step` (
 | `token_expires_at` | DATETIME | 是 | local 结果令牌失效时间。 |
 | `execution_user_id` | BIGINT UNSIGNED | 是 | 允许使用该 local 执行令牌的用户 ID，外键关联 `user_account.id`。 |
 | `token_used_at` | DATETIME | 是 | 令牌成功消费时间，用于防止重放。 |
+| `local_session_id` | VARCHAR(128) | 是 | 本地 ClaudeCode 会话 id，用于「继续会话」（见第十八章）。 |
 | `started_at` / `finished_at` / `confirmed_at` | DATETIME | 是 | 开始、结束、确认时间。 |
 
 > 当前表结构没有独立的 `rendered_system_prompt` 字段；系统提示词与用户提示词在 `input_context`/`rendered_user_prompt` 中体现。
@@ -1006,7 +1018,27 @@ GET /api/dashboard
 GET    /api/workflows/directories
 POST   /api/workflows/directories
 PUT    /api/workflows/directories/{id}
-DELETE /api/workflows/directories/{id}   # 实际执行 status=0 停用
+DELETE /api/workflows/directories/{id}              # 停用（软删除），实际执行 status=0
+DELETE /api/workflows/directories/{id}/permanent    # 物理删除，直接删除记录
+
+GET    /api/workflows/templates/{template_id}/directory-requirements   # 模板的 local 步骤 + 当前用户可用目录选项
+```
+
+- 停用与物理删除权限一致：个人目录仅本人、内置目录仅管理员，越权返回 403；目录不存在返回 404。
+- 物理删除后 `workflow_run_step.directory_id` 被外键 `ON DELETE SET NULL` 置空，历史运行记录保留。
+- `GET /api/workflows/templates/{template_id}/directory-requirements` 返回该模板所有 `claude_target='local'` 且启用的步骤，以及当前用户自己的启用目录选项，供"启动流程"弹窗渲染：
+
+```json
+{
+  "template_id": 1,
+  "steps": [
+    {"step_order": 1, "flow_id": 3, "flow_code": "req_analysis", "flow_name": "需求分析",
+     "suggested_directory_code": null, "default_directory_id": 12}
+  ],
+  "options": [
+    {"id": 12, "code": "my_proj", "name": "我的工程", "path": "D:\\project\\my-app"}
+  ]
+}
 ```
 
 ### 7.10 流程/提示词/模板管理 API
@@ -1050,9 +1082,17 @@ GET    /api/workflows/runs/{run_id}/stream                   # SSE
 ```json
 {
   "template_id": 1,
-  "business_input": "用户输入的业务逻辑"
+  "business_input": "用户输入的业务逻辑",
+  "directory_bindings": [
+    {"step_order": 1, "directory_id": 12},
+    {"step_order": 2, "path": "D:\\project\\my-app"}
+  ]
 }
 ```
+
+- `directory_bindings` 可选，用于 `local` 步骤的运行时工作目录绑定：每个本地步骤一条，`directory_id`（选择自己已有的目录）与 `path`（手填本机绝对路径）**二选一**，`step_order` 不可重复。
+- 未提供绑定的 `local` 步骤回退使用流程配置的 `directory_code`；`server` 步骤始终按目录 `code` 解析，忽略绑定。
+- `path` 是**客户端机器**上的路径，服务端不做存在性校验。
 
 创建成功后第一步自动开始执行，返回运行快照。
 
@@ -1131,6 +1171,7 @@ pending
 
 - 创建运行后 `status=running`、`current_step=1`，立刻启动第一步执行任务。
 - 非最后一步成功完成后步骤为 `waiting_confirmation`，运行暂停等待用户确认。
+- `local` 步骤提交给客户端执行期间（已推送 `local_call_required`、尚未回传结果），整条运行与步骤均保持 `running`（对外显示"执行中"）；只有结果回传进入 `finish_step` 后才置为 `waiting_confirmation`。运行列表/详情页据此显示：整条流程执行中显示"执行中"，某步骤待确认显示"待确认"，全部完成显示"已完成"，取消显示"已取消"，失败显示"失败"。
 - 用户点击“下一步”后，当前步骤置为 `success` 并写入 `confirmed_at`，然后启动下一步。
 - 最后一步成功完成后运行置为 `success`；失败置为 `failed`；用户结束流程置为 `cancelled`。
 
@@ -1148,12 +1189,16 @@ WHERE run_id = ?
 
 ### 8.3 创建运行时的校验
 
-`create_run` 执行：
+`create_run(db, template_id, business_input, created_by_user_id, user_role, directory_bindings)` 执行：
 
 1. 校验模板存在、启用，且对当前用户可见（管理员共享或本人所有）。
 2. 读取模板步骤，校验每个步骤关联的流程、提示词对当前用户可见。
-3. 收集所有步骤的 `directory_code`，按当前用户 ID 优先查用户目录，再查管理员内置目录；任一缺失则拒绝创建运行，一次性返回所有缺失 code。
-4. 创建 `workflow_run`，将模板步骤复制为 `workflow_run_step`（含解析出的目录路径、`flow_code`、`template_step_id` 引用）。
+3. 按步骤解析工作目录（`directory_bindings` 归一化为 `{step_order: {directory_id, path}}`）：
+   - `claude_target='local'` 且提供了 `path`：记为 `directory_type='manual'`、`directory_code=NULL`、`directory_id=NULL`，`resolved_directory=path`（**客户端机器**路径，服务端不做存在性校验）。
+   - `claude_target='local'` 且提供了 `directory_id`：校验该目录属于当前用户且启用，取 `code/id/type/path`。
+   - 其余情况（`local` 未绑定、或 `server` 目标）：回退按流程 `directory_code` 解析，优先当前用户的启用目录、再管理员内置目录。
+   - 任一必需目录缺失则拒绝创建运行，一次性返回所有缺失项。
+4. 创建 `workflow_run`，将模板步骤复制为 `workflow_run_step`（含 `directory_code`、`directory_id`、`directory_type`、`resolved_directory`、`flow_code`、`template_step_id` 引用）。
 5. 推送 `workflow_started`，启动第一步。
 
 > **模板修改与运行中的流程（就地更新，实时生效）**：修改模板按 `step_order` 复用既有行 ID 做 UPDATE（新增步骤才 INSERT），**被删除的步骤做真实 DELETE**（不软删）。`workflow_run_step.template_step_id` 为可空外键（`ON DELETE SET NULL`），模板步骤被删除时该引用自动置空；运行中的流程把 `template_step_id` 为 NULL 的步骤标记为 `cancelled` 并跳过，**不再执行**，做到"删除某步立即响应"。流程运行到某一步时**实时读取**模板最新步骤定义（`ts.user_prompt`、`p.content`、`f.claude_target`、`f.save_context`、`ts.save_context_override`），即"修改模板中下一步的提示词后，运行到该步立即生效"，**不做提示词快照**。新建运行从当前模板步骤创建（沿用 `ts.status=1` 过滤，列保留）。
@@ -1362,7 +1407,7 @@ patch_ids:
 - 下载路径只能来自数据库记录并限制在补丁库根目录内。
 - 服务端 ClaudeCode 由服务器配置固定，用户不能提交任意 URL。
 - 文件扩展名、大小和压缩包完整性必须校验。
-- 工作目录路径必须是绝对路径、存在且为目录，保存前标准化。
+- 工作目录路径必须是绝对路径并保存前标准化：内置目录还必须在服务器上存在且为目录；个人目录是客户端机器路径，服务端不校验存在性，由 local 执行端（cc-web）校验。
 - 普通用户只能管理自己的配置和目录；管理员共享配置/内置目录对普通用户只读。
 - 运行记录、SSE、下一步、取消、local-result 都按 `created_by_user_id` 严格隔离，越权统一返回 404。
 - JWT 不放入 URL 查询参数、SSE URL、下载 URL、日志或错误信息。
@@ -1583,6 +1628,24 @@ python -m app.main
 Invoke-WebRequest http://127.0.0.1:13587/api/health
 ```
 
+**打包为 exe（PyInstaller onefile，可选）**
+
+```text
+D:\project\patch_search\build.bat
+```
+
+`build.bat` 使用 `D:\Downloads\Software\Miniconda\envs\patch\python.exe`，入口 `run_server.py`（双击后读取 exe 同目录的 `config.yaml` 再启动 uvicorn），产物为 `dist\patch_search.exe`。
+
+> 注意：`build.bat` 中含 `rmdir /s /q dist`，会一并删除 `dist\` 下的 `config.yaml`、`data\`、`logs\`、`patch_search.zip` 等运行时资源。若这些文件重要，先备份；或改用直接执行 `python -m PyInstaller --clean --noconfirm patch_search.spec`（不清空 dist，仅覆盖 `patch_search.exe`）。
+
+**运行 exe**
+
+```text
+1. 确保 PATCH_SEARCH_JWT_SECRET 环境变量已配置（长度 ≥ 32 个字符）
+2. 把 config.yaml 放到 patch_search.exe 同目录（与 exe 一起分发）
+3. 双击 patch_search.exe 或命令行运行，监听 0.0.0.0:13587
+```
+
 ### 服务器 A
 
 - Python 3.11+
@@ -1599,11 +1662,27 @@ Invoke-WebRequest http://127.0.0.1:13587/api/health
 ### cc-web
 
 - 不新增第三方前端依赖，使用原生 HTML/CSS/JavaScript。
+- 所有 HTML/CSS/JS 通过 `include_str!` **编译期内嵌**进单个二进制；改动前端后必须重新编译并替换 exe 才会生效（不能只改 `static/` 下的文件）。
 
-```
+**编译**
+
+```text
 cargo build --release
-target\release\cc-web.exe
 ```
+
+产物：`target\release\cc-web.exe`。
+
+**部署 / 启动**
+
+```text
+1. 把 target\release\cc-web.exe 复制到仓库根目录（与 start.bat 同级），覆盖旧的 cc-web.exe
+2. 双击 start.bat，或直接运行 cc-web.exe
+3. 浏览器打开 cc-web 页面（补丁中心 /patches.html）
+```
+
+前端调用的 patch_search 地址在 `src\patch_servers.json` 中配置（编译期内嵌，见第二章），修改后需重新编译。
+
+> 提示：重新编译前先停掉正在运行的 `cc-web.exe`，否则 cargo 会因目标文件被占用报 `failed to remove file target\release\cc-web.exe`（os error 5）。
 
 
 
@@ -1627,6 +1706,8 @@ target\release\cc-web.exe
 | 11 | 产品/版本字典管理 + 上传下拉（方案 B） | 已实现并部署 |
 | 12 | 流程步骤继续本地 ClaudeCode 会话（继续会话，含历史消息展示） | 已实现，待重启部署 |
 | 13 | 普通检索管理员编辑/删除 + 直接修改补丁状态 | 已实现，待重启部署 |
+| 14 | 运行时工作目录绑定（方案 A）：`local` 步骤启动流程时逐步骤选择已有目录或手填本机路径 | 已实现，待部署（需执行迁移 SQL） |
+| 15 | 工作目录「删除」（物理删除，区别于「停用」软删除）+ `local` 步骤执行期间状态显示修复 | 已实现，待部署 |
 
 智能检索的具体业务步骤通过流程模板配置，不需要修改流程引擎代码。
 
@@ -1649,6 +1730,9 @@ target\release\cc-web.exe
 13. 登录使用 JWT Bearer Token，不增加用户会话表；修改密码递增 `token_version` 使旧 Token 失效。
 14. 用户身份只能从服务端校验后的 JWT 和 `user_account` 得到，不能信任客户端提交的创建人字段。
 15. SSE 使用带 Authorization Header 的 Fetch 流式读取，JWT 不出现在 URL 中；local execution token 只负责一次步骤结果防重放，不替代用户认证。
+16. `local` 步骤的工作目录是运行时参数（方案 A）：启动流程时由使用者逐步骤选择已有目录或手填本机路径，运行步骤记录 `directory_id`/`directory_type`/`resolved_directory`；`server` 步骤仍按流程 `directory_code` 解析。
+17. 工作目录「停用」是软删除（`status=0`，记录保留），「删除」是物理删除；物理删除不影响历史运行记录（`workflow_run_step.directory_id` 外键置空），但会使引用该目录的模板无法启动。
+18. `local` 步骤在客户端执行期间整条运行显示"执行中"，结果回传后才进入"待确认"，避免执行中被误显示为待确认。
 
 ---
 
@@ -1959,3 +2043,66 @@ location.href = `index.html?resume=1&sid=${encodeURIComponent(sid)}&cwd=${encode
 **`src/main.rs`** — 注册 `mod claude_history;`。
 
 历史仅用于展示；claude 的上下文仍由 `--resume` 自带。jsonl 缺失/解析失败返回空列表，会话正常创建，不报错。
+
+---
+
+## 十九、运行时工作目录绑定与目录删除（v3.2）
+
+> 状态：已实现。数据库变更需要执行迁移脚本 `schema/migration_runtime_directory_binding.sql`（在 MySQL 上手动执行一次）。
+
+### 19.1 背景与目标（方案 A）
+
+`local` 步骤在"运行 cc-web 的客户端机器"上执行 ClaudeCode，工作目录是**使用者本机**的路径。原先工作目录是流程的固定属性（`workflow_flow.directory_code`），同一个流程交给不同使用者执行时，无法对应到各自本机的路径。
+
+方案 A 把 `local` 步骤的工作目录从"流程固定属性"改为**运行时参数**：启动流程时逐步骤绑定。`server` 步骤不变——始终在服务器 A 上执行，按目录 `code` 解析。
+
+### 19.2 数据模型
+
+- `workflow_flow.directory_code` 改为可空（`DEFAULT NULL`）：`local` 流程可留空；`server` 流程由表单强制必填。
+- `workflow_run_step` 新增 `directory_id`（`bigint(20) unsigned`，可空，外键 → `workflow_directory.id`，`ON DELETE SET NULL`）；`directory_code` 改为可空；`directory_type` 增加取值 `manual`。
+  - `directory_type` 语义：`user` = 本人目录；`builtin` = 管理员内置目录；`manual` = 运行时手填本机路径（此时 `directory_code` 与 `directory_id` 均为 NULL，仅 `resolved_directory` 有值）。
+- 迁移脚本 `schema/migration_runtime_directory_binding.sql` 内容：两张表 `directory_code` 改可空、`workflow_run_step` 新增 `directory_id` 列、`directory_type` 注释改 `user/builtin/manual`、新增 `KEY fk_workflow_run_step_directory` 与 `CONSTRAINT ... ON DELETE SET NULL`。`schema/current_schema.sql` 已同步。
+
+### 19.3 接口
+
+- `GET /api/workflows/templates/{template_id}/directory-requirements`：返回该模板的 `local` 步骤清单 + 当前用户可用目录选项（响应结构见 7.9）。模板不可见时 404。
+- `POST /api/workflows/runs`：请求体新增可选 `directory_bindings`（结构见 7.11）。
+
+### 19.4 执行引擎
+
+`WorkflowEngine.create_run` 新增 `directory_bindings` 形参，按步骤解析 `directory_code` / `directory_id` / `directory_type` / `resolved_directory` 并写入 `workflow_run_step`（解析规则见 8.3）。`local` 手填路径为客户端路径，服务端不做存在性校验。
+
+### 19.5 cc-web 前端
+
+- **流程设置表单**（`static/patches.js` → `openAdminForm` flow 分支）：`local` 目标时工作目录可留空，字段下方提示"本地 ClaudeCode 可留空，启动流程时由使用者逐步骤选择或手动填写本机路径"；切换为 `server` 时该字段 `required`。保存时 `directory_code` 允许发送 `null`。
+- **启动流程**（`startWorkflow` → `openWorkflowDirDialog` / `confirmWorkflowDirDialog`）：
+  1. 先请求 `directory-requirements`；
+  2. 若模板存在 `local` 步骤，弹出"选择本地工作目录"对话框（`patches.html` 的 `patchWorkflowDirModal`），每个本地步骤一行：`已有目录`下拉（当前用户自己的启用目录）/ 勾选"改用手动填写的路径"后输入本机绝对路径（两者互斥切换）；
+  3. 每步选择记忆到 `localStorage['cc-web-wf-dir:<template_id>:<step_order>']`（`id:<目录ID>` 或 `path:<路径>`），下次打开自动回填；若该用户没有任何可用目录则默认转入手动填写；
+  4. 确认后 `POST /api/workflows/runs` 携带 `directory_bindings`，创建成功跳转 `workflow_run.html?run_id=…`；
+  5. 若模板没有 `local` 步骤，跳过弹窗直接创建运行。
+- **工作目录管理页**：非只读行的操作列为 `编辑 | 停用 | 删除`（内置目录对普通用户显示"只读"）；`删除` 调用物理删除接口，点击前先用 `patchConfirm` 二次确认（文案见 19.7）。
+
+### 19.6 local 步骤状态显示修复
+
+- 现象：`local` 步骤在客户端执行期间，运行列表外面仍显示"待确认"。
+- 原因：`engine.execute_step` 在 `pending_local` 分支把整条 `workflow_run` 置为 `waiting_confirmation`；`workflow_run.html` 收到 `local_call_required` 也把 run/step 置为 `waiting_confirmation`——但此时步骤仍在执行。
+- 修复：`local` 调起期间运行保持 `running`（仅更新 `execution_token`/`token_expires_at`），步骤在结果回传 `finish_step` 后才置 `waiting_confirmation`；前端收到 `local_call_required` 时保持/置为 `running`；`workflow_error` 事件映射为"失败"。
+- 状态映射（`patches.js` `workflowStatusLabel`）：`pending` 待执行、`running` 执行中、`waiting_confirmation` 待确认、`success` 已完成、`failed` 失败、`cancelled` 已取消。
+
+### 19.7 目录软删除 vs 物理删除
+
+| 操作 | 前端按钮 | 接口 | 行为 | 影响 |
+|---|---|---|---|---|
+| 停用 | `停用` | `DELETE /api/workflows/directories/{id}` | `UPDATE ... SET status=0` | 记录保留，列表仍显示"停用"；启用过滤下被模板选择处不可选 |
+| 删除 | `删除` | `DELETE /api/workflows/directories/{id}/permanent` | `DELETE FROM workflow_directory` | 记录移除；`workflow_run_step.directory_id` 外键置空；引用该目录的流程模板将无法再解析 |
+
+权限两者一致：个人目录（`is_builtin=0`）仅本人可操作，内置目录仅管理员可操作；越权 403、不存在 404。`删除` 的前端确认文案："删除后无法恢复。若有流程模板或运行记录引用该目录「名称（code）」，相关流程将无法再解析此工作目录。"
+
+### 19.8 验收
+
+- 选择已有目录启动 `local` 流程：`workflow_run_step` 写入对应 `directory_id`，`directory_type` 为 `user`/`builtin`，客户端在 `resolved_directory` 目录执行。
+- 手填本机路径启动：`directory_type='manual'`，`directory_code`/`directory_id` 为 NULL，`resolved_directory` 为所填路径。
+- `server` 流程忽略 `directory_bindings`。
+- `local` 步骤执行期间运行列表显示"执行中"，结果回传后显示"待确认"，点击"下一步"后下一步显示"执行中"，全部完成显示"已完成"。
+- 删除个人目录需二次确认，确认后从列表消失；停用仅状态变为"停用"。

@@ -902,6 +902,87 @@ async function restoreWorkflowRun() {
     resetWorkflowRunState();
 }
 
+async function createWorkflowRun(templateId, businessInput, directoryBindings) {
+    const data = await patchRequest('/api/workflows/runs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({template_id: templateId, business_input: businessInput, directory_bindings: directoryBindings || []}) });
+    const runId = data.run_id || data.id;
+    if (!runId) throw new Error('流程创建成功但未返回运行 ID');
+    patchState.workflow.lastEventId = 0;
+    // 创建成功后直接跳转到独立的「流程运行详情」页面查看执行
+    location.href = `/workflow_run.html?run_id=${encodeURIComponent(runId)}`;
+}
+
+// 记忆用户为某模板某步骤选择的本地工作目录：id:12 或 path:D:\proj
+function workflowDirStorageKey(templateId, stepOrder) { return `cc-web-wf-dir:${templateId}:${stepOrder}`; }
+
+// 渲染「选择本地工作目录」对话框：每个本地步骤一行。
+// 当前用户有可用目录时展示「已有目录」下拉 + 手动填写切换；没有任何可用目录时只展示手动路径输入。
+function renderWorkflowDirRows(container, templateId, requirements) {
+    const options = requirements.options || [];
+    const hasOptions = options.length > 0;
+    container.innerHTML = (requirements.steps || []).map(step => {
+        const saved = localStorage.getItem(workflowDirStorageKey(templateId, step.step_order)) || '';
+        const savedId = saved.startsWith('id:') ? saved.slice(3) : '';
+        const savedPath = saved.startsWith('path:') ? saved.slice(5) : '';
+        const legend = `<legend>步骤 ${step.step_order} · ${patchEscape(step.flow_name)}</legend>`;
+        if (!hasOptions) {
+            return `<fieldset class="template-step-card" data-dir-step="${step.step_order}">${legend}<label>手动填写本机路径<input data-dir-path value="${patchEscape(savedPath)}" placeholder="例如：D:\\project\\my-app"></label></fieldset>`;
+        }
+        const manual = Boolean(savedPath);
+        const defaultId = savedId || (step.default_directory_id != null ? String(step.default_directory_id) : '');
+        const dirOptions = options.map(item => `<option value="${patchEscape(item.id)}" ${String(item.id) === defaultId ? 'selected' : ''}>${patchEscape(item.name)} (${patchEscape(item.code)})</option>`).join('');
+        return `<fieldset class="template-step-card" data-dir-step="${step.step_order}">${legend}<label>已有目录<select data-dir-existing ${manual ? 'disabled' : ''}>${dirOptions}</select></label><label>手动填写本机路径<input data-dir-path value="${patchEscape(savedPath)}" ${manual ? '' : 'disabled'} placeholder="例如：D:\\project\\my-app"></label><label class="template-context-option"><input type="checkbox" data-dir-manual ${manual ? 'checked' : ''}> 改用手动填写的路径</label></fieldset>`;
+    }).join('');
+}
+
+let workflowDirPending = null;
+
+function openWorkflowDirDialog(templateId, businessInput, requirements) {
+    workflowDirPending = { templateId, businessInput, requirements };
+    renderWorkflowDirRows(document.getElementById('patchWorkflowDirBody'), templateId, requirements);
+    document.getElementById('patchWorkflowDirModal').hidden = false;
+}
+
+function closeWorkflowDirDialog() {
+    workflowDirPending = null;
+    document.getElementById('patchWorkflowDirModal').hidden = true;
+}
+
+async function confirmWorkflowDirDialog() {
+    if (!workflowDirPending) return;
+    const { templateId, businessInput } = workflowDirPending;
+    const rows = Array.from(document.querySelectorAll('#patchWorkflowDirBody [data-dir-step]'));
+    const bindings = [];
+    for (const row of rows) {
+        const order = Number(row.dataset.dirStep);
+        const key = workflowDirStorageKey(templateId, order);
+        const manualToggle = row.querySelector('[data-dir-manual]');
+        const existingSelect = row.querySelector('[data-dir-existing]');
+        // 没有可用目录时只渲染手动输入（无下拉、无切换控件），此时一律按手动路径处理。
+        const manual = manualToggle ? manualToggle.checked : !existingSelect;
+        if (manual) {
+            const path = row.querySelector('[data-dir-path]').value.trim();
+            if (!path) { patchShowError(`请填写步骤 ${order} 的本机工作目录路径`, '工作目录未填写'); return; }
+            bindings.push({ step_order: order, path });
+            localStorage.setItem(key, `path:${path}`);
+        } else {
+            const directoryId = Number(existingSelect.value);
+            if (!directoryId) { patchShowError(`请为步骤 ${order} 选择工作目录，或改用手动填写路径`, '工作目录未选择'); return; }
+            bindings.push({ step_order: order, directory_id: directoryId });
+            localStorage.setItem(key, `id:${directoryId}`);
+        }
+    }
+    const confirmButton = document.getElementById('patchWorkflowDirConfirm');
+    confirmButton.disabled = true; confirmButton.textContent = '正在创建流程…';
+    try {
+        await createWorkflowRun(templateId, businessInput, bindings);
+        closeWorkflowDirDialog();
+    } catch (error) {
+        patchShowError(error.message || '流程创建失败', '流程创建失败');
+    } finally {
+        confirmButton.disabled = false; confirmButton.textContent = '开始流程';
+    }
+}
+
 async function startWorkflow() {
     const templateSelect = document.getElementById('workflowTemplateSelect');
     const input = document.getElementById('workflowBusinessInput');
@@ -913,12 +994,10 @@ async function startWorkflow() {
     if (!businessInput) { input.setAttribute('aria-invalid', 'true'); input.focus(); patchShowError('请输入业务需求或问题', '流程创建失败'); return; }
     startButton.disabled = true; startButton.textContent = '正在创建流程…';
     try {
-        const data = await patchRequest('/api/workflows/runs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({template_id: templateId, business_input: businessInput}) });
-        const runId = data.run_id || data.id;
-        if (!runId) { patchShowError('流程创建成功但未返回运行 ID', '流程创建失败'); return; }
-        patchState.workflow.lastEventId = 0;
-        // 创建成功后直接跳转到独立的「流程运行详情」页面查看执行
-        location.href = `/workflow_run.html?run_id=${encodeURIComponent(runId)}`;
+        // 先查询模板中的本地 ClaudeCode 步骤：存在则先让使用者逐步骤指定工作目录。
+        const requirements = await patchRequest(`/api/workflows/templates/${templateId}/directory-requirements`);
+        if ((requirements.steps || []).length) { openWorkflowDirDialog(templateId, businessInput, requirements); return; }
+        await createWorkflowRun(templateId, businessInput, []);
     } catch (error) {
         patchShowError(error.message || '流程创建失败', '流程创建失败');
     } finally {
@@ -1049,7 +1128,7 @@ function patchSwitchTab(tab) {
 async function loadDirectories() {
     try {
         patchState.admin.directories = await patchRequest('/api/workflows/directories');
-        document.getElementById('patchDirectoryBody').innerHTML = patchState.admin.directories.map(item => `<tr><td>${patchEscape(item.code)}</td><td>${patchEscape(item.name)}</td><td>${patchEscape(item.path)}</td><td>${item.is_builtin ? '内置' : '个人'}</td><td>${item.status ? '启用' : '停用'}</td><td>${item.is_builtin && patchState.user.role !== 'admin' ? '只读' : `<button class="patch-link-btn" data-directory-edit="${patchEscape(item.id)}">编辑</button><button class="patch-link-btn" data-directory-delete="${patchEscape(item.id)}">停用</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="patch-empty">暂无工作目录</td></tr>';
+        document.getElementById('patchDirectoryBody').innerHTML = patchState.admin.directories.map(item => `<tr><td>${patchEscape(item.code)}</td><td>${patchEscape(item.name)}</td><td>${patchEscape(item.path)}</td><td>${item.is_builtin ? '内置' : '个人'}</td><td>${item.status ? '启用' : '停用'}</td><td>${item.is_builtin && patchState.user.role !== 'admin' ? '只读' : `<button class="patch-link-btn" data-directory-edit="${patchEscape(item.id)}">编辑</button><button class="patch-link-btn" data-directory-delete="${patchEscape(item.id)}">停用</button><button class="patch-link-btn danger" data-directory-remove="${patchEscape(item.id)}">删除</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="patch-empty">暂无工作目录</td></tr>';
     } catch (error) { document.getElementById('patchDirectoryMessage').textContent = ''; patchShowError(error.message, '工作目录加载失败'); }
 }
 
@@ -1066,6 +1145,11 @@ async function saveDirectory(event) {
     const id = patchState.admin.directoryId;
     const path = id ? `/api/workflows/directories/${id}` : '/api/workflows/directories';
     const body = {code: values.code, name: values.name, path: values.path, is_builtin: event.target.is_builtin.checked};
+    // 个人目录指向运行 cc-web 的客户端机器，服务端不校验存在性；这里先拦住相对路径，避免拖到执行阶段才报错。
+    if (!/^([a-zA-Z]:[\\/]|\\\\|\/)/.test(String(values.path || '').trim())) {
+        patchShowError('工作目录路径必须是绝对路径，例如 D:\\project\\my-app', '工作目录保存失败');
+        return;
+    }
     try { await patchRequest(path, {method: id ? 'PUT' : 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}); document.getElementById('patchDirectoryModal').hidden = true; await loadDirectories(); }
     catch (error) { document.getElementById('patchDirectoryMessage').textContent = ''; patchShowError(error.message, '工作目录保存失败'); }
 }
@@ -1289,10 +1373,13 @@ async function loadAdminSettings(tab = 'flow') {
 }
 
 function flowDirectoryOptions(target, selectedCode) {
-    return patchState.admin.directories
+    const options = patchState.admin.directories
         .filter(directory => target !== 'server' || directory.is_builtin)
         .map(directory => `<option value="${patchEscape(directory.code)}" ${directory.code === selectedCode ? 'selected' : ''}>${patchEscape(directory.name)} (${patchEscape(directory.code)})</option>`)
         .join('');
+    if (target === 'server') return options;
+    // 本地 ClaudeCode：目录可在启动流程时由使用者逐步骤选择或手动填写，因此允许留空。
+    return `<option value="" ${selectedCode ? '' : 'selected'}>（运行时由使用者选择）</option>${options}`;
 }
 
 function openAdminForm(kind, data = {}, readOnly = false) {
@@ -1305,7 +1392,7 @@ function openAdminForm(kind, data = {}, readOnly = false) {
     if (kind === 'flow') {
         title.textContent = data.id ? '编辑流程' : '新增流程';
         const target = data.claude_target || 'server';
-        form.innerHTML = `<label>编码<input name="code" value="${patchEscape(data.code || '')}" ${data.id ? 'readonly' : ''} required></label><label>名称<input name="name" value="${patchEscape(data.name || '')}" required></label><label>描述<textarea name="description">${patchEscape(data.description || '')}</textarea></label><label>调用位置<select name="claude_target"><option value="local" ${target === 'local' ? 'selected' : ''}>本地 ClaudeCode</option><option value="server" ${target === 'server' ? 'selected' : ''}>服务器 ClaudeCode</option></select></label><label>工作目录<select name="directory_code" required>${flowDirectoryOptions(target, data.directory_code)}</select></label><label><input type="checkbox" name="save_context" ${data.save_context !== false ? 'checked' : ''}> 保存上下文</label>`;
+        form.innerHTML = `<label>编码<input name="code" value="${patchEscape(data.code || '')}" ${data.id ? 'readonly' : ''} required></label><label>名称<input name="name" value="${patchEscape(data.name || '')}" required></label><label>描述<textarea name="description">${patchEscape(data.description || '')}</textarea></label><label>调用位置<select name="claude_target"><option value="local" ${target === 'local' ? 'selected' : ''}>本地 ClaudeCode</option><option value="server" ${target === 'server' ? 'selected' : ''}>服务器 ClaudeCode</option></select></label><label>工作目录<select name="directory_code" ${target === 'server' ? 'required' : ''}>${flowDirectoryOptions(target, data.directory_code)}</select><small class="patch-muted">本地 ClaudeCode 可留空，启动流程时由使用者逐步骤选择或手动填写本机路径。</small></label><label><input type="checkbox" name="save_context" ${data.save_context !== false ? 'checked' : ''}> 保存上下文</label>`;
     } else if (kind === 'prompt') {
         title.textContent = data.id ? '编辑提示词' : '新增提示词';
         form.innerHTML = `<label>名称<input name="name" value="${patchEscape(data.name || '')}" required></label><label>描述<input name="description" value="${patchEscape(data.description || '')}"></label><label>内容<textarea name="content" required placeholder="请输入可复用提示词内容">${patchEscape(data.content || '')}</textarea></label><label>状态<select name="status"><option value="1" ${data.status !== 0 ? 'selected' : ''}>启用</option><option value="0" ${data.status === 0 ? 'selected' : ''}>停用</option></select></label>`;
@@ -1380,7 +1467,7 @@ async function saveAdminForm(event) {
     const kind = patchState.admin.kind; const id = patchState.admin.id;
     const values = Object.fromEntries(new FormData(event.target).entries());
     let path; let body;
-    if (kind === 'flow') { path = id ? `/api/workflows/flows/${id}` : '/api/workflows/flows'; body = {code: values.code, name: values.name, description: values.description || null, claude_target: values.claude_target, directory_code: values.directory_code, save_context: event.target.save_context.checked}; }
+    if (kind === 'flow') { path = id ? `/api/workflows/flows/${id}` : '/api/workflows/flows'; body = {code: values.code, name: values.name, description: values.description || null, claude_target: values.claude_target, directory_code: values.directory_code || null, save_context: event.target.save_context.checked}; }
     else if (kind === 'prompt') { path = id ? `/api/workflows/prompts/${id}` : '/api/workflows/prompts'; body = {name: values.name, content: values.content, description: values.description || null, status: Number(values.status)}; }
     else {
         const steps = collectTemplateSteps();
@@ -1530,6 +1617,9 @@ function patchBindEvents() {
         if (patchState.admin.kind !== 'flow' || event.target.name !== 'claude_target') return;
         const directory = event.currentTarget.querySelector('[name="directory_code"]');
         directory.innerHTML = flowDirectoryOptions(event.target.value, directory.value);
+        // server 必须选择内置目录；local 允许留空（运行时再指定）
+        if (event.target.value === 'server') directory.setAttribute('required', '');
+        else directory.removeAttribute('required');
     });
     document.getElementById('patchAdminClose').onclick = () => { document.getElementById('patchAdminModal').hidden = true; };
     document.getElementById('patchAdminCancel').onclick = () => { document.getElementById('patchAdminModal').hidden = true; };
@@ -1619,6 +1709,17 @@ function patchBindEvents() {
     document.getElementById('patchErrorModal').onclick = event => { if (event.target.id === 'patchErrorModal') patchCloseError(); };
     document.addEventListener('keydown', event => { if (event.key === 'Escape' && !document.getElementById('patchErrorModal').hidden) patchCloseError(); });
     document.getElementById('workflowStart').onclick = () => startWorkflow().catch(error => patchShowError(error.message, '流程启动失败'));
+    document.getElementById('patchWorkflowDirClose').onclick = closeWorkflowDirDialog;
+    document.getElementById('patchWorkflowDirCancel').onclick = closeWorkflowDirDialog;
+    document.getElementById('patchWorkflowDirConfirm').onclick = () => confirmWorkflowDirDialog().catch(error => patchShowError(error.message, '流程启动失败'));
+    document.getElementById('patchWorkflowDirModal').onclick = event => { if (event.target.id === 'patchWorkflowDirModal') closeWorkflowDirDialog(); };
+    document.getElementById('patchWorkflowDirBody').addEventListener('change', event => {
+        if (!event.target.matches('[data-dir-manual]')) return;
+        const row = event.target.closest('[data-dir-step]');
+        if (!row) return;
+        row.querySelector('[data-dir-existing]').disabled = event.target.checked;
+        row.querySelector('[data-dir-path]').disabled = !event.target.checked;
+    });
     document.getElementById('workflowTemplateSelect').addEventListener('change', updateWorkflowTemplateDesc);
     document.getElementById('workflowHistoryRefresh').onclick = () => loadWorkflowHistory();
     document.getElementById('workflowHistoryPrev').onclick = () => { if (patchState.workflowHistory.page > 1) { patchState.workflowHistory.page -= 1; loadWorkflowHistory(); } };
@@ -1677,6 +1778,15 @@ function patchBindEvents() {
         if (directoryEdit) { const item = patchState.admin.directories.find(value => String(value.id) === directoryEdit.dataset.directoryEdit); if (item) openDirectoryForm(item); }
         const directoryDelete = event.target.closest('[data-directory-delete]');
         if (directoryDelete) { patchRequest(`/api/workflows/directories/${directoryDelete.dataset.directoryDelete}`, {method: 'DELETE'}).then(loadDirectories).catch(error => patchShowError(error.message, '工作目录停用失败')); }
+        const directoryRemove = event.target.closest('[data-directory-remove]');
+        if (directoryRemove) {
+            const item = patchState.admin.directories.find(value => String(value.id) === directoryRemove.dataset.directoryRemove);
+            const name = item ? `${item.name || item.code}（${item.code}）` : '';
+            patchConfirm(`删除后无法恢复。若有流程模板或运行记录引用该目录「${name}」，相关流程将无法再解析此工作目录。`, '删除工作目录').then(confirmed => {
+                if (!confirmed) return;
+                return patchRequest(`/api/workflows/directories/${directoryRemove.dataset.directoryRemove}/permanent`, {method: 'DELETE'}).then(() => loadDirectories()).catch(error => patchShowError(error.message, '工作目录删除失败'));
+            });
+        }
         const productVersions = event.target.closest('[data-product-versions]');
         if (productVersions) { openProductVersions(productVersions.dataset.productVersions); return; }
         const productEdit = event.target.closest('[data-product-edit]');

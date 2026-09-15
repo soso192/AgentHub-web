@@ -311,6 +311,47 @@
         }
         function closeWorkflowStream() { if (patchState.workflow.source) { patchState.workflow.source.abort(); patchState.workflow.source = null; } }
 
+        // 想执行某个本地步骤：先向后端认领执行权，认领到才跑；认领不到说明
+        // 其他客户端已在执行，静默跳过（不报错、不重复执行）。
+        async function claimAndRunLocal(stepOrder) {
+            const runId = patchState.workflow.runId;
+            if (!runId) return;
+            const step = (patchState.workflow.steps || []).find(item => Number(item.step_order) === Number(stepOrder));
+            if (!step || step.claude_target !== 'local' || step.status !== 'running') return;
+            let claim;
+            try { claim = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${stepOrder}/claim-local`, {method: 'POST'}); }
+            catch { return; }
+            if (!claim || claim.claimed !== true || !claim.pending_local) return;
+            if (patchState.workflow.localExecutions.has(`${runId}-${stepOrder}`)) return;
+            await runLocalStep(claim.pending_local);
+        }
+        // 触发本机 cc-web 执行本地 ClaudeCode 步骤，并把结果回传 patch_search。
+        async function runLocalStep(data) {
+            const runId = patchState.workflow.runId;
+            if (!runId || !data || !data.execution_token) return;
+            const executionId = `${runId}-${data.step_order}`;
+            if (patchState.workflow.localExecutions.has(executionId)) return;
+            patchState.workflow.localExecutions.add(executionId);   // 先占位再 await，防同页重复
+            let result;
+            try {
+                const response = await fetch('/api/local-claude/execute', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({execution_id: executionId, system_prompt: '', user_prompt: data.prompt || '', cwd: data.cwd})});
+                result = await response.json();
+                // 非 2xx 表示本机根本没跑起来（如工作目录不存在）：抛出让下面释放认领
+                if (!response.ok) throw new Error((result && result.error) || '本机无法执行该步骤');
+            } catch (error) {
+                // 释放认领，让其他客户端（有该目录的机器）接手
+                await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${data.step_order}/release-local`, {method:'POST'}).catch(() => {});
+                patchShowError(error.message, '本地流程执行失败');
+                patchState.workflow.localExecutions.delete(executionId);
+                return;
+            }
+            try {
+                const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${data.step_order}/local-result`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({execution_token:data.execution_token, text:result.text || '', error:result.error || null, session_id:result.session_id || null})});
+                applyWorkflowSnapshot(snapshot);
+            } catch (error) { patchShowError(error.message, '本地流程执行失败'); }
+            finally { patchState.workflow.localExecutions.delete(executionId); }
+        }
+
         function renderWorkflowStatus() {
             const el = document.getElementById('workflowHistoryStatus');
             if (!el) return;
@@ -474,9 +515,10 @@
             if (!confirmed) return;
             try {
                 await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/rerun`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({step_order: step})});
-                patchState.workflow.lastEventId = 0;
                 const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}`);
                 applyWorkflowSnapshot(snapshot);
+                patchState.workflow.lastEventId = Number(snapshot.last_event_id) || 0;
+                if (snapshot.local_waiting) claimAndRunLocal(snapshot.local_waiting.step_order);
                 connectWorkflowStream();
             } catch (error) { patchShowError(error.message, '重新执行失败'); }
         }
@@ -512,24 +554,12 @@
                     const data = JSON.parse(dataText || '{}');
                     const step = patchState.workflow.steps.find(item => Number(item.step_order) === Number(data.step_order));
                     if (eventName === 'step_started') { patchState.workflow.currentStep = data.step_order; patchState.workflow.status = 'running'; if (step) step.status = 'running'; }
-                    if (eventName === 'local_call_required') { patchState.workflow.status = 'waiting_confirmation'; if (step) step.status = 'waiting_confirmation'; }
+                    if (eventName === 'local_call_required') { patchState.workflow.status = 'running'; if (step) step.status = 'running'; }
                     if (eventName === 'step_completed') { patchState.workflow.status = 'waiting_confirmation'; if (step) step.status = 'waiting_confirmation'; const outEl = document.getElementById('workflowHistoryOutput'); if (outEl) { outEl.textContent = patchDecodeResultText(data.text || data.result || {}); const c = document.getElementById('workflowHistoryCopy'); const f = document.getElementById('workflowHistoryFullscreen'); const has = !!(outEl.textContent && outEl.textContent !== '当前流程暂无输出。'); if (c) c.hidden = !has; if (f) f.hidden = !has; } const nextEl = document.getElementById('workflowHistoryNext'); if (nextEl) { nextEl.hidden = false; nextEl.disabled = false; } }
-                    if (eventName === 'workflow_completed' || eventName === 'workflow_cancelled' || eventName === 'workflow_error') { patchState.workflow.status = eventName === 'workflow_completed' ? 'success' : eventName.replace('workflow_', ''); if (step) step.status = eventName === 'workflow_completed' ? 'success' : (eventName === 'workflow_error' ? 'failed' : 'cancelled'); const nextEl = document.getElementById('workflowHistoryNext'); if (nextEl) nextEl.hidden = true; const cancelEl = document.getElementById('workflowCancel'); if (cancelEl) cancelEl.disabled = true; }
+                    if (eventName === 'workflow_completed' || eventName === 'workflow_cancelled' || eventName === 'workflow_error') { patchState.workflow.status = eventName === 'workflow_completed' ? 'success' : (eventName === 'workflow_error' ? 'failed' : 'cancelled'); if (step) step.status = eventName === 'workflow_completed' ? 'success' : (eventName === 'workflow_error' ? 'failed' : 'cancelled'); const nextEl = document.getElementById('workflowHistoryNext'); if (nextEl) nextEl.hidden = true; const cancelEl = document.getElementById('workflowCancel'); if (cancelEl) cancelEl.disabled = true; }
                     renderWorkflowStatus(); renderWorkflowSteps();
-                    if (eventName === 'local_call_required') {
-                        const executionId = `${streamRunId}-${data.step_order}`;
-                        const current = await patchRequest(`/api/workflows/runs/${encodeURIComponent(streamRunId)}`);
-                        const currentStep = current.steps.find(item => Number(item.step_order) === Number(data.step_order));
-                        if (!currentStep || currentStep.status !== 'running' || patchState.workflow.localExecutions.has(executionId)) return;
-                        patchState.workflow.localExecutions.add(executionId);
-                        try {
-                            const resultResponse = await fetch('/api/local-claude/execute', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({execution_id: executionId, system_prompt: '', user_prompt: data.prompt || '', cwd: data.cwd})});
-                            const result = await resultResponse.json();
-                            const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(streamRunId)}/steps/${data.step_order}/local-result`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({execution_token:data.execution_token, text:result.text || '', error:result.error || null, session_id:result.session_id || null})});
-                            applyWorkflowSnapshot(snapshot);
-                        } catch (error) { patchShowError(error.message, '本地流程执行失败'); }
-                        finally { patchState.workflow.localExecutions.delete(executionId); }
-                    }
+                    // 本地步骤：先认领执行权，认领不到说明别的客户端在跑，静默跳过
+                    if (eventName === 'local_call_required') await claimAndRunLocal(data.step_order);
                 };
                 while (!controller.signal.aborted) {
                     const {value, done} = await reader.read();
@@ -567,6 +597,10 @@
                 meta.innerHTML = `<span class="workflow-result-status workflow-status-${patchEscape(snapshot.status || 'pending')}" id="workflowHistoryStatus">${patchEscape(workflowStatusLabel(snapshot.status))}</span><span id="workflowHistoryProgress" class="workflow-run-progress"></span><span>模板：${patchEscape(snapshot.template_name || snapshot.template_id || '-')}</span><span>创建：${patchFormatDateTime(snapshot.created_at)}</span><span>更新：${patchFormatDateTime(snapshot.updated_at)}</span>`;
                 input.innerHTML = `<strong>业务需求</strong><p>${patchEscape(snapshot.business_input || '-')}</p>`;
                 applyWorkflowSnapshot(snapshot);
+                // 用快照当前的事件号作为流起点：首次连接不再重放历史事件，界面直接显示
+                // 数据库的权威状态，不会先闪出旧状态再被纠正。
+                patchState.workflow.lastEventId = Number(snapshot.last_event_id) || 0;
+                if (snapshot.local_waiting) claimAndRunLocal(snapshot.local_waiting.step_order);
                 if (!['success', 'failed', 'cancelled'].includes(snapshot.status)) connectWorkflowStream();
             } catch (error) { patchShowError(error.message, '流程详情加载失败'); }
         }
