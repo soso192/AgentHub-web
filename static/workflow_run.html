@@ -61,8 +61,8 @@
         <header class="patch-topbar">
             <div class="patch-brand">⚡ CC-Web</div>
             <nav class="app-mode-toggle" aria-label="应用模式">
-                <button class="mode-btn" type="button" onclick="location.href='/'">聊天</button>
-                <button class="mode-btn active" type="button" onclick="location.href='/patches.html?tab=smart'" aria-current="page">补丁</button>
+                <button class="mode-btn" type="button" onclick="location.href='/chat.html'">聊天</button>
+                <button class="mode-btn active" type="button" onclick="location.href='/patches.html?tab=smart'" aria-current="page">智能开发</button>
             </nav>
             <div class="patch-topbar-actions">
                 <span id="patchCurrentUser" class="patch-api-status"></span>
@@ -610,9 +610,21 @@
             if (!token || !runId) { location.href = '/patches.html'; return; }
             patchRequest('/api/auth/me').then(me => {
                 document.getElementById('patchCurrentUser').textContent = `${me.display_name || me.username} (${me.role})`;
-                document.querySelectorAll('.patch-sidenav-item[data-sidenav-tab="analysis"], .patch-sidenav-item[data-sidenav-tab="product"]').forEach(item => { item.hidden = !(me.role === 'admin'); });
+                const keys = Array.isArray(me.menus) ? me.menus : null;
+                if (keys) {
+                    // 服务端下发了菜单可见性：没有「智能开发」就没有运行详情页，直接退回补丁中心；
+                    // 其余侧边项跟随配置（本页改造前对所有登录用户可见，现在按配置收敛）。
+                    if (!keys.includes('smart')) { location.href = '/patches.html'; return; }
+                    document.querySelectorAll('.patch-sidenav-item[data-sidenav-tab]').forEach(item => {
+                        if (item.dataset.sidenavTab === 'smart') return;
+                        item.hidden = !keys.includes(item.dataset.sidenavTab);
+                    });
+                } else {
+                    // 旧后端没有 menus 字段：保持改造前的 admin-only 行为
+                    document.querySelectorAll('.patch-sidenav-item[data-sidenav-tab="analysis"], .patch-sidenav-item[data-sidenav-tab="product"]').forEach(item => { item.hidden = !(me.role === 'admin'); });
+                }
+                openWorkflowHistory(runId);
             }).catch(() => {});
-            openWorkflowHistory(runId);
             document.getElementById('patchBackBtn').onclick = () => { location.href = '/patches.html?tab=smart'; };
             document.getElementById('patchThemeToggle').onclick = () => patchSetTheme(patchState.theme === 'dark' ? 'light' : 'dark');
             document.getElementById('workflowHistoryNext').onclick = () => nextWorkflowStep().catch(error => patchShowError(error.message, '流程执行失败'));
@@ -645,7 +657,7 @@
                     const step = (patchState.workflow.steps || []).find(item => Number(item.step_order) === Number(stepOrder));
                     if (step && step.local_session_id) {
                         const resumeQuery = `resume=1&sid=${encodeURIComponent(step.local_session_id)}&cwd=${encodeURIComponent(step.resolved_directory || '')}`;
-                        location.href = `index.html?${resumeQuery}`;
+                        location.href = `/chat.html?${resumeQuery}`;
                     }
                     return;
                 }

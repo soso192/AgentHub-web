@@ -20,10 +20,11 @@ pub async fn serve(req: HttpRequest) -> HttpResponse {
     let path = req.path();
     
     let (content, content_type) = match path {
-        "/" | "/index.html" => (INDEX_HTML, "text/html; charset=utf-8"),
+        // 根路径默认落到「智能开发」（原补丁中心）；聊天页改用 /chat.html（/index.html 保留兼容）
+        "/" | "/patches.html" => (PATCHES_HTML, "text/html; charset=utf-8"),
+        "/chat.html" | "/index.html" => (INDEX_HTML, "text/html; charset=utf-8"),
         "/style.css" => (STYLE_CSS, "text/css; charset=utf-8"),
         "/app.js" => (APP_JS, "application/javascript; charset=utf-8"),
-        "/patches.html" => (PATCHES_HTML, "text/html; charset=utf-8"),
         "/patches.js" => (PATCHES_JS, "application/javascript; charset=utf-8"),
         "/workflow_run.html" => (WORKFLOW_RUN_HTML, "text/html; charset=utf-8"),
         _ => {

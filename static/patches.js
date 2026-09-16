@@ -2,7 +2,7 @@ const PATCH_PAGE_SIZE = 10;
 const PATCH_TOKEN_KEY = 'patch-search-access-token';
 const PATCH_REQUEST_TIMEOUT = 60000; // 单个服务地址单次请求超时（毫秒），超时视为该地址不可用并切换下一条
 
-const patchState = { page: 1, keyword: '', files: [], theme: 'light', patchSearchServers: [], patchServerCursor: 0, user: null, dashboard: null, authInvalidated: false, searchGeneration: 0, products: null, advancedOpen: false, advanced: { name: '', product: '', version: '', keyword: '', description: '' }, searchItems: [], admin: { kind: '', id: null, flows: [], prompts: [], templates: [], directories: [], directoryId: null, analysisPatches: [], selectedAnalysisIds: new Set(), analysisTimer: null, products: [], productId: null }, workflow: { runId: '', steps: [], currentStep: 0, status: '', source: null, token: '', lastEventId: 0, localExecutions: new Set(), templates: [] }, workflowHistory: { page: 1, size: 10, total: 0, items: [] }, workflowDetail: { runId: '', snapshot: null }, mine: { page: 1, size: 10, total: 0, items: [], generation: 0 } };
+const patchState = { page: 1, keyword: '', files: [], theme: 'light', patchSearchServers: [], patchServerCursor: 0, user: null, dashboard: null, authInvalidated: false, searchGeneration: 0, products: null, advancedOpen: false, advanced: { name: '', product: '', version: '', keyword: '', description: '' }, searchItems: [], admin: { kind: '', id: null, flows: [], prompts: [], templates: [], directories: [], directoryId: null, menuConfig: { roleItems: [], defaults: {}, users: [], userId: '' }, analysisPatches: [], selectedAnalysisIds: new Set(), analysisTimer: null, products: [], productId: null }, workflow: { runId: '', steps: [], currentStep: 0, status: '', source: null, token: '', lastEventId: 0, localExecutions: new Set(), templates: [] }, workflowHistory: { page: 1, size: 10, total: 0, items: [] }, workflowDetail: { runId: '', snapshot: null }, mine: { page: 1, size: 10, total: 0, items: [], generation: 0 } };
 
 // 服务地址由 cc-web 在代码内写死（可配多条），经 /api/patch-config 下发。
 // 轮询策略：每个请求取一个起始地址（游标后移实现轮询），若连不上/超时则依次切换下一条，
@@ -83,6 +83,37 @@ function patchSetTheme(theme) {
 function patchInitTheme() {
     const saved = localStorage.getItem('cc-web-theme');
     patchSetTheme(saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+}
+
+/* ── 菜单可见性（与后端 menu_service.MENU_CATALOG 顺序一致） ── */
+// 注意：管理端的 menus 页签不在此清单内，它是硬编码 admin-only，不受配置约束。
+// 顺序即左侧导航/页签顺序，首个可见项也是登录后默认停留的页签（智能开发优先）
+const PATCH_MENU_KEYS = ['smart', 'search', 'upload', 'mine', 'flow', 'prompt', 'template', 'analysis', 'product', 'directory'];
+
+// 旧后端（/api/auth/me 无 menus 字段）时严格复刻改造前的显隐规则，保证前端可先于后端发布。
+function legacyMenuKeys(user, isAdmin) {
+    const base = ['search', 'upload', 'mine', 'smart', 'directory'];
+    if (user) base.push('flow', 'prompt', 'template');
+    if (isAdmin) base.push('analysis', 'product');
+    return base;
+}
+
+function isTabVisible(tab) {
+    const button = tab && document.querySelector(`.patch-tab[data-tab="${tab}"]`);
+    return Boolean(button && !button.hidden);
+}
+
+// 按服务端下发的 menus 应用页签显隐，并同步左侧导航；返回当前可见键集合。
+function applyMenuVisibility(user, isAdmin) {
+    const keys = new Set(user && Array.isArray(user.menus) ? user.menus : legacyMenuKeys(user, isAdmin));
+    PATCH_MENU_KEYS.forEach(key => {
+        const tab = document.querySelector(`.patch-tab[data-tab="${key}"]`);
+        if (tab) tab.hidden = !keys.has(key);
+    });
+    const configTab = document.querySelector('.patch-tab[data-tab="menus"]');
+    if (configTab) configTab.hidden = !isAdmin;
+    patchSyncSidenavVisibility();
+    return keys;
 }
 
 /* ── 左侧固定导航（与顶部菜单一致） ── */
@@ -181,13 +212,11 @@ function patchSetAuthenticated(user) {
     const layout = document.getElementById('patchAuthLayout');
     const userLabel = document.getElementById('patchCurrentUser');
     const logout = document.getElementById('patchLogout');
-    const configTabs = ['flow', 'prompt', 'template'].map(tab => document.querySelector(`.patch-tab[data-tab="${tab}"]`));
-    const analysisTab = document.querySelector('.patch-tab[data-tab="analysis"]');
-    const productTab = document.querySelector('.patch-tab[data-tab="product"]');
     const authenticated = Boolean(user);
     const isAdmin = authenticated && user.role === 'admin';
     // 左侧固定菜单仅在登录态展示（聊天页/未登录登录卡不展示）
     document.documentElement.classList.toggle('patch-auth', authenticated);
+    document.documentElement.classList.remove('patch-auth-pending');
     const previousUserId = patchState.user?.id;
     const userChanged = previousUserId !== (user?.id ?? null);
     patchState.user = user || null;
@@ -195,18 +224,36 @@ function patchSetAuthenticated(user) {
     if (!authenticated) { patchState.dashboard = null; document.getElementById('patchUserMetrics').textContent = '请登录后查看'; document.getElementById('patchLeaderboard').textContent = '请登录后查看'; document.getElementById('patchActivityLeaderboard').textContent = '请登录后查看'; patchState.workflowHistory = {page: 1, size: 10, total: 0, items: []}; patchState.workflowDetail = {runId: '', snapshot: null}; document.getElementById('workflowHistoryBody').innerHTML = '<tr><td colspan="6" class="patch-empty">暂无流程运行记录</td></tr>'; patchState.mine = {page: 1, size: 10, total: 0, items: [], generation: 0}; const mineBody = document.getElementById('patchMineBody'); if (mineBody) mineBody.innerHTML = '<tr><td colspan="7" class="patch-empty">请登录后查看</td></tr>'; patchState.products = null; patchState.admin.products = []; patchState.admin.productId = null; const productBody = document.getElementById('patchProductBody'); if (productBody) productBody.innerHTML = '<tr><td colspan="4" class="patch-empty">请登录后查看</td></tr>'; }
     if (login) login.hidden = authenticated;
     if (layout) layout.hidden = !authenticated;
-    configTabs.filter(Boolean).forEach(tab => { tab.hidden = !authenticated; });
-    if (analysisTab) analysisTab.hidden = !isAdmin;
-    if (productTab) productTab.hidden = !isAdmin;
-    patchSyncSidenavVisibility();
+    applyMenuVisibility(user, isAdmin);
+    // 安全网：已登录但一个菜单都不可见时强制显示第一个菜单（智能开发），避免登录后只剩空白界面
+    if (authenticated && !PATCH_MENU_KEYS.some(isTabVisible)) {
+        const searchTab = document.querySelector(`.patch-tab[data-tab="${PATCH_MENU_KEYS[0]}"]`);
+        if (searchTab) searchTab.hidden = false;
+        patchSyncSidenavVisibility();
+    }
     const activeTab = document.querySelector('.patch-tab.active')?.dataset.tab;
-    if (userChanged || !authenticated || (!isAdmin && ['analysis', 'product'].includes(activeTab))) patchSwitchTab('search');
+    // 默认落在第一个可见菜单（智能开发）；菜单被隐藏时顺延到下一个可见项
+    const fallbackTab = PATCH_MENU_KEYS.find(isTabVisible) || PATCH_MENU_KEYS[0];
+    if (userChanged || !authenticated || !isTabVisible(activeTab)) patchSwitchTab(fallbackTab);
     if (userChanged) {
         patchState.admin.flows = [];
         patchState.admin.prompts = [];
         patchState.admin.templates = [];
         patchState.admin.directories = [];
         patchState.admin.directoryId = null;
+        patchState.admin.menuConfig = { roleItems: [], defaults: {}, users: [], userId: '' };
+        const menuRoleBody = document.getElementById('patchMenuRoleBody');
+        if (menuRoleBody) menuRoleBody.innerHTML = '<tr><td colspan="4" class="patch-empty">正在加载...</td></tr>';
+        const menuRoleMessage = document.getElementById('patchMenuRoleMessage');
+        if (menuRoleMessage) menuRoleMessage.textContent = '';
+        const menuUserBody = document.getElementById('patchMenuUserBody');
+        if (menuUserBody) menuUserBody.innerHTML = '<tr><td colspan="4" class="patch-empty">请选择用户</td></tr>';
+        const menuUserMessage = document.getElementById('patchMenuUserMessage');
+        if (menuUserMessage) menuUserMessage.textContent = '';
+        const menuUserSelect = document.getElementById('patchMenuUserSelect');
+        if (menuUserSelect) menuUserSelect.innerHTML = '<option value="">选择用户</option>';
+        const menuUserSearch = document.getElementById('patchMenuUserSearch');
+        if (menuUserSearch) menuUserSearch.value = '';
         document.getElementById('patchDirectoryBody').innerHTML = '<tr><td colspan="6" class="patch-empty">暂无工作目录</td></tr>';
         document.getElementById('patchDirectoryMessage').textContent = '';
         patchState.mine = {page: 1, size: 10, total: 0, items: [], generation: 0};
@@ -310,7 +357,20 @@ async function patchLogin() {
 async function patchRestoreAuth() {
     if (!patchToken()) { patchSetAuthenticated(null); return false; }
     try { patchSetAuthenticated(await patchRequest('/api/auth/me')); return true; }
-    catch { patchHandleUnauthorized(); return false; }
+    catch (error) {
+        // 只有服务端明确返回 401（patchRequest 已置 authInvalidated 并清掉 token）才算登录失效；
+        // 网络不通/超时等临时故障保留 token，停在 pending 提示上让用户重试，避免刷新时被误踢回登录页。
+        if (patchState.authInvalidated) { patchHandleUnauthorized(); return false; }
+        patchShowAuthRetry(error.message);
+        return false;
+    }
+}
+
+function patchShowAuthRetry(message) {
+    const text = document.getElementById('patchAuthLoadingText');
+    const retry = document.getElementById('patchAuthRetry');
+    if (text) text.textContent = message || '无法连接补丁中心，请稍后重试。';
+    if (retry) retry.hidden = false;
 }
 
 // 使用说明面板：登录时默认展开；刷新页面保留当前状态（同步应用，避免刷新时闪一下）
@@ -601,15 +661,19 @@ function deleteSearchPatch(id) {
 }
 
 // 列表列宽可拖拽调整，宽度持久化到 localStorage；搜索表与我的补丁表各自独立存储
-function initPatchColumnResize(selector, storageKey, defaults) {
+// actionMin：最后一列（操作列）的最小宽度。表格是 table-layout:fixed，单元格又带 overflow:hidden，
+// 列宽一旦小于按钮所需的宽度，后面的「下载/编辑/删除」会被裁掉（看不见也点不到），
+// 因此操作列不允许被压到 actionMin 以下（包含历史存下来的旧宽度）。
+function initPatchColumnResize(selector, storageKey, defaults, actionMin = 48) {
     const table = document.querySelector(selector);
     if (!table) return;
     const headers = Array.from(table.querySelectorAll('thead th'));
     if (headers.length < 2) return;
+    const minWidth = (i) => (i === headers.length - 1 ? actionMin : 48);
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch {}
     headers.forEach((th, i) => {
-        const width = Number(saved[`col${i}`]) || defaults[i] || 100;
+        const width = Math.max(Number(saved[`col${i}`]) || defaults[i] || 100, minWidth(i));
         th.style.width = `${width}px`;
         const handle = document.createElement('div');
         handle.className = 'patch-resizer';
@@ -618,7 +682,7 @@ function initPatchColumnResize(selector, storageKey, defaults) {
         let startX = 0;
         let startW = 0;
         const onMove = (e) => {
-            th.style.width = `${Math.max(48, Math.round(startW + e.clientX - startX))}px`;
+            th.style.width = `${Math.max(minWidth(i), Math.round(startW + e.clientX - startX))}px`;
         };
         const onUp = () => {
             document.removeEventListener('mousemove', onMove);
@@ -1122,6 +1186,7 @@ function patchSwitchTab(tab) {
     if (tab === 'product' && patchToken() && !patchState.authInvalidated) loadProducts();
     if (tab === 'mine' && patchToken() && !patchState.authInvalidated) loadMyPatches();
     if (tab === 'directory' && patchToken() && !patchState.authInvalidated) loadDirectories();
+    if (tab === 'menus' && patchToken() && !patchState.authInvalidated && patchState.user?.role === 'admin') { loadMenuRoleConfig(); loadMenuUsers(); }
     patchSetSidenavActive(tab);
 }
 
@@ -1372,6 +1437,93 @@ async function loadAdminSettings(tab = 'flow') {
     }
 }
 
+/* ── 菜单可见性配置（管理员） ── */
+function menuRoleRows(items) {
+    return (items || []).map(item => `<tr><td>${patchEscape(item.name)}</td><td>${patchEscape(item.key)}</td><td><input type="checkbox" data-menu-role-key="${patchEscape(item.key)}" ${item.visible ? 'checked' : ''}></td><td>${item.source === 'explicit' ? '已自定义' : '默认'}</td></tr>`).join('') || '<tr><td colspan="4" class="patch-empty">暂无菜单</td></tr>';
+}
+
+async function loadMenuRoleConfig() {
+    try {
+        const data = await patchRequest('/api/menus/config');
+        patchState.admin.menuConfig.roleItems = data.items || [];
+        patchState.admin.menuConfig.defaults = data.defaults || {};
+        document.getElementById('patchMenuRoleBody').innerHTML = menuRoleRows(data.items);
+    } catch (error) {
+        document.getElementById('patchMenuRoleMessage').textContent = '';
+        patchShowError(error.message, '菜单可见性加载失败');
+    }
+}
+
+async function saveMenuRoleConfig() {
+    const visible = {};
+    document.querySelectorAll('#patchMenuRoleBody [data-menu-role-key]').forEach(input => { visible[input.dataset.menuRoleKey] = input.checked; });
+    try {
+        await patchRequest('/api/menus/config', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({visible})});
+        document.getElementById('patchMenuRoleMessage').textContent = '已保存，普通用户下次进入即生效';
+        await loadMenuRoleConfig();
+        // 角色默认变了，已展开的用户例外需要重算「角色默认 / 实际可见」两列
+        if (patchState.admin.menuConfig.userId) await loadMenuUserOverrides(patchState.admin.menuConfig.userId);
+    } catch (error) {
+        document.getElementById('patchMenuRoleMessage').textContent = '';
+        patchShowError(error.message, '菜单可见性保存失败');
+    }
+}
+
+async function loadMenuUsers(keyword = '') {
+    try {
+        const data = await patchRequest(`/api/menus/users?size=200&keyword=${encodeURIComponent(keyword)}`);
+        patchState.admin.menuConfig.users = data.items || [];
+        const options = patchState.admin.menuConfig.users.map(item => `<option value="${patchEscape(item.id)}">${patchEscape(item.display_name || item.username)} (${patchEscape(item.username)})</option>`).join('');
+        // 用户量大（上千），下拉只列出前 200 个并提示总数，用筛选框缩小范围
+        const placeholder = data.total > patchState.admin.menuConfig.users.length ? `选择用户（共 ${data.total} 个，列出前 ${patchState.admin.menuConfig.users.length} 个）` : `选择用户（共 ${data.total} 个）`;
+        document.getElementById('patchMenuUserSelect').innerHTML = `<option value="">${patchEscape(placeholder)}</option>${options}`;
+        document.getElementById('patchMenuUserSelect').value = patchState.admin.menuConfig.userId || '';
+    } catch (error) {
+        document.getElementById('patchMenuUserMessage').textContent = '';
+        patchShowError(error.message, '用户列表加载失败');
+    }
+}
+
+function menuUserRows(items) {
+    return (items || []).map(item => {
+        const override = item.override === true ? 'true' : item.override === false ? 'false' : '';
+        return `<tr><td>${patchEscape(item.name)}</td><td>${item.role_visible ? '可见' : '隐藏'}</td><td><select data-menu-user-key="${patchEscape(item.key)}"><option value="" ${override === '' ? 'selected' : ''}>跟随角色默认</option><option value="true" ${override === 'true' ? 'selected' : ''}>强制可见</option><option value="false" ${override === 'false' ? 'selected' : ''}>强制隐藏</option></select></td><td>${item.visible ? '可见' : '隐藏'}</td></tr>`;
+    }).join('') || '<tr><td colspan="4" class="patch-empty">暂无菜单</td></tr>';
+}
+
+async function loadMenuUserOverrides(userId) {
+    if (!userId) {
+        patchState.admin.menuConfig.userId = '';
+        document.getElementById('patchMenuUserBody').innerHTML = '<tr><td colspan="4" class="patch-empty">请选择用户</td></tr>';
+        return;
+    }
+    try {
+        const data = await patchRequest(`/api/menus/users/${encodeURIComponent(userId)}`);
+        patchState.admin.menuConfig.userId = String(userId);
+        document.getElementById('patchMenuUserBody').innerHTML = menuUserRows(data.items);
+    } catch (error) {
+        document.getElementById('patchMenuUserMessage').textContent = '';
+        patchShowError(error.message, '用户例外加载失败');
+    }
+}
+
+async function saveMenuUserOverrides() {
+    const userId = patchState.admin.menuConfig.userId;
+    if (!userId) { document.getElementById('patchMenuUserMessage').textContent = '请先选择用户'; return; }
+    // 全量提交：空字符串 → null（删除覆盖行、跟随角色默认），接口对 null 做 DELETE，重复提交幂等。
+    const overrides = {};
+    document.querySelectorAll('#patchMenuUserBody [data-menu-user-key]').forEach(select => { overrides[select.dataset.menuUserKey] = select.value === '' ? null : select.value === 'true'; });
+    if (!Object.keys(overrides).length) { document.getElementById('patchMenuUserMessage').textContent = '请先选择用户'; return; }
+    try {
+        await patchRequest(`/api/menus/users/${encodeURIComponent(userId)}`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({overrides})});
+        document.getElementById('patchMenuUserMessage').textContent = '已保存';
+        await loadMenuUserOverrides(userId);
+    } catch (error) {
+        document.getElementById('patchMenuUserMessage').textContent = '';
+        patchShowError(error.message, '用户例外保存失败');
+    }
+}
+
 function flowDirectoryOptions(target, selectedCode) {
     const options = patchState.admin.directories
         .filter(directory => target !== 'server' || directory.is_builtin)
@@ -1400,7 +1552,7 @@ function openAdminForm(kind, data = {}, readOnly = false) {
         title.textContent = data.id ? '编辑流程模板' : '新增流程模板';
         const flowOptions = patchState.admin.flows.filter(item => item.can_use).map(item => `<option value="${patchEscape(item.id)}">${patchEscape(item.name)} (${patchEscape(item.code)})</option>`).join('');
         const promptOptions = '<option value="">不使用提示词</option>' + patchState.admin.prompts.filter(item => item.can_use).map(item => `<option value="${patchEscape(item.id)}">${patchEscape(item.name)}</option>`).join('');
-        form.innerHTML = `<section class="template-form-section"><div class="template-section-heading"><div><h4>基本信息</h4><p>设置模板标识、名称和使用状态</p></div></div><div class="template-basic-fields"><label>编码<input name="code" value="${patchEscape(data.code || '')}" ${data.id ? 'readonly' : ''} required placeholder="例如：patch_search"></label><label>名称<input name="name" value="${patchEscape(data.name || '')}" required placeholder="请输入模板名称"></label><label class="template-description-field">描述<textarea name="description" placeholder="简要说明模板的用途和适用场景">${patchEscape(data.description || '')}</textarea></label><label>状态<select name="status"><option value="1" ${data.status !== 0 ? 'selected' : ''}>启用</option><option value="0" ${data.status === 0 ? 'selected' : ''}>停用</option></select></label></div></section><section class="template-form-section template-workflow-section"><div class="template-steps-header"><div><h4>流程步骤</h4><p>按执行顺序组合流程与提示词</p><span id="patchTemplateStepCount" class="template-step-count"></span></div><button type="button" id="patchAddTemplateStep" class="patch-secondary-btn">新增步骤</button></div><div id="patchTemplateSteps" class="template-steps"></div></section>`;
+        form.innerHTML = `<section class="template-form-section"><div class="template-section-heading"><div><h4>基本信息</h4><p>设置模板标识、名称和使用状态</p></div></div><div class="template-basic-fields"><label>编码<input name="code" value="${patchEscape(data.code || '')}" required placeholder="例如：patch_search"></label><label>名称<input name="name" value="${patchEscape(data.name || '')}" required placeholder="请输入模板名称"></label><label class="template-description-field">描述<textarea name="description" placeholder="简要说明模板的用途和适用场景">${patchEscape(data.description || '')}</textarea></label><label>状态<select name="status"><option value="1" ${data.status !== 0 ? 'selected' : ''}>启用</option><option value="0" ${data.status === 0 ? 'selected' : ''}>停用</option></select></label></div></section><section class="template-form-section template-workflow-section"><div class="template-steps-header"><div><h4>流程步骤</h4><p>按执行顺序组合流程与提示词</p><span id="patchTemplateStepCount" class="template-step-count"></span></div><button type="button" id="patchAddTemplateStep" class="patch-secondary-btn">新增步骤</button></div><div id="patchTemplateSteps" class="template-steps"></div></section>`;
         renderTemplateSteps(Array.isArray(data.steps) && data.steps.length ? data.steps : [{}], flowOptions, promptOptions);
     }
     form.querySelectorAll('input, textarea, select, button').forEach(control => { if (readOnly) control.disabled = true; });
@@ -1410,7 +1562,8 @@ function openAdminForm(kind, data = {}, readOnly = false) {
     document.getElementById('patchAdminModal').hidden = false;
 }
 
-// 复制模板：为新模板建议一个不与现有模板冲突的编码（最终以服务端创建时校验为准）
+// 复制模板：为新模板建议一个"当前用户可见范围内"不冲突的编码
+// （patchState.admin.templates 就是服务端返回的可见列表；最终仍以服务端创建时校验为准）
 function cloneCodeSuggestion(baseCode) {
     const base = `${String(baseCode || 'template').slice(0, 100)}-copy`;
     const used = new Set((patchState.admin.templates || []).map(item => String(item.code)));
@@ -1478,7 +1631,19 @@ async function saveAdminForm(event) {
         path = id ? `/api/workflows/templates/${id}` : '/api/workflows/templates';
         body = {code: values.code, name: values.name, description: values.description || null, status: Number(values.status), steps};
     }
-    try { await patchRequest(path, {method: id ? 'PUT' : 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}); document.getElementById('patchAdminModal').hidden = true; await loadAdminSettings(kind === 'flow' ? 'flow' : kind === 'prompt' ? 'prompt' : 'template'); } catch (error) { adminMessage(kind === 'template' ? 'template' : kind, error.message, true); }
+    try {
+        await patchRequest(path, {method: id ? 'PUT' : 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+        document.getElementById('patchAdminModal').hidden = true;
+        if (kind === 'template') {
+            // 模板改动会牵动多处界面（本页模板列表、智能开发页的模板下拉、运行详情里的步骤），
+            // 保存后直接整页刷新，确保全部取到最新数据；先把当前页签写进 ?tab=，刷新后仍停在原页签。
+            const activeTab = document.querySelector('.patch-tab.active')?.dataset.tab;
+            if (activeTab) { const url = new URL(location.href); url.searchParams.set('tab', activeTab); history.replaceState(null, '', url); }
+            location.reload();
+            return;
+        }
+        await loadAdminSettings(kind === 'flow' ? 'flow' : kind === 'prompt' ? 'prompt' : 'template');
+    } catch (error) { adminMessage(kind === 'template' ? 'template' : kind, error.message, true); }
 }
 
 function workflowStatusLabel(status) {
@@ -1593,6 +1758,10 @@ function patchBindEvents() {
     document.getElementById('patchDirectoryForm').onsubmit = saveDirectory;
     document.getElementById('patchDirectoryClose').onclick = () => { document.getElementById('patchDirectoryModal').hidden = true; };
     document.getElementById('patchDirectoryCancel').onclick = () => { document.getElementById('patchDirectoryModal').hidden = true; };
+    document.getElementById('patchMenuRoleSave').onclick = saveMenuRoleConfig;
+    document.getElementById('patchMenuUserSave').onclick = saveMenuUserOverrides;
+    document.getElementById('patchMenuUserSelect').onchange = event => { document.getElementById('patchMenuUserMessage').textContent = ''; loadMenuUserOverrides(event.target.value); };
+    document.getElementById('patchMenuUserSearch').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); loadMenuUsers(event.target.value.trim()); } };
     document.getElementById('patchNewProduct').onclick = () => openProductForm();
     document.getElementById('patchProductForm').onsubmit = saveProduct;
     document.getElementById('patchProductClose').onclick = () => { document.getElementById('patchProductModal').hidden = true; };
@@ -1812,11 +1981,15 @@ function patchBindEvents() {
     // 使用说明面板：登录时默认展开；刷新时同步恢复收起状态，避免闪一下
     document.getElementById('patchHelpToggle').onclick = () => { setPatchHelpPanel(true); patchHelpSave(true); };
     document.getElementById('patchHelpReopen').onclick = () => { setPatchHelpPanel(true); patchHelpSave(true); };
+    // 登录态校验失败（网络故障）时的重试入口：直接重新加载页面重新走一遍启动流程
+    document.getElementById('patchAuthRetry').onclick = () => location.reload();
     document.getElementById('patchHelpCollapse').onclick = () => { setPatchHelpPanel(false); patchHelpSave(false); };
     patchHelpApplyStored();
 
-    initPatchColumnResize('.patch-search-table', 'cc-web-patch-col-widths', [280, 170, 96, 70, 90, 160, 104]);
-    initPatchColumnResize('.patch-mine-table', 'cc-web-patch-mine-col-widths-v2', [280, 170, 96, 70, 90, 96, 170]);
+    // 操作列固定 190px：详情/下载/编辑/删除 四个按钮共需约 172px（含单元格左右内边距），
+    // 小于这个宽度时按钮会被裁掉点不到
+    initPatchColumnResize('.patch-search-table', 'cc-web-patch-col-widths', [280, 170, 96, 70, 90, 160, 190], 190);
+    initPatchColumnResize('.patch-mine-table', 'cc-web-patch-mine-col-widths-v2', [280, 170, 96, 70, 90, 96, 190], 190);
 }
 
 patchInitTheme();
@@ -1829,11 +2002,23 @@ patchLoadConfig().then(() => {
         // 从流程运行详情页返回时带 ?tab=smart，直接切到智能开发页签
         const returnTab = new URLSearchParams(location.search).get('tab');
         const tabButton = returnTab && document.querySelector(`.patch-tab[data-tab="${returnTab}"]`);
-        if (tabButton) { patchSwitchTab(returnTab); loadPatches(); loadDashboard(); }
+        // 深链守卫：?tab=X 只在 X 当前可见（未被菜单可见性隐藏）时才切过去，否则回落到默认页签
+        if (tabButton && !tabButton.hidden) { patchSwitchTab(returnTab); loadPatches(); loadDashboard(); }
         else { loadPatches(); loadWorkflowTemplates(); loadDashboard(); restoreWorkflowRun(); loadWorkflowHistory(); }
     });
 }).catch(error => {
+    document.documentElement.classList.remove('patch-auth-pending');
     const status = document.getElementById('patchApiStatus');
     if (status) { status.textContent = '配置缺失'; status.className = 'patch-api-status error'; }
     patchShowError(error.message, '补丁中心配置错误');
+});
+
+// 从流程运行详情页用浏览器「后退」回来时，可能命中 bfcache：页面直接从内存恢复，
+// 启动流程不会重跑，流程运行记录等列表会停在打开详情页之前的旧数据上。
+// 这里在恢复时按当前页签重新拉一次数据（详情页的「返回」按钮走正常导航，本就会重新加载）。
+window.addEventListener('pageshow', event => {
+    if (!event.persisted) return;
+    if (!patchToken() || patchState.authInvalidated) return;
+    const activeTab = document.querySelector('.patch-tab.active')?.dataset.tab;
+    if (activeTab) patchSwitchTab(activeTab);
 });

@@ -1130,7 +1130,8 @@ html.help-panel-closed .help-panel { transform: translateX(102%); }
 .patch-api-status.error { color: var(--error); }
 .patch-main { max-width: 1440px; margin: 0 auto; padding: 28px 24px 48px; }
 .patch-main-fill { max-width: none; }
-.patch-auth-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 20px; align-items: start; }
+/* 我的数据 / 贡献榜 / 活跃榜在右侧栏；窄屏（见下方媒体查询）改为整块横排置顶 */
+.patch-auth-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; align-items: start; }
 .patch-user-sidebar { position: sticky; top: 20px; display: grid; gap: 16px; }
 .patch-user-summary, .patch-leaderboard { padding: 18px; }
 .patch-user-summary h3, .patch-leaderboard h3 { margin: 0 0 14px; font-size: 14px; }
@@ -1168,6 +1169,10 @@ html.help-panel-closed .help-panel { transform: translateX(102%); }
 #patchLoginCard h2 { margin-bottom: 18px; font-size: 20px; letter-spacing: -.02em; }
 #patchLoginCard .patch-search-row { align-items: center; }
 #patchLoginCard .patch-input { min-height: 42px; }
+/* 已有 token 时先隐藏登录卡片，等 /api/auth/me 返回再决定展示登录页还是主界面，避免刷新时闪一下登录页 */
+#patchAuthLoading { display: none; max-width: 720px; margin: 10vh auto 24px; padding: 28px; align-items: center; justify-content: center; gap: 12px; color: var(--text-muted); }
+html.patch-auth-pending #patchAuthLoading { display: flex; }
+html.patch-auth-pending #patchLoginCard { display: none; }
 .patch-search-card { padding: 12px 14px; margin-bottom: 16px; }
 .patch-search-row { display: flex; gap: 10px; }
 .patch-search-row .patch-input { flex: 1; min-width: 0; }
@@ -1265,16 +1270,22 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .patch-search-table td.patch-name-cell, .patch-mine-table td.patch-name-cell { width: auto; max-width: none; }
 .patch-search-table .patch-truncated-name, .patch-mine-table .patch-truncated-name { max-width: 100%; }
 .patch-search-table td, .patch-mine-table td { overflow: hidden; text-overflow: ellipsis; }
+/* 所有带「操作」列的表格都把最后一列固定在右侧，窄屏横向滚动时按钮仍可点 */
 .patch-search-table th:last-child,
 .patch-search-table td:last-child,
 .patch-mine-table th:last-child,
-.patch-mine-table td:last-child {
+.patch-mine-table td:last-child,
+.patch-actions-table th:last-child,
+.patch-actions-table td:last-child {
     position: sticky;
     right: 0;
     background: var(--bg-elevated);
     box-shadow: -1px 0 0 var(--border-light);
     z-index: 1;
 }
+/* 操作列宽度按内容撑开，不被其它列挤窄；fixed 布局的两张表另由 JS 保证最小宽度 */
+.patch-actions-table th:last-child,
+.patch-actions-table td:last-child { width: 1%; white-space: nowrap; }
 .patch-resizer {
     position: absolute;
     top: 0;
@@ -1388,7 +1399,8 @@ body.patch-col-resizing * { cursor: col-resize !important; user-select: none !im
     .patch-topbar-actions { width: 100%; margin-left: 0; order: 3; overflow-x: auto; padding-bottom: 2px; }
     .patch-main { padding: 18px 12px 32px; }
     .patch-auth-layout { grid-template-columns: 1fr; }
-    .patch-user-sidebar { position: static; display: flex; grid-template-columns: none; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
+    /* order:-1 让侧栏在窄屏仍然排在内容上方（DOM 里它在内容之后，是为了桌面端靠右） */
+    .patch-user-sidebar { position: static; order: -1; display: flex; grid-template-columns: none; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
     .patch-user-sidebar > .patch-card { flex: 0 0 min(280px, 78vw); scroll-snap-align: start; }
     .patch-leaderboard-list { max-height: 190px; }
     .patch-upload-item { grid-template-columns: 1fr; }

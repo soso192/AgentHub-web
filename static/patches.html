@@ -5,16 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="CC-Web 补丁中心提供补丁检索、上传、智能开发和工作流管理。">
     <meta name="theme-color" content="#f7f8fa">
-    <title>补丁中心 · CC-Web</title>
+    <title>智能开发 · CC-Web</title>
     <script>try{if(localStorage.getItem('cc-web-help-panel')==='closed'){document.documentElement.classList.add('help-panel-closed');}}catch(e){}</script>
     <script>try{if(localStorage.getItem('cc-web-patch-sidenav')==='0'){document.documentElement.classList.add('sidenav-collapsed');}}catch(e){}</script>
-    <script>try{if(localStorage.getItem('patch-search-access-token')){document.documentElement.classList.add('patch-auth');}}catch(e){}</script>
+    <script>try{if(localStorage.getItem('patch-search-access-token')){document.documentElement.classList.add('patch-auth','patch-auth-pending');}}catch(e){}</script>
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
     <nav class="patch-sidenav" id="patchSidenav" aria-label="主导航">
         <button id="patchSidenavToggle" class="patch-sidenav-toggle" type="button" title="收起菜单" aria-expanded="true" aria-label="收起菜单">‹</button>
         <div class="patch-sidenav-items">
+            <a class="patch-sidenav-item" data-sidenav-tab="smart" href="/patches.html?tab=smart" title="智能开发">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                <span class="patch-sidenav-label">智能开发</span>
+            </a>
             <a class="patch-sidenav-item" data-sidenav-tab="search" href="/patches.html?tab=search" title="普通检索">
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                 <span class="patch-sidenav-label">普通检索</span>
@@ -26,10 +30,6 @@
             <a class="patch-sidenav-item" data-sidenav-tab="mine" href="/patches.html?tab=mine" title="我的补丁">
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
                 <span class="patch-sidenav-label">我的补丁</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="smart" href="/patches.html?tab=smart" title="智能开发">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                <span class="patch-sidenav-label">智能开发</span>
             </a>
             <a class="patch-sidenav-item" data-sidenav-tab="flow" href="/patches.html?tab=flow" title="流程设置" hidden>
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
@@ -55,14 +55,18 @@
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path></svg>
                 <span class="patch-sidenav-label">工作目录</span>
             </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="menus" href="/patches.html?tab=menus" title="菜单可见性" hidden>
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
+                <span class="patch-sidenav-label">菜单可见性</span>
+            </a>
         </div>
     </nav>
     <div class="patch-page">
         <header class="patch-topbar">
             <div class="patch-brand">⚡ CC-Web</div>
             <nav class="app-mode-toggle" aria-label="应用模式">
-                <button class="mode-btn" type="button" onclick="location.href='/'">聊天</button>
-                <button class="mode-btn active" type="button" aria-current="page">补丁</button>
+                <button class="mode-btn" type="button" onclick="location.href='/chat.html'">聊天</button>
+                <button class="mode-btn active" type="button" aria-current="page">智能开发</button>
             </nav>
             <div class="patch-topbar-actions">
                 <span id="patchApiStatus" class="patch-api-status">未连接</span>
@@ -75,6 +79,10 @@
         </header>
 
         <main class="patch-main patch-main-fill">
+            <div id="patchAuthLoading" class="patch-card patch-auth-loading">
+                <span id="patchAuthLoadingText">正在校验登录状态…</span>
+                <button id="patchAuthRetry" class="patch-secondary-btn" type="button" hidden>重试</button>
+            </div>
             <div id="patchLoginCard" class="patch-card">
                 <h2>登录 patch_search</h2>
                 <div class="patch-search-row">
@@ -85,35 +93,22 @@
                 <div id="patchLoginMessage" class="patch-message"></div>
             </div>
             <div class="patch-auth-layout" id="patchAuthLayout" hidden>
-                <aside class="patch-user-sidebar" id="patchUserSidebar">
-                    <section class="patch-card patch-user-summary">
-                        <h3>我的数据</h3>
-                        <div id="patchUserMetrics" class="patch-user-metrics">正在加载...</div>
-                    </section>
-                    <section class="patch-card patch-leaderboard">
-                        <h3>贡献榜 TOP 10</h3>
-                        <div id="patchLeaderboard" class="patch-leaderboard-list">正在加载...</div>
-                    </section>
-                    <section class="patch-card patch-leaderboard">
-                        <h3>活跃榜 TOP 10</h3>
-                        <div id="patchActivityLeaderboard" class="patch-leaderboard-list">正在加载...</div>
-                    </section>
-                </aside>
                 <div class="patch-auth-content">
             <div class="patch-tabs" role="tablist">
-                <button class="patch-tab active" data-tab="search">普通检索</button>
+                <button class="patch-tab active" data-tab="smart">智能开发</button>
+                <button class="patch-tab" data-tab="search">普通检索</button>
                 <button class="patch-tab" data-tab="upload">补丁上传</button>
                 <button class="patch-tab" data-tab="mine">我的补丁</button>
-                <button class="patch-tab" data-tab="smart">智能开发</button>
                 <button id="patchFlowTab" class="patch-tab" data-tab="flow" hidden>流程设置</button>
                 <button id="patchPromptTab" class="patch-tab" data-tab="prompt" hidden>提示词设置</button>
                 <button id="patchTemplateTab" class="patch-tab" data-tab="template" hidden>流程模板设置</button>
                 <button id="patchAnalysisTab" class="patch-tab" data-tab="analysis" hidden>待分析补丁</button>
                 <button id="patchProductTab" class="patch-tab" data-tab="product" hidden>产品版本管理</button>
                 <button class="patch-tab" data-tab="directory">工作目录</button>
+                <button class="patch-tab" data-tab="menus" hidden>菜单可见性</button>
             </div>
 
-            <section id="patchTabSearch" class="patch-tab-panel active">
+            <section id="patchTabSearch" class="patch-tab-panel">
                 <div class="patch-card patch-search-card">
                     <div class="patch-search-row patch-search-toolbar" id="patchSearchToolbar">
                         <label class="sr-only" for="patchKeyword">搜索已分析补丁包</label>
@@ -177,7 +172,7 @@
                 </div>
             </section>
 
-            <section id="patchTabSmart" class="patch-tab-panel">
+            <section id="patchTabSmart" class="patch-tab-panel active">
                 <div class="patch-card smart-dev-card">
                     <div class="smart-dev-head"><div><h2>智能开发</h2><p>选择流程模板并输入业务需求，启动后实时查看每步执行进度与输出。</p></div></div>
                     <label class="sr-only" for="workflowTemplateSelect">流程模板</label>
@@ -189,7 +184,7 @@
                 </div>
                 <div class="patch-card workflow-history-card">
                     <div class="patch-table-header workflow-history-header"><div><h3>流程运行记录</h3><p>查看当前登录用户创建的所有智能开发流程。</p></div><button id="workflowHistoryRefresh" class="patch-secondary-btn">刷新</button></div>
-                    <div class="patch-table-wrap"><table class="patch-table workflow-history-table"><thead><tr><th>流程模板</th><th>业务需求</th><th>状态</th><th>步骤</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="workflowHistoryBody"><tr><td colspan="6" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-table-wrap"><table class="patch-table workflow-history-table patch-actions-table"><thead><tr><th>流程模板</th><th>业务需求</th><th>状态</th><th>步骤</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="workflowHistoryBody"><tr><td colspan="6" class="patch-empty">正在加载...</td></tr></tbody></table></div>
                     <div class="patch-pagination"><button id="workflowHistoryPrev" class="patch-secondary-btn">上一页</button><span id="workflowHistoryPageInfo">第 1 页</span><button id="workflowHistoryNext" class="patch-secondary-btn">下一页</button></div>
                 </div>
             </section>
@@ -198,7 +193,7 @@
                 <div class="patch-card admin-panel">
                     <div class="admin-section-header"><div><h2>流程设置</h2><p>可管理自己的流程；管理员共享流程仅可查看和使用。</p></div><button id="patchNewFlow" class="patch-primary-btn">新增流程</button></div>
                     <div id="patchFlowMessage" class="patch-message"></div>
-                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>编码</th><th>名称</th><th>调用位置</th><th>保存上下文</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchFlowBody"></tbody></table></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>编码</th><th>名称</th><th>调用位置</th><th>保存上下文</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchFlowBody"></tbody></table></div>
                 </div>
             </section>
 
@@ -206,7 +201,7 @@
                 <div class="patch-card admin-panel prompt-data-panel">
                     <div class="admin-section-header"><div><h2>提示词设置</h2><p>可管理自己的提示词；管理员共享提示词仅可查看和使用。</p></div><button id="patchNewPrompt" class="patch-primary-btn">新增提示词</button></div>
                     <div id="patchPromptMessage" class="patch-message"></div>
-                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>名称</th><th>描述</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchPromptBody"></tbody></table></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>名称</th><th>描述</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchPromptBody"></tbody></table></div>
                 </div>
             </section>
 
@@ -223,7 +218,7 @@
                 <div class="patch-card admin-panel">
                     <div class="admin-section-header"><div><h2>产品版本管理</h2><p>维护产品名称与版本号字典，补丁上传和编辑时通过下拉选择。删除产品不影响历史补丁数据。</p></div><button id="patchNewProduct" class="patch-primary-btn">新增产品</button></div>
                     <div id="patchProductMessage" class="patch-message"></div>
-                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>产品名称</th><th>排序</th><th>版本数</th><th>操作</th></tr></thead><tbody id="patchProductBody"><tr><td colspan="4" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>产品名称</th><th>排序</th><th>版本数</th><th>操作</th></tr></thead><tbody id="patchProductBody"><tr><td colspan="4" class="patch-empty">正在加载...</td></tr></tbody></table></div>
                 </div>
             </section>
 
@@ -231,7 +226,7 @@
                 <div class="patch-card admin-panel">
                     <div class="admin-section-header"><div><h2>工作目录</h2><p>管理当前用户可用的工作目录。管理员创建的内置目录仅可查看和使用。</p></div><button id="patchNewDirectory" class="patch-primary-btn">新增目录</button></div>
                     <div id="patchDirectoryMessage" class="patch-message"></div>
-                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>编码</th><th>名称</th><th>路径</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="patchDirectoryBody"></tbody></table></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>编码</th><th>名称</th><th>路径</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="patchDirectoryBody"></tbody></table></div>
                 </div>
             </section>
 
@@ -239,10 +234,37 @@
                 <div class="patch-card admin-panel">
                     <div class="admin-section-header"><div><h2>流程模板设置</h2><p>可管理自己的模板；管理员共享模板仅可查看和使用。</p></div><button id="patchNewTemplate" class="patch-primary-btn">新增模板</button></div>
                     <div id="patchTemplateMessage" class="patch-message"></div>
-                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>编码</th><th>名称</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchTemplateBody"></tbody></table></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>编码</th><th>名称</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchTemplateBody"></tbody></table></div>
+                </div>
+            </section>
+
+            <section id="patchTabMenus" class="patch-tab-panel">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>普通用户默认</h2><p>控制普通用户登录后可见的菜单。管理员始终可见全部菜单，不受此处设置影响。隐藏后对应接口也会拒绝访问。</p></div><button id="patchMenuRoleSave" class="patch-primary-btn">保存</button></div>
+                    <div id="patchMenuRoleMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>菜单</th><th>菜单键</th><th>普通用户可见</th><th>来源</th></tr></thead><tbody id="patchMenuRoleBody"><tr><td colspan="4" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                </div>
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>用户例外</h2><p>为个别用户单独覆盖菜单可见性。「跟随角色默认」表示使用上方设置。待分析补丁、产品版本管理仅管理员可用，此处开关只影响页签显隐。</p></div><div class="patch-analysis-actions"><input id="patchMenuUserSearch" class="patch-input" type="search" placeholder="输入用户名筛选后回车" autocomplete="off"><select id="patchMenuUserSelect" class="patch-input"><option value="">选择用户</option></select><button id="patchMenuUserSave" class="patch-primary-btn">保存</button></div></div>
+                    <div id="patchMenuUserMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>菜单</th><th>角色默认</th><th>例外设置</th><th>实际可见</th></tr></thead><tbody id="patchMenuUserBody"><tr><td colspan="4" class="patch-empty">请选择用户</td></tr></tbody></table></div>
                 </div>
             </section>
                 </div>
+                <aside class="patch-user-sidebar" id="patchUserSidebar">
+                    <section class="patch-card patch-user-summary">
+                        <h3>我的数据</h3>
+                        <div id="patchUserMetrics" class="patch-user-metrics">正在加载...</div>
+                    </section>
+                    <section class="patch-card patch-leaderboard">
+                        <h3>贡献榜 TOP 10</h3>
+                        <div id="patchLeaderboard" class="patch-leaderboard-list">正在加载...</div>
+                    </section>
+                    <section class="patch-card patch-leaderboard">
+                        <h3>活跃榜 TOP 10</h3>
+                        <div id="patchActivityLeaderboard" class="patch-leaderboard-list">正在加载...</div>
+                    </section>
+                </aside>
             </div>
         </main>
     </div>
@@ -255,7 +277,7 @@
         </div>
         <div class="help-panel-body">
             <section>
-                <h3>补丁中心</h3>
+                <h3>智能开发</h3>
                 <ul>
                     <li>登录后可在<b>普通检索</b>按名称、描述、类名或关键词搜索已分析补丁。</li>
                     <li><b>补丁上传</b>支持拖拽或选择 zip/rar，多个文件可批量上传。</li>
