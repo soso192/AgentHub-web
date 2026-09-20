@@ -1056,8 +1056,13 @@ html.help-panel-closed .help-panel { transform: translateX(102%); }
 .patch-admin-form label.patch-inline-field { display: flex; flex-direction: row; align-items: center; gap: 10px; }
 .patch-admin-form label.patch-inline-field > .patch-inline-label { flex: 0 0 auto; display: inline-flex; align-items: center; min-width: 5em; }
 .patch-admin-form label.patch-inline-field > input,
-.patch-admin-form label.patch-inline-field > select { flex: 1 1 auto; width: auto; min-width: 0; margin-top: 0; }
+.patch-admin-form label.patch-inline-field > select,
+.patch-admin-form label.patch-inline-field > textarea { flex: 1 1 auto; width: auto; min-width: 0; margin-top: 0; }
 .patch-admin-form label.patch-inline-field > datalist { display: none; }
+/* 产品环境变量：标签文字长短不一（2~7 个字），统一标签宽度，右侧控件左边缘才能对齐；
+   文本框高度按 rows 走，不要吃 .patch-admin-form textarea 的 96px 下限。 */
+.patch-admin-form.project-env-form label.patch-inline-field > .patch-inline-label { min-width: 8em; }
+.patch-admin-form.project-env-form label.patch-inline-field > textarea { min-height: 40px; }
 .patch-admin-form fieldset { display: grid; gap: 10px; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; }
 .patch-admin-form legend { color: var(--text-secondary); font-size: 12px; padding: 0 7px; font-weight: 600; }
 .patch-admin-form .template-context-option { color: var(--text-muted); font-weight: 500; }
@@ -1369,6 +1374,8 @@ body.patch-col-resizing * { cursor: col-resize !important; user-select: none !im
 .patch-version-add .patch-secondary-btn { margin-bottom: 1px; white-space: nowrap; }
 .patch-version-list { display: grid; gap: 6px; }
 .patch-version-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--bg); font-size: 13px; }
+/* 版本号占满左侧，「是否删除」与删除按钮靠右对齐 */
+.patch-version-row > .patch-version-name { flex: 1; }
 .patch-progress { grid-column: 1 / -1; position: relative; display: flex; align-items: center; gap: 8px; background: var(--bg-hover); height: 6px; border-radius: 4px; overflow: visible; }
 .patch-progress span { display: block; width: 0; height: 100%; background: var(--accent); border-radius: 4px; transition: width .15s; }
 .patch-progress em { position: absolute; left: 0; top: 100%; margin-left: 8px; color: var(--text-muted); font-size: 10px; font-style: normal; white-space: nowrap; }

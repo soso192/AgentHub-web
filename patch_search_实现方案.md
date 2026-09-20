@@ -2105,4 +2105,414 @@ location.href = `index.html?resume=1&sid=${encodeURIComponent(sid)}&cwd=${encode
 - 手填本机路径启动：`directory_type='manual'`，`directory_code`/`directory_id` 为 NULL，`resolved_directory` 为所填路径。
 - `server` 流程忽略 `directory_bindings`。
 - `local` 步骤执行期间运行列表显示"执行中"，结果回传后显示"待确认"，点击"下一步"后下一步显示"执行中"，全部完成显示"已完成"。
-- 删除个人目录需二次确认，确认后从列表消失；停用仅状态变为"停用"。
+- 删除个人目录需二次确认，确认后从列表消失；停用仅状态变为“停用”。
+
+---
+
+## 二十、问题解决节点（本地 ClaudeCode 分析 + 补丁合并）
+
+> 状态：方案已定，**未实现**。
+> 定位：在**智能开发**页签内新增一个本地执行的「问题解决」节点。不走聊天页，也不走 patch_search 的流程引擎。
+> 关联功能：表单项之一的「关联的产品环境变量」来自既有功能 `project_environment`（本文档尚未收录该表，见 `app/routes/project_env.py` 与 `schema/current_schema.sql`）。
+
+### 20.1 需求
+
+表单项四项：
+
+| 表单项 | 说明 |
+|---|---|
+| 问题/需求描述 | 必填。要解决的问题或要实现的需求 |
+| 关联的产品环境变量 | 必填。下拉，取自当前用户的 `project_environment` 条目，选中后带出 `product/version`、`code_directory`、`package_path`、`local_jdk_path` |
+| 补丁输出路径 | 必填。本机绝对目录，产物（补丁 zip / SQL / 说明）写到这里 |
+| 相关日志信息 | 选填。粘贴的报错栈/日志文本 |
+
+点「开始执行」→ 调用**本机** ClaudeCode，拼接提示词，分析**产品源码 + 客开代码** → 产出修改方案：
+
+- 代码相关问题 → 直接给出补丁包（`java_compiler_mcp` 的 zip 补丁包）
+- 数据库/配置问题 → 给出对应 SQL 或实现方案，写进 txt 文档
+
+执行结束后页面出现两个按钮：**问题未解决** / **问题已解决**。点「问题已解决」→ 把改动**合并回客开工程**，这一步同样由 ClaudeCode 执行，且**与给出方案在同一个会话中**。
+
+### 20.2 路线选择：路线 A（cc-web 会话复用），不新建服务端流程
+
+| 维度 | 路线 A：复用 cc-web 会话 | 路线 B：接进 patch_search 流程引擎 |
+|---|---|---|
+| 执行体 | cc-web 的 `/api/agent/*`，一个会话连续两次 start | `workflow_run` + `local_call_required` 轮询认领 |
+| **同一会话** | **天然满足**（见 20.4） | 需绕开 `/api/local-claude/execute` 无 `--resume` 的限制 |
+| 交互形态 | 表单 + 流式过程 + 两个判定按钮，可自定义 | 受流程模板的「步骤 + 下一步 + 待确认」形态约束 |
+| 改动面 | 只加 cc-web 的 `static/*` 与一个 `node_runs.json` 接口 | 需新增模板/步骤语义，且要部署 patch_search |
+| 结论 | **选 A** | 否 |
+
+**读法二**（已确认）：合并 = 把改动**合并回客开代码目录**（`code_directory`，即仓库根）；`java_generate_patch` 产出的 zip 是**部署用的副产品**，不参与合并。
+
+### 20.3 为什么能放在「智能开发」里而不必进聊天页
+
+`patches.html` 与 `index.html` 是**同源**的（同一个 cc-web 进程、同一个 3030 端口）：
+
+- 调 cc-web 自己的 `/api/agent/*`、`/api/sessions/*`、`/api/node/*` 用普通 `fetch` 即可，**不涉及 CORS**
+- 调 patch_search 仍走既有的 `patchRequest`（跨域，`main.rs:228-235` 的 `allow_any_origin` 已放开）
+- 页签机制可直接复用：
+  - `data-tab="node"` 自动对应面板 id `patchTabNode`（`patches.js:1176/1191` 的 `patchTab${tab[0].toUpperCase()}${tab.slice(1)}` 推导）
+  - `patchSwitchTab` 末尾按 `tab === ...` 触发首次加载（`patches.js:1195-1203`），新增一行 `if (tab === 'node' ...) loadProblemRuns();`
+  - 左侧导航项照 `patches.html:18-64` 的 `<a class="patch-sidenav-item" data-sidenav-tab="node">` 结构加一条，`patchSyncSidenavVisibility()`（`patches.js:120`）会自动同步显隐
+
+### 20.4 会话复用：为什么不需要改 `claude.rs` / `agent.rs`
+
+这是路线 A 成立的核心：
+
+1. `POST /api/agent/new` 建会话 → `POST /api/agent/{id}/start` 发提示词（`agent.rs:67` / `:155`）。
+2. cc-web 从 claude CLI 的 `system/init` 事件拿到真实 session id，写进 `Session.agent_session_id`，并持久化到 `~/.cc-web/sessions.json`（`main.rs:57-101`）。
+3. **从第二次 start 起自动带 `--resume`**（`claude.rs:806-809`），上下文延续——这就是「同一个会话」。
+4. `session.cwd` 每次 start 都被复用（`claude.rs:813-819`），两阶段天然同目录。
+
+→ 所以两个阶段只是**对同一个 cc-web 会话连续 start 两次**，`claude.rs` 与 `agent.rs` 零改动。
+
+**反面**（为什么不能用 `/api/local-claude/execute`）：那条路走 `execute_once_with_session`，是唯一的**无 `--resume`** 分支（`LocalClaudeRequest` 也没有 resume 字段），每次都是全新进程 → 无法满足「同一个会话」。
+
+### 20.5 ⚠️ `--resume` 与 cwd 强绑定（已实测）
+
+实测：同一目录 `--resume` 正常返回；换一个目录报 `No conversation found with session ID: a0a5c23d-...`。
+
+三条推论：
+
+1. 两阶段的 cwd **必须一致** → 靠 `/api/agent/{id}/start` 复用 `session.cwd` 天然满足，不需要额外机制。
+2. 「让 Claude 只读、不许改客开工程」**不能靠临时换目录实现**（换目录就 resume 不上）。
+3. 所以约束不能加在 cwd 上，只能加在「**改动写到哪**」上。
+
+**结论（已定稿）**：cwd 两个阶段都是 `code_directory`（客开工程，仓库根）——**claude 就在客开工程里干活**，全量读、grep、分析；但**不许就地改**，任何修改都先落到 `<补丁输出路径>/<runId>/work` 这个**暂存目录**里，点「问题已解决」后才同步回 `code_directory`。
+
+```text
+cwd       = code_directory（客开工程根）        ← 两个阶段都是它，resume 才成立
+outDir    = <补丁输出路径>/<runId>              ← 产物：zip / 方案.txt / changes.txt / 结论.md
+stageDir  = <outDir>/work                       ← 只放"被改过的那几个文件"，镜像 src/<type>/... 结构
+阶段一：在 code_directory 里只读分析。要改某文件 → 先按同样相对路径把它复制到 stageDir，再在 stageDir 里改
+阶段二：把 stageDir 里的文件复制回 code_directory 的对应相对路径
+```
+
+**为什么不是"复制整份工程"**：不需要。补丁包的编译只需要「改动的那几个文件 + 一份能提供其余类的 classpath」，而这份 classpath 正好由环境里的 `package_path`（"home/war包地址"）提供。
+
+**已读源码验证（`D:\project\mcpadd\java_compiler_mcp.py`）**：
+
+- files 模式**只编译传入的 `.java`**：`java_generate_patch` → `_compile_java_files(files, java_home, params.home, ...)`（`:1144`）。
+- classpath = 本次已编译产物 + `_scan_home_directory(params.home)` 递归扫出的 `classes` 目录与 `*.jar`（`_compile_java_files` 在 `:796`，扫描器在 `:137`）。**所以 `home` 要传环境里的 `package_path`**——它正是"含 jar 和 class 的依赖根"，`java_generate_patch` 的 `home` 参数文档写的就是这个意思。
+- 按 `src/public → src/private → src/client → other` 顺序**分组编译**，前一组的产物加到后一组 classpath 最前面（`:1132-1147`）→ 同批改动的跨文件引用能解析。
+- 目标路径由 `_get_target_path(相对 module_path 的路径, module_name)` 推出（`:1159`）→ **stageDir 必须镜像 `src/<type>/...` 的相对结构**，并且调用时要给出 `module_name`。
+
+**好处（相对复制整仓）**：不复制仓库（大工程省掉一次全仓拷贝）；cwd 是真实工程，claude 能全量分析客开代码——这正是"在客开工程干活"的意思；补丁 zip 只含改动的 class，更小更准。
+
+**代价与安全网**：
+
+- **"只读"是提示词约束，不是技术隔离**（cwd 就是真实工程，且 cc-web 是 `bypassPermissions`）。所以必须配校验：阶段一每次 claude 回合结束后，在 `code_directory` 跑 `git status --porcelain`，非空即说明越界改了真实文件 → 在页面上报警。客开工程多数是 git 仓库，这也是 20.14 里"用户能自己核对/回退"的前提。
+- **越界了不自动回滚**：此时用户自己可能也在改同一个工程，自动 `git checkout` 会误伤。只报警，由用户判断。
+- 非 git 仓库：跳过该校验，只靠提示词约束，并在表单旁提示"建议在 git 仓库内使用"。
+
+### 20.6 存储分层（「永久保存」的答案）
+
+一条 run 里有三种寿命完全不同的东西，必须分三层放：
+
+| 层 | 存什么 | 放在哪 | 寿命 |
+|---|---|---|---|
+| 运行态 | 跑到哪一步、cc-web 会话 id、claude 会话 id、cwd、stageDir、产物清单 | 本机 `~/.cc-web/node_runs.json` | 跟机器走；重启/重装 cc-web 不丢；**换机不可用** |
+| 产物态 | 补丁 zip、SQL、方案.txt、changes.txt、结论.md、`run.json` | `outDir`（补丁输出路径） | 跟目录走；**建议放在客开工程内 → 跟着 git 走，异地多份，真正永久** |
+| 摘要态 | 问题描述、产品/版本、状态、结论摘要、操作人、机器名 | patch_search 的 `problem_run` 表 | 服务器寿命；团队可见、可统计 |
+
+关键判断（解释为什么不需要把运行态搬进数据库）：
+
+- **合并成功那一刻，补丁包的使命就结束了**——按读法二，它的内容已经变成客开工程源码的一部分，而客开工程（大多）是 git 仓库。所以「补丁包永久保存」不是真需求；把**合并**做对，永久保存就自动完成。
+- **运行态搬进数据库也换不到能力**：claude 的会话文件在 `~/.claude/projects/*/` 本机磁盘、按 cwd 索引，换机后 `--resume` 必然 `No conversation found`，输出目录的绝对路径也不存在。「已解决」按钮在新机器上点不动。存在服务器上只能让这条记录在别处**可见**，而它 100% 的价值在**能动**。可见 ≠ 可用。
+- **数据库存不下产物本身**（BLOB 不现实），所以服务器那份「永久」本来就是半截的——真东西仍在某台机器磁盘上。多一层索引救不了产物。
+- 因此服务器表是**只写摘要的账本**，不是运行的事实来源（见 20.8 的措辞约束）。
+
+一句话：**永久保存靠的不是「存在哪」，是「有没有一份跟着工程走」**。
+
+### 20.7 本地运行清单 `~/.cc-web/node_runs.json`
+
+照搬 `sessions.json` 的既有做法（`main.rs:62` 的 `data_dir.join("sessions.json")`、`:66` 读、`:86/:101` 写）：
+
+- `src/main.rs`：新增 `node_runs.json` 路径 + `load/save_node_runs_to_disk`，启动时载入（对照 `:200`）、变更后异步落盘。
+- `src/api/node_runs.rs`（新增）：
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/node/runs` | 返回全部 run（本机清单，无需分页） |
+| `PUT /api/node/runs/{id}` | **upsert**：整对象覆盖式写入，不存在则创建。前端每阶段结束/每次状态变化都 PUT |
+| `DELETE /api/node/runs/{id}` | 从清单移除（**不删** outDir 里的产物，也不删 cc-web 会话） |
+
+run 对象（前端持有，cc-web 只做透明存取，**不解释字段**）：
+
+```json
+{
+  "id": "uuid",
+  "problem_desc": "…",
+  "env_id": 3,
+  "env_snapshot": { "project_name": "…", "product_name": "…", "product_version": "…",
+                    "code_directory": "D:\\repo", "package_path": "D:\\home",
+                    "local_jdk_path": "D:\\Software\\jdk-17" },
+  "patch_output_path": "D:\\patch-runs\\20260920-1",
+  "log_info_inline": "短日志原文",
+  "log_info_path": "<outDir>\\logs.txt",
+  "session_id": "cc-web 会话 id",
+  "agent_session_id": "claude 会话 id",
+  "stage_dir": "<outDir>\\work",
+  "phase": "analyzing | awaiting_decision | merging | done | failed",
+  "verdict": null,
+  "report": "claude 最终结论文本",
+  "artifacts": ["<outDir>\\patch.zip", "<outDir>\\方案.txt", "<outDir>\\changes.txt"],
+  "reported": false,
+  "created_at": "…", "updated_at": "…"
+}
+```
+
+- `env_snapshot` 存**快照**而不是只存 `env_id`：环境条目事后再被编辑/删除时，这条 run 仍然自解释。
+- 日志信息若很长，写进 `<outDir>/logs.txt`，清单里只留路径，避免 `node_runs.json` 膨胀（它每次状态变化都要整体落盘）。
+
+### 20.8 服务器表 `problem_run`（patch_search）
+
+> 措辞约束：**本表是本机 `node_runs.json` 的只写摘要账本，不是运行的事实来源。**任何执行/判定逻辑都不得以本表状态为驱动依据。
+
+```sql
+CREATE TABLE `problem_run` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '运行记录主键',
+  `local_run_id` varchar(64) NOT NULL COMMENT '客户端生成的运行标识，幂等键',
+  `problem_desc` text NOT NULL COMMENT '问题/需求描述',
+  `env_id` bigint(20) unsigned DEFAULT NULL COMMENT '关联的产品环境变量 ID',
+  `env_project_name` varchar(255) DEFAULT NULL COMMENT '环境快照：项目名称',
+  `product_id` bigint(20) unsigned DEFAULT NULL COMMENT '产品字典 ID',
+  `version_id` bigint(20) unsigned DEFAULT NULL COMMENT '版本字典 ID',
+  `code_directory` varchar(1024) DEFAULT NULL COMMENT '环境快照：客开代码目录（本机路径）',
+  `patch_output_path` varchar(1024) DEFAULT NULL COMMENT '环境快照：补丁输出路径（本机路径）',
+  `status` varchar(32) NOT NULL DEFAULT 'running' COMMENT 'running 执行中、awaiting_decision 待判定、solved 已解决、unsolved 未解决、merge_failed 合并失败、aborted 已中断',
+  `conclusion` text COMMENT '结论摘要（简短结论 / 改动说明）',
+  `claude_session_id` varchar(128) DEFAULT NULL COMMENT 'claude 会话 id；仅同一台客户端机器可用于继续会话',
+  `client_host` varchar(128) DEFAULT NULL COMMENT '执行该运行的客户端机器名',
+  `started_at` datetime DEFAULT NULL COMMENT '开始执行时间',
+  `finished_at` datetime DEFAULT NULL COMMENT '结束时间',
+  `created_by_user_id` bigint(20) unsigned NOT NULL COMMENT '创建用户 ID',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_problem_run_local_id` (`local_run_id`),
+  KEY `idx_problem_run_owner_time` (`created_by_user_id`,`id`),
+  KEY `idx_problem_run_status` (`status`),
+  CONSTRAINT `fk_problem_run_owner` FOREIGN KEY (`created_by_user_id`) REFERENCES `user_account` (`id`),
+  CONSTRAINT `fk_problem_run_env` FOREIGN KEY (`env_id`) REFERENCES `project_environment` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='问题解决节点运行摘要表';
+```
+
+字段说明：
+
+| 字段 | 类型 | 可空 | 含义 / 约束 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | 否 | 自增主键。 |
+| `local_run_id` | VARCHAR(64) | 否 | 客户端生成的 uuid，**唯一键即幂等键**：上报天然可重试，不需要"先查后插"。 |
+| `problem_desc` | TEXT | 否 | 问题/需求描述。 |
+| `env_id` | BIGINT UNSIGNED | 是 | 关联的产品环境变量；环境被删则置 NULL（`ON DELETE SET NULL`），历史记录不丢。不想与 `project_environment` 耦合时可去掉该外键，只留列。 |
+| `env_project_name` | VARCHAR(255) | 是 | 环境快照。环境改名/删除后本记录仍可读。 |
+| `product_id` / `version_id` | BIGINT UNSIGNED | 是 | 产品/版本字典 ID。与 `project_environment` 的做法一致：**只存 ID、不存名称文本**，展示时 `LEFT JOIN product` / `product_version` 取名称；字典是逻辑删除、行永远在，所以历史记录永远显示得出名字，且管理员改名后自动跟随。 |
+| `code_directory` / `patch_output_path` | VARCHAR(1024) | 是 | 环境快照，本机绝对路径，**仅供看懂"在哪台机器、哪个目录"**，服务端不校验、不访问。 |
+| `status` | VARCHAR(32) | 否 | 见下方状态表。 |
+| `conclusion` | TEXT | 是 | 结论摘要，供团队检索/回顾。**不存日志正文**（体积不可控，且可能含敏感信息）；需要原文时读本机 `outDir`。 |
+| `claude_session_id` | VARCHAR(128) | 是 | claude 会话 id。仅用于列表页「继续会话」（第十八章的 `?resume=1&sid=&cwd=` 机制），**只在原机器有效**。 |
+| `client_host` | VARCHAR(128) | 是 | 客户端机器名，用于解释"为什么这条记录在我这不能继续会话"。 |
+| `started_at` / `finished_at` | DATETIME | 是 | 用于统计耗时；由客户端上报。 |
+| `created_by_user_id` | BIGINT UNSIGNED | 否 | 创建用户，外键关联 `user_account.id`。 |
+| `created_at` / `updated_at` | DATETIME | 否 | 创建/更新时间。 |
+
+状态流转：
+
+```text
+running ──(阶段一结束)──> awaiting_decision ──┬─(点已解决，合并成功)─> solved
+                                              ├─(点已解决，合并失败)─> merge_failed
+                                              └─(点未解决)──────────> unsolved
+running ──(阶段一失败/中断)──> aborted
+```
+
+**刻意不做的设计**（避免误用）：
+
+- 不加 `workflow_run_id` / 不接流程引擎：本节点与流程模板是两套东西，混在一起会让「步骤」语义污染。
+- 不存 `log_info` 正文、不存 `env_snapshot` 整体 JSON：前者体积不可控，后者把本机会变的东西搬上服务器。
+- 不做运行态字段（不存 `phase`、`session_id` 之外的进度）：一旦服务器上出现了"进度"，就会有人想用它来驱动执行。
+
+### 20.9 服务器接口（`app/routes/problem_runs.py`，新增并注册到 `app/main.py`）
+
+| 接口 | 权限 | 说明 |
+|---|---|---|
+| `POST /api/problem-runs` | 任意登录用户 | 上报/更新一条运行摘要。按 `local_run_id` 做 `INSERT ... ON DUPLICATE KEY UPDATE`，**只允许写自己创建的行**（命中他人行返回 403） |
+| `GET /api/problem-runs` | 任意登录用户 | 本人运行摘要列表，按 `id DESC`；`LEFT JOIN product/product_version` 带出名称 |
+| `GET /api/problem-runs/{local_run_id}` | 本人 | 单条详情 |
+| `DELETE /api/problem-runs/{local_run_id}` | 本人 | 删除记录（**不回删**本机产物与 cc-web 会话） |
+
+- 用户隔离照 `project_env.py` 的做法：所有读写带 `WHERE created_by_user_id=%s`，**admin 也只看自己**（不能复用 `workflows.py` 的 `visible_where`，那套会把管理员创建的行当共享行泄露出去）。
+- **不做管理员查看全部**（已拍板）：不提供 `?all=1`，也没有"团队视图"。本表就是每个用户自己的运行账本。
+- 是否加菜单权限：本节点在 cc-web 侧是**默认可见**（见 20.13 第 3 条），因此本表**不需要**进 `menu_service.MENU_CATALOG`。
+
+### 20.10 上报策略（服务器不可用不能阻塞干活）
+
+- 上报是 **fire-and-forget**：`POST /api/problem-runs` 无论成功失败都不打断流程，不弹错误提示（失败只在日志里记一行）。
+- 失败时本地 run 保持 `reported: false`；进入「问题解决」页签、或下一次状态变化时**补报**。
+- 上报内容永远来自本地 `node_runs.json`（本地是事实来源），服务器**不反向覆盖**本地。
+
+### 20.11 页面与表单（`static/patches.html` + `static/patches.js`）
+
+**表单**（新增 `patchNodeSetupModal` 风格的弹窗或页内表单）：
+
+| 字段 | 控件 | 说明 |
+|---|---|---|
+| 问题/需求描述 | textarea，必填 | |
+| 关联的产品环境变量 | select，必填 | 选项来自 `GET /api/project-envs`（既有接口），显示 `项目名称（产品名 版本号）`；选中后把 `code_directory/package_path/local_jdk_path` 存进 `env_snapshot` |
+| 补丁输出路径 | input，必填 | 本机绝对路径。**不设默认值**（已拍板），每次由用户自己填；只做"非空 + 绝对路径"的前端校验 |
+| 相关日志信息 | textarea，选填 | 超过阈值（如 8KB）时前端提示"将写入 logs.txt" |
+
+注：编译依赖根（`home`）不单独填，取所选环境的 `package_path`（"home/war包地址"）；JDK 取环境的 `local_jdk_path`。这两个值都进 `env_snapshot` 并在提示词里给 claude。
+
+**流程区**（执行中/结束后的展示）：
+
+- 执行中：流式输出区（同聊天页渲染思路）+ 「中断」按钮（调 `POST /api/agent/{id}/abort`，`agent.rs:930`）
+- 结束后：**问题未解决** / **问题已解决** 两个按钮 + 产物清单（zip / 方案.txt / changes.txt / 结论.md，可点击提示路径）+ 「查看完整会话」
+- 点「问题已解决」前先把 `<outDir>/changes.txt` 展示给用户（见 20.14 的风险说明），再二次确认
+
+**运行列表**（合并视图 = 本机 `node_runs.json` ∪ 服务器 `problem_run`，按 `local_run_id` 去重、**本地优先**）：
+
+| 列 | 说明 |
+|---|---|
+| 时间 | `created_at` |
+| 问题/需求描述 | 截断显示 |
+| 产品·版本 | 名称 |
+| 状态 | `phase` / `status` 映射为中文：执行中、待判定、已解决、未解决、合并失败、已中断 |
+| 结论 | `report` / `conclusion` 摘要 |
+| 操作 | **本地有** → `继续查看`（打开该 run 的流程区，流式区不重放、只显示已存结果）/ 未解决 / 已解决（未判定时）/ `继续会话`（跳聊天页，见 20.15）/ `删除记录`；**仅服务器有**（换机后）→ 显示「仅存档」并禁用一切操作按钮，`client_host` 列提示原机器。**不做「重跑」**（已拍板）：失败或未解决后要再做一次，就新建一个 run |
+
+### 20.12 两阶段提示词（v1 硬编码在 cc-web）
+
+**阶段一（分析 + 出方案）**，拼成一个 user prompt：
+
+```text
+【问题 / 需求】
+{problem_desc}
+
+【相关日志】
+{log_info}
+
+【环境】
+产品：{product_name} {product_version}
+产品源码：通过 patch_source MCP 检索（root: src）
+客开工程根（你现在的工作目录）：{code_directory}
+暂存目录（改动只能写到这里）：{stageDir}
+补丁输出目录：{outDir}
+工程 home / war 包地址（编译依赖根）：{package_path}
+JDK：{local_jdk_path}
+
+【任务】
+1. 结合产品源码与客开代码定位问题根因，先给出简短分析。
+2. 代码类问题：
+   a) 从 {code_directory} 只读地读出你要改的文件，在 {stageDir} 下按**同样相对路径**建副本
+      （例如 {code_directory}/src/client/ncbs/x/Foo.java → {stageDir}/src/client/ncbs/x/Foo.java）；
+   b) 只修改 {stageDir} 里的副本；
+   c) 调用 java_compiler_mcp 的 java_generate_patch 生成补丁 zip：
+      module_path = {stageDir}
+      module_name = <你在第 1 步确定的模块名>
+      home        = {package_path}
+      files       = 你改过的那些文件（相对 module_path 的路径）
+      java_home   = {local_jdk_path}
+      产物输出到 {outDir}。
+3. 数据库/配置类问题：把对应 SQL 或实现方案写进 {outDir}/方案.txt。
+4. 把本次改动的文件清单（每行一个，相对 {code_directory} 的路径）写进 {outDir}/changes.txt。
+5. 把结论、以及你使用的 module_name / 模块根路径，写进 {outDir}/结论.md。
+
+【约束】
+- **绝对不要修改 {code_directory} 下的任何文件**，也不要新建/删除它下面的任何东西。
+  （阶段二经用户确认后才会把改动同步过去。）
+- 不要改动 .git 目录，不要执行 git commit / push / checkout。
+- 分析源码走 patch_source MCP，不要试图遍历全树（性能原因，见相关记录）。
+```
+
+**阶段二（同步回客开工程，仍在该会话）**，另发一个 user prompt：
+
+```text
+用户已确认问题已解决。
+1. 读取 {outDir}/changes.txt。
+2. 把其中列出的文件，从 {stageDir} 复制回 {code_directory} 的对应相对路径（覆盖）。
+3. 若某个目标文件在此期间被改动，导致内容与 {stageDir} 中的基线不一致，**停止并报告**，
+   不要覆盖，也不要尝试自动合并。
+4. 把同步结果（成功/冲突清单）写入 {outDir}/合并说明.md。
+```
+
+**模块根与 `module_name`**（`java_generate_patch` 的 `module_path` 要的是**模块根**——含 `src/client|private|public` 的那一层，不是仓库根；`module_name` 对 `src/private`、`src/public` 的目标路径映射是必需的，见 `_get_target_path`）：
+
+- v1 方案：表单不加这两个字段，由 claude 在 `code_directory` 内自行判断，并把它用的 `module_name` / 模块根路径写进 `结论.md`；判断错时用户可在下一条消息里纠正（会话延续，不需要重跑）。
+
+### 20.13 五个必须处理的实现约束
+
+1. **SSE 无重放**：`/api/agent/{id}/events` 只做 `tx.subscribe()`，没有历史回放（`agent.rs:1113-1203`）。所以顺序必须是**先建 `EventSource` 并等到 `connected` 事件，再调 `/api/agent/{id}/start`**；反过来会丢开头的事件。
+2. **`/start` 无并发保护 → 要加守卫（已拍板）**：`start_prompt` 无条件往 `streaming_sessions` 插入（`agent.rs:404`），连点两次会**在同一个 stageDir 上跑两个 claude 进程**，两边同时改同一批文件。两层防护一起做：
+   - 前端：发起的瞬间 disable 按钮，直到收到 `result`/`error` 事件或用户点「中断」才恢复；
+   - 后端：在 `start_prompt` 进入流式之前先查 `data.streaming_sessions.read().unwrap().contains(&session_id)`，命中则直接返回 **409**（该会话正在执行中），不 spawn。收益是防御一切并发入口（含用户手工重放请求、多标签页）。
+3. **菜单不走 patch_search**：把 `node` 加进 `PATCH_MENU_KEYS`（`patches.js:91`）就会需要服务端下发 `menus`，即要改 `menu_service.MENU_CATALOG` 并**部署 patch_search**。v1 直接**默认可见**、**不进 `PATCH_MENU_KEYS`**——参照 `menus` 页签的先例（它是硬编码 admin-only、刻意不进清单，`patches.js:89/:113`）。这样前端可独立发布，零服务端依赖。
+4. **`java_generate_patch` 要模块根 + 只编译改动文件**：`module_path` 传 **stageDir**（它镜像的是模块结构），不是仓库根；`home` 必须传环境的 `package_path` 否则类解析不了；产物是编译后的 `.class`（zip 内含 `hotwebs/fbip/WEB-INF/classes/...` 或 `modules/<module_name>/...` 结构），不是源码——别把它当成"源码补丁"来解析。
+5. **越界校验**：阶段一每回合结束后在 `code_directory` 跑 `git status --porcelain`，非空即报警（见 20.5；不自动回滚）。
+
+### 20.14 「已解决」阶段的合并语义（读法二）
+
+- 合并**由 ClaudeCode 执行**（阶段二提示词），cc-web 不做文件搬运。
+- 合并内容 = `stageDir` 里被改动的文件 → 复制回 `code_directory` 对应相对路径；**zip 补丁包不参与合并**，它是给部署用的（只含改动的 class）。
+- 冲突处理：目标文件在阶段一之后被改动过 → 停止并报告，**不覆盖、不自动合并**（提示词已约束）。
+- **已知风险**：`changes.txt` 由 claude 自己在阶段一写出，理论上可能漏写或写错文件。
+  缓解措施：
+  1. 点「问题已解决」前把 `changes.txt` **展示给用户确认**；
+  2. 合并完成后在 `合并说明.md` 里列出实际复制的文件；
+  3. 读法二下被改的是**客开工程源码**（多数是 git 仓库），所以**用户可用 `git status/diff` 直接核对与回退**——这是读法二相对"直接覆盖打包目录"的最大安全垫。
+- 合并失败（含冲突）→ 本地 `phase=failed`、服务器 `status=merge_failed`，产物与 stageDir 全部保留，可手工处理（或按 20.19 的说法：暂不做重跑）。
+
+### 20.15 与「继续会话」的复用（第十八章）
+
+运行列表的「继续会话」直接复用第十八章已有的跳转协议：
+
+```js
+location.href = `index.html?resume=1&sid=${encodeURIComponent(agent_session_id)}&cwd=${encodeURIComponent(code_directory)}`;
+```
+
+注意 `cwd` **必须传 `code_directory`**（就是阶段一/阶段二的 cwd，不要传 stageDir 或 outDir）——因为 `--resume` 与 cwd 强绑定（20.5），传错目录会 `No conversation found`。这也是服务器表里 `claude_session_id` 只能在**原机器**使用的原因。
+
+### 20.16 已知限制
+
+- 换机后：运行态不可用（「已解决」点不动、「继续会话」失效），只有服务器摘要与 `outDir` 产物可读。这是设计取舍，不是缺陷（见 20.6）。
+- `outDir` **由用户必填、没有默认值**（已拍板），所以它放在工程外时产物就不随 git 走。页面需在输入框下方给一句提示："填在客开工程目录内可随 git 一起保存"，但**不代为选址、不自动填**。
+- 「只读」是提示词约束 + 事后 `git status` 校验，**没有技术级隔离**（cwd 必须是真实工程，换 cwd 会破坏 resume，是硬约束）。越界修改只报警、不自动回滚（用户可能同时在改）。
+- 编译只能验证"改动的这几个文件能过 javac"，**不能验证跨文件运行时语义**，也不跑单测。
+
+### 20.17 验收
+
+- 新建 run → `~/.cc-web/node_runs.json` 出现该条，`phase=analyzing`；`GET /api/problem-runs` 能查到对应行（`status=running`）。
+- 流式区能实时看到过程；执行结束后出现两个按钮，`phase=awaiting_decision`。
+- 产物齐备：`outDir` 下有 zip（代码类）或 `方案.txt`（配置类）、`changes.txt`、`结论.md`。
+- 点「问题未解决」→ 本地 `verdict` 落定、服务器 `status=unsolved`；`outDir` 不被改动。
+- 点「问题已解决」→ **同一个 claude 会话**继续（能引用阶段一的上下文，问"你上一步改了什么"答得出）→ `code_directory` 下对应文件内容更新、`outDir/合并说明.md` 生成、服务器 `status=solved`。
+- 冲突场景：合并前手工改动目标文件 → claude 停止并报告，`status=merge_failed`，目标文件**未被覆盖**。
+- **阶段一期间 `code_directory` 始终干净**：run 跑到 `awaiting_decision` 时，在 `code_directory` 跑 `git status --porcelain` 应无输出；改动只出现在 `stageDir`。
+- **越界报警**：手工制造一次越界（让 claude 直接改 `code_directory` 里的文件）→ 页面出现越界提示，且**没有**发生自动回滚。
+- zip 只含改动文件：解压补丁包，里面的 class 应当只有 `changes.txt` 列出的那几个（不是整模块）。
+- 把 patch_search 停掉：仍能完整跑完一个 run（上报失败静默），`reported:false`；恢复后进入页签自动补报成功。
+- 换一台机器打开同一账号：列表能看到服务器摘要行，显示「仅存档」，操作列禁用，`client_host` 显示原机器名。
+- 连点两次「开始执行」不会起两个进程：按钮已 disable；后端守卫命中时第二次请求返回 409（用 `curl` 手工重放 `/api/agent/{id}/start` 验一次）。
+- 回归：`智能开发`/`普通检索` 等既有页签不受影响；`GET /api/project-envs` 等既有接口行为不变。
+
+### 20.18 已拍板的取舍
+
+| 事项 | 结论 |
+|---|---|
+| `outDir` 默认值 | **不设默认值**，用户必填（只校验非空 + 绝对路径） |
+| `/api/agent/{id}/start` 并发守卫 | **加**（前端 disable + 后端 409，见 20.13 第 2 条） |
+| 「重跑」按钮 | **不做**（要再做一次就新建 run） |
+| 管理员查看全部 | **不做**，本表只有"自己看自己" |
+| cwd / 改动落点 | cwd = `code_directory`（claude 就在客开工程干活）；**不复制整仓**，改动只落 `stageDir`，已解决才同步回 `code_directory`（见 20.5） |
+
+### 20.19 仍需确认的一点
+
+**`module_name` 与模块根的判定**（20.12 末尾）：v1 让 claude 自己判断、写进 `结论.md`。如果实际用起来发现它经常判错，再考虑把"模块根相对路径 + module_name"加成产品环境变量的字段（那是改 `project_environment` 表，要部署后端）。**开工前不需要拍板，跑一轮看结果即可。**
+
+### 20.20 落地顺序
+
+1. **patch_search**：新建 `schema/migration_problem_run.sql`（照 `migration_*.sql` 的 `information_schema` 判存在 + `PREPARE/EXECUTE/DEALLOCATE` 幂等写法），同步 `schema/current_schema.sql`；新增 `app/routes/problem_runs.py` + 注册；在库上手工执行迁移；按既定方式**直调 PyInstaller** 重新打包（**不要用 `build.bat`**，它会删掉 `dist` 里的 `config.yaml`/`data`/`logs`）并部署。
+2. **cc-web**：`src/main.rs` 加 `node_runs.json` 载入/落盘；新增 `src/api/node_runs.rs` 三个接口；`src/api/agent.rs` 的 `start_prompt` 加并发守卫（20.13 第 2 条）；`static/patches.html` 加左侧导航项 + `data-tab="node"` 页签 + `patchTabNode` 面板（表单/流程区/运行列表）；`static/patches.js` 加 `loadProblemRuns`、`patchSwitchTab` 的分支、两阶段提示词与 `fetch('/api/agent/*')` 调用、`EventSource` 时序（先 connected 再 start）。
+3. **构建与分发**：`cargo build --release`（先停掉正在运行的 `cc-web.exe`，否则 os error 5）→ 覆盖 `D:\project\cc-web-dist\cc-web.exe`。`static/*` 是 `include_str!` 编译期内嵌，**改前端必须重编**。
+4. 建议拆两批：先做「本地 run 清单 + 单机全流程（含合并）」，跑通后再接服务器上报；上报是纯加法，可后置。

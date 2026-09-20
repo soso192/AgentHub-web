@@ -1,0 +1,18 @@
+{
+  "_comment": "cc-web 自带的 MCP 配置模板。复制一份到 ~/.cc-web/mcp-servers.json 后按机器实际情况改。用环境变量 CC_WEB_MCP_CONFIG 可以指定别的路径。改完要重启 cc-web 才生效（不做热加载）。格式与 claude --mcp-config 原生格式一致。",
+  "_comment_paths": "command / cwd / args 里以 '.' 开头（或含路径分隔符）的值，会被当成『相对 cc-web.exe 所在目录』的路径，启动时解析成绝对路径后再交给 Claude Code。所以一台机器上的配置可以直接复制到另一台，只要 MCP 可执行文件与 cc-web.exe 保持相同的相对布局。裸命令名（npx / node / python）走 PATH 查找，原样保留、不做拼接。已经是绝对路径的也原样保留。",
+
+  "mcpServers": {
+    "java_compiler_mcp": {
+      "type": "stdio",
+      "command": "..\\..\\..\\mcpadd\\.venv\\Scripts\\python.exe",
+      "args": ["..\\..\\..\\mcpadd\\java_compiler_mcp.py"]
+    },
+
+    "patch_source": {
+      "type": "http",
+      "url": "http://fast9.shenzhuo.vip:36665/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}

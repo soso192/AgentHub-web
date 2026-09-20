@@ -3,6 +3,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod mcp_config;
 pub mod pi;
 pub mod streaming;
 pub mod types;

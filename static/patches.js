@@ -2,7 +2,7 @@ const PATCH_PAGE_SIZE = 10;
 const PATCH_TOKEN_KEY = 'patch-search-access-token';
 const PATCH_REQUEST_TIMEOUT = 60000; // 单个服务地址单次请求超时（毫秒），超时视为该地址不可用并切换下一条
 
-const patchState = { page: 1, keyword: '', files: [], theme: 'light', patchSearchServers: [], patchServerCursor: 0, user: null, dashboard: null, authInvalidated: false, searchGeneration: 0, products: null, advancedOpen: false, advanced: { name: '', product: '', version: '', keyword: '', description: '' }, searchItems: [], admin: { kind: '', id: null, flows: [], prompts: [], templates: [], directories: [], directoryId: null, menuConfig: { roleItems: [], defaults: {}, users: [], userId: '' }, analysisPatches: [], selectedAnalysisIds: new Set(), analysisTimer: null, products: [], productId: null }, workflow: { runId: '', steps: [], currentStep: 0, status: '', source: null, token: '', lastEventId: 0, localExecutions: new Set(), templates: [] }, workflowHistory: { page: 1, size: 10, total: 0, items: [] }, workflowDetail: { runId: '', snapshot: null }, mine: { page: 1, size: 10, total: 0, items: [], generation: 0 } };
+const patchState = { page: 1, keyword: '', files: [], theme: 'light', patchSearchServers: [], patchServerCursor: 0, user: null, dashboard: null, authInvalidated: false, searchGeneration: 0, products: null, advancedOpen: false, advanced: { name: '', product: '', version: '', keyword: '', description: '' }, searchItems: [], admin: { kind: '', id: null, flows: [], prompts: [], templates: [], directories: [], directoryId: null, projectEnvs: [], projectEnvId: null, menuConfig: { roleItems: [], defaults: {}, users: [], userId: '' }, analysisPatches: [], selectedAnalysisIds: new Set(), analysisTimer: null, products: [], productId: null }, workflow: { runId: '', steps: [], currentStep: 0, status: '', source: null, token: '', lastEventId: 0, localExecutions: new Set(), templates: [] }, workflowHistory: { page: 1, size: 10, total: 0, items: [] }, workflowDetail: { runId: '', snapshot: null }, mine: { page: 1, size: 10, total: 0, items: [], generation: 0 } };
 
 // 服务地址由 cc-web 在代码内写死（可配多条），经 /api/patch-config 下发。
 // 轮询策略：每个请求取一个起始地址（游标后移实现轮询），若连不上/超时则依次切换下一条，
@@ -88,7 +88,7 @@ function patchInitTheme() {
 /* ── 菜单可见性（与后端 menu_service.MENU_CATALOG 顺序一致） ── */
 // 注意：管理端的 menus 页签不在此清单内，它是硬编码 admin-only，不受配置约束。
 // 顺序即左侧导航/页签顺序，首个可见项也是登录后默认停留的页签（智能开发优先）
-const PATCH_MENU_KEYS = ['smart', 'search', 'upload', 'mine', 'flow', 'prompt', 'template', 'analysis', 'product', 'directory'];
+const PATCH_MENU_KEYS = ['smart', 'search', 'upload', 'mine', 'flow', 'prompt', 'template', 'analysis', 'product', 'directory', 'project_env'];
 
 // 旧后端（/api/auth/me 无 menus 字段）时严格复刻改造前的显隐规则，保证前端可先于后端发布。
 function legacyMenuKeys(user, isAdmin) {
@@ -221,7 +221,7 @@ function patchSetAuthenticated(user) {
     const userChanged = previousUserId !== (user?.id ?? null);
     patchState.user = user || null;
     if (!authenticated || userChanged) resetWorkflowRunState();
-    if (!authenticated) { patchState.dashboard = null; document.getElementById('patchUserMetrics').textContent = '请登录后查看'; document.getElementById('patchLeaderboard').textContent = '请登录后查看'; document.getElementById('patchActivityLeaderboard').textContent = '请登录后查看'; patchState.workflowHistory = {page: 1, size: 10, total: 0, items: []}; patchState.workflowDetail = {runId: '', snapshot: null}; document.getElementById('workflowHistoryBody').innerHTML = '<tr><td colspan="6" class="patch-empty">暂无流程运行记录</td></tr>'; patchState.mine = {page: 1, size: 10, total: 0, items: [], generation: 0}; const mineBody = document.getElementById('patchMineBody'); if (mineBody) mineBody.innerHTML = '<tr><td colspan="7" class="patch-empty">请登录后查看</td></tr>'; patchState.products = null; patchState.admin.products = []; patchState.admin.productId = null; const productBody = document.getElementById('patchProductBody'); if (productBody) productBody.innerHTML = '<tr><td colspan="4" class="patch-empty">请登录后查看</td></tr>'; }
+    if (!authenticated) { patchState.dashboard = null; document.getElementById('patchUserMetrics').textContent = '请登录后查看'; document.getElementById('patchLeaderboard').textContent = '请登录后查看'; document.getElementById('patchActivityLeaderboard').textContent = '请登录后查看'; patchState.workflowHistory = {page: 1, size: 10, total: 0, items: []}; patchState.workflowDetail = {runId: '', snapshot: null}; document.getElementById('workflowHistoryBody').innerHTML = '<tr><td colspan="6" class="patch-empty">暂无流程运行记录</td></tr>'; patchState.mine = {page: 1, size: 10, total: 0, items: [], generation: 0}; const mineBody = document.getElementById('patchMineBody'); if (mineBody) mineBody.innerHTML = '<tr><td colspan="7" class="patch-empty">请登录后查看</td></tr>'; patchState.products = null; patchState.admin.products = []; patchState.admin.productId = null; const productBody = document.getElementById('patchProductBody'); if (productBody) productBody.innerHTML = '<tr><td colspan="5" class="patch-empty">请登录后查看</td></tr>'; }
     if (login) login.hidden = authenticated;
     if (layout) layout.hidden = !authenticated;
     applyMenuVisibility(user, isAdmin);
@@ -241,6 +241,12 @@ function patchSetAuthenticated(user) {
         patchState.admin.templates = [];
         patchState.admin.directories = [];
         patchState.admin.directoryId = null;
+        patchState.admin.projectEnvs = [];
+        patchState.admin.projectEnvId = null;
+        const projectEnvBody = document.getElementById('patchProjectEnvBody');
+        if (projectEnvBody) projectEnvBody.innerHTML = '<tr><td colspan="11" class="patch-empty">正在加载...</td></tr>';
+        const projectEnvMessage = document.getElementById('patchProjectEnvMessage');
+        if (projectEnvMessage) projectEnvMessage.textContent = '';
         patchState.admin.menuConfig = { roleItems: [], defaults: {}, users: [], userId: '' };
         const menuRoleBody = document.getElementById('patchMenuRoleBody');
         if (menuRoleBody) menuRoleBody.innerHTML = '<tr><td colspan="4" class="patch-empty">正在加载...</td></tr>';
@@ -263,7 +269,7 @@ function patchSetAuthenticated(user) {
         patchState.admin.products = [];
         patchState.admin.productId = null;
         const newProductBody = document.getElementById('patchProductBody');
-        if (newProductBody) newProductBody.innerHTML = '<tr><td colspan="4" class="patch-empty">正在加载...</td></tr>';
+        if (newProductBody) newProductBody.innerHTML = '<tr><td colspan="5" class="patch-empty">正在加载...</td></tr>';
     }
     if (!isAdmin) {
         if (patchState.admin.analysisTimer) clearTimeout(patchState.admin.analysisTimer);
@@ -322,9 +328,16 @@ async function patchRequest(path, options = {}) {
     throw new Error(`无法连接补丁中心：${servers.length} 条服务地址${timedOut ? '均已请求超时' : '均无法连接'}${cause}，请稍后重试。`);
 }
 
-// 产品/版本字典：[{id,name,sort_order,versions:[{id,version}]}]
+// 产品/版本字典：[{id,name,sort_order,is_deleted,versions:[{id,version,is_deleted}]}]
+// 下拉用：只含未逻辑删除的产品与版本，结果可进共享缓存 patchState.products
 async function fetchProducts() {
     return await patchRequest('/api/products');
+}
+
+// 产品版本管理页用：含已逻辑删除的行（仅管理员可调），结果只能进 patchState.admin.products，
+// 绝不能写进共享缓存，否则已删除的产品会漏进补丁上传/编辑和产品环境变量的下拉。
+async function fetchAllProducts() {
+    return await patchRequest('/api/products?include_deleted=1');
 }
 
 async function ensureProductOptions(force = false) {
@@ -1186,6 +1199,7 @@ function patchSwitchTab(tab) {
     if (tab === 'product' && patchToken() && !patchState.authInvalidated) loadProducts();
     if (tab === 'mine' && patchToken() && !patchState.authInvalidated) loadMyPatches();
     if (tab === 'directory' && patchToken() && !patchState.authInvalidated) loadDirectories();
+    if (tab === 'project_env' && patchToken() && !patchState.authInvalidated) loadProjectEnvs();
     if (tab === 'menus' && patchToken() && !patchState.authInvalidated && patchState.user?.role === 'admin') { loadMenuRoleConfig(); loadMenuUsers(); }
     patchSetSidenavActive(tab);
 }
@@ -1219,27 +1233,125 @@ async function saveDirectory(event) {
     catch (error) { document.getElementById('patchDirectoryMessage').textContent = ''; patchShowError(error.message, '工作目录保存失败'); }
 }
 
+// 产品环境变量：每人一份，后端按 created_by_user_id 严格隔离（admin 也一样），前端不做权限判断
+async function loadProjectEnvs() {
+    const body = document.getElementById('patchProjectEnvBody');
+    body.innerHTML = '<tr><td colspan="10" class="patch-empty">正在加载...</td></tr>';
+    try {
+        patchState.admin.projectEnvs = await patchRequest('/api/project-envs');
+        body.innerHTML = patchState.admin.projectEnvs.length ? patchState.admin.projectEnvs.map(projectEnvRow).join('') : '<tr><td colspan="10" class="patch-empty">暂无产品环境，请先新增</td></tr>';
+    } catch (error) {
+        body.innerHTML = '<tr><td colspan="10" class="patch-empty">加载失败，请重试</td></tr>';
+        document.getElementById('patchProjectEnvMessage').textContent = '';
+        patchShowError(error.message, '产品环境加载失败');
+    }
+}
+
+function projectEnvRow(item) {
+    // 连接串与路径都很长：单元格内截断，title 里给全文（patch-truncated-name 是既有截断样式）
+    const cell = value => `<td><span class="patch-truncated-name" title="${patchEscape(value || '')}">${patchEscape(value || '—')}</span></td>`;
+    return `<tr>
+        <td>${patchEscape(item.project_name)}</td>
+        ${cell(item.product_name)}
+        ${cell(item.product_version)}
+        ${cell(item.db_connection)}
+        ${cell(item.debug_address)}
+        ${cell(item.code_directory)}
+        ${cell(item.package_path)}
+        ${cell(item.local_skill_path)}
+        ${cell(item.local_jdk_path)}
+        <td class="patch-actions-cell"><button class="patch-link-btn" data-project-env-edit="${patchEscape(item.id)}">编辑</button><button class="patch-link-btn danger" data-project-env-delete="${patchEscape(item.id)}">删除</button></td>
+    </tr>`;
+}
+
+// 产品下拉只列未逻辑删除的产品（patchState.products 就是 /api/products 的默认结果）。
+// 旧记录的产品若已被管理员逻辑删除，字典里查不到它，下拉自然落回「请选择」占位，
+// 用户必须重选一个当前可用的产品才能保存——这正是后端 ensure_dictionary_choice 的要求。
+function fillProjectEnvProducts(form, item) {
+    const products = patchState.products || [];
+    form.product_id.innerHTML = '<option value="">请选择产品</option>' + products.map(product => `<option value="${patchEscape(product.id)}">${patchEscape(product.name)}</option>`).join('');
+    form.product_id.value = item.product_id == null ? '' : String(item.product_id);
+}
+
+// 版本下拉跟随产品；value 用版本字典 ID，显示版本号文本。返回该产品可用的版本数组。
+function fillProjectEnvVersions(form, productId, currentVersionId) {
+    const product = (patchState.products || []).find(value => String(value.id) === String(productId));
+    const versions = product ? (product.versions || []) : [];
+    form.version_id.innerHTML = '<option value="">请选择版本号</option>' + versions.map(version => `<option value="${patchEscape(version.id)}">${patchEscape(version.version)}</option>`).join('');
+    form.version_id.value = versions.some(version => String(version.id) === String(currentVersionId)) ? String(currentVersionId) : '';
+    return versions;
+}
+
+async function openProjectEnvForm(item = {}) {
+    patchState.admin.projectEnvId = item.id || null;
+    const form = document.getElementById('patchProjectEnvForm');
+    let products;
+    try { products = await ensureProductOptions(); }
+    catch (error) { patchShowError(error.message, '产品字典加载失败'); return; }
+    if (!products.length) { patchShowError('管理员尚未配置产品字典，请先在「产品版本管理」中添加产品与版本。', '无法维护产品环境'); return; }
+    form.project_name.value = item.project_name || '';
+    fillProjectEnvProducts(form, item);
+    fillProjectEnvVersions(form, form.product_id.value, item.version_id);
+    form.db_connection.value = item.db_connection || '';
+    form.debug_address.value = item.debug_address || '';
+    form.code_directory.value = item.code_directory || '';
+    form.package_path.value = item.package_path || '';
+    form.local_skill_path.value = item.local_skill_path || '';
+    form.local_jdk_path.value = item.local_jdk_path || '';
+    document.getElementById('patchProjectEnvModal').hidden = false;
+    form.project_name.focus();
+}
+
+async function saveProjectEnv(event) {
+    event.preventDefault();
+    const form = event.target;
+    const payload = Object.fromEntries(new FormData(form).entries());
+    // 必填校验前端先拦一遍（后端同样会校验），空值时不发请求
+    const required = [['project_name', '项目名称'], ['product_id', '产品名称'], ['version_id', '版本号'], ['code_directory', '客开代码目录'], ['package_path', 'home/war包地址']];
+    for (const [field, label] of required) {
+        if (!String(payload[field] || '').trim()) { patchShowError(`${label}为必填项`, '产品环境保存失败'); form[field].focus(); return; }
+    }
+    const id = patchState.admin.projectEnvId;
+    // 下拉的 value 是字符串，转成数字再发（后端是 int，gt=0）
+    payload.product_id = Number(payload.product_id);
+    payload.version_id = Number(payload.version_id);
+    try {
+        await patchRequest(id ? `/api/project-envs/${id}` : '/api/project-envs', {method: id ? 'PUT' : 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+        document.getElementById('patchProjectEnvModal').hidden = true;
+        await loadProjectEnvs();
+    } catch (error) {
+        document.getElementById('patchProjectEnvMessage').textContent = '';
+        patchShowError(error.message, '产品环境保存失败');
+    }
+}
+
 // 产品/版本字典管理（管理员）
 async function loadProducts() {
     if (!patchState.user || patchState.user.role !== 'admin') return;
     const body = document.getElementById('patchProductBody');
-    body.innerHTML = '<tr><td colspan="4" class="patch-empty">正在加载...</td></tr>';
+    body.innerHTML = '<tr><td colspan="5" class="patch-empty">正在加载...</td></tr>';
     try {
-        patchState.admin.products = await fetchProducts();
-        body.innerHTML = patchState.admin.products.length ? patchState.admin.products.map(productRow).join('') : '<tr><td colspan="4" class="patch-empty">暂无产品，请先新增</td></tr>';
+        patchState.admin.products = await fetchAllProducts();
+        body.innerHTML = patchState.admin.products.length ? patchState.admin.products.map(productRow).join('') : '<tr><td colspan="5" class="patch-empty">暂无产品，请先新增</td></tr>';
     } catch (error) {
-        body.innerHTML = '<tr><td colspan="4" class="patch-empty">加载失败，请重试</td></tr>';
+        body.innerHTML = '<tr><td colspan="5" class="patch-empty">加载失败，请重试</td></tr>';
         document.getElementById('patchProductMessage').textContent = '';
         patchShowError(error.message, '产品列表加载失败');
     }
 }
 
 function productRow(item) {
+    // 已逻辑删除的产品是只读的：后端也拒绝改它，前端只留「版本」查看入口
+    const actions = item.is_deleted
+        ? `<button class="patch-link-btn" data-product-versions="${patchEscape(item.id)}">版本</button>`
+        : `<button class="patch-link-btn" data-product-versions="${patchEscape(item.id)}">版本</button><button class="patch-link-btn" data-product-edit="${patchEscape(item.id)}">编辑</button><button class="patch-link-btn danger" data-product-delete="${patchEscape(item.id)}">删除</button>`;
+    const liveVersions = item.versions.filter(version => !version.is_deleted).length;
     return `<tr>
         <td><strong class="patch-truncated-name" title="${patchEscape(item.name)}">${patchEscape(item.name)}</strong></td>
         <td>${item.sort_order}</td>
-        <td>${item.versions.length}</td>
-        <td class="patch-actions-cell"><button class="patch-link-btn" data-product-versions="${patchEscape(item.id)}">版本</button><button class="patch-link-btn" data-product-edit="${patchEscape(item.id)}">编辑</button><button class="patch-link-btn danger" data-product-delete="${patchEscape(item.id)}">删除</button></td>
+        <td>${liveVersions}</td>
+        <td>${item.is_deleted ? '是' : '否'}</td>
+        <td class="patch-actions-cell">${actions}</td>
     </tr>`;
 }
 
@@ -1269,7 +1381,7 @@ async function saveProduct(event) {
 
 function deleteProduct(id) {
     const product = patchState.admin.products.find(value => String(value.id) === String(id));
-    patchConfirm(`删除产品“${product ? product.name : ''}”将同时移除其所有版本；历史补丁数据不受影响。`, '删除产品').then(confirmed => {
+    patchConfirm(`产品“${product ? product.name : ''}”及其版本将从选择列表中移除（逻辑删除）；历史补丁与产品环境记录不受影响。`, '删除产品').then(confirmed => {
         if (!confirmed) return;
         return patchRequest(`/api/products/${encodeURIComponent(id)}`, {method: 'DELETE'}).then(() => { patchState.products = null; loadProducts(); });
     }).catch(error => patchShowError(error.message, '删除产品失败'));
@@ -1282,17 +1394,20 @@ function openProductVersions(id) {
     document.getElementById('patchProductVersionTitle').textContent = `版本管理：${product.name}`;
     renderVersionList(product);
     document.getElementById('patchNewVersionInput').value = '';
+    // 已删除的产品不能再加版本（后端也会拒），直接收起新增区
+    document.getElementById('patchVersionAdd').hidden = Boolean(product.is_deleted);
     document.getElementById('patchProductVersionModal').hidden = false;
 }
 
 function renderVersionList(product) {
     const list = document.getElementById('patchVersionList');
     if (!product) { list.innerHTML = ''; return; }
-    list.innerHTML = product.versions.length ? product.versions.map(version => `<div class="patch-version-row"><span>${patchEscape(version.version)}</span><button class="patch-link-btn danger" data-version-delete="${patchEscape(version.id)}">删除</button></div>`).join('') : '<p class="patch-muted">暂无版本，请在下方添加</p>';
+    // 弹窗是列表不是表格，没有表头，"是否删除"直接写成自解释的「已删除/未删除」
+    list.innerHTML = product.versions.length ? product.versions.map(version => `<div class="patch-version-row"><span class="patch-version-name">${patchEscape(version.version)}</span><span class="patch-muted">${version.is_deleted ? '已删除' : '未删除'}</span>${version.is_deleted ? '' : `<button class="patch-link-btn danger" data-version-delete="${patchEscape(version.id)}">删除</button>`}</div>`).join('') : '<p class="patch-muted">暂无版本，请在下方添加</p>';
 }
 
 async function reloadVersionList() {
-    patchState.admin.products = await fetchProducts();
+    patchState.admin.products = await fetchAllProducts();
     renderVersionList(patchState.admin.products.find(value => String(value.id) === String(patchState.admin.productId)));
 }
 
@@ -1309,7 +1424,7 @@ async function addProductVersion() {
 }
 
 function deleteProductVersion(id) {
-    patchConfirm('删除后无法恢复此版本。', '删除版本').then(confirmed => {
+    patchConfirm('该版本将从选择列表中移除（逻辑删除）；历史记录不受影响。', '删除版本').then(confirmed => {
         if (!confirmed) return;
         return patchRequest(`/api/products/${encodeURIComponent(patchState.admin.productId)}/versions/${encodeURIComponent(id)}`, {method: 'DELETE'}).then(() => { patchState.products = null; reloadVersionList(); });
     }).catch(error => patchShowError(error.message, '删除版本失败'));
@@ -1756,6 +1871,15 @@ function patchBindEvents() {
     document.getElementById('patchNewTemplate').onclick = () => openAdminForm('template');
     document.getElementById('patchNewDirectory').onclick = () => openDirectoryForm();
     document.getElementById('patchDirectoryForm').onsubmit = saveDirectory;
+    document.getElementById('patchNewProjectEnv').onclick = () => openProjectEnvForm().catch(error => patchShowError(error.message, '产品环境打开失败'));
+    document.getElementById('patchProjectEnvForm').onsubmit = saveProjectEnv;
+    // 换产品就重列版本；fillProjectEnvVersions 会重建 options，旧版本号自动清空
+    document.getElementById('patchProjectEnvForm').product_id.addEventListener('change', event => {
+        fillProjectEnvVersions(event.target.form, event.target.value, null);
+    });
+    document.getElementById('patchProjectEnvClose').onclick = () => { document.getElementById('patchProjectEnvModal').hidden = true; };
+    document.getElementById('patchProjectEnvCancel').onclick = () => { document.getElementById('patchProjectEnvModal').hidden = true; };
+    document.getElementById('patchProjectEnvModal').onclick = event => { if (event.target.id === 'patchProjectEnvModal') event.currentTarget.hidden = true; };
     document.getElementById('patchDirectoryClose').onclick = () => { document.getElementById('patchDirectoryModal').hidden = true; };
     document.getElementById('patchDirectoryCancel').onclick = () => { document.getElementById('patchDirectoryModal').hidden = true; };
     document.getElementById('patchMenuRoleSave').onclick = saveMenuRoleConfig;
@@ -1954,6 +2078,20 @@ function patchBindEvents() {
             patchConfirm(`删除后无法恢复。若有流程模板或运行记录引用该目录「${name}」，相关流程将无法再解析此工作目录。`, '删除工作目录').then(confirmed => {
                 if (!confirmed) return;
                 return patchRequest(`/api/workflows/directories/${directoryRemove.dataset.directoryRemove}/permanent`, {method: 'DELETE'}).then(() => loadDirectories()).catch(error => patchShowError(error.message, '工作目录删除失败'));
+            });
+        }
+        const projectEnvEdit = event.target.closest('[data-project-env-edit]');
+        if (projectEnvEdit) {
+            const item = patchState.admin.projectEnvs.find(value => String(value.id) === projectEnvEdit.dataset.projectEnvEdit);
+            if (item) openProjectEnvForm(item).catch(error => patchShowError(error.message, '产品环境打开失败'));
+        }
+        const projectEnvDelete = event.target.closest('[data-project-env-delete]');
+        if (projectEnvDelete) {
+            const item = patchState.admin.projectEnvs.find(value => String(value.id) === projectEnvDelete.dataset.projectEnvDelete);
+            const name = item ? `${item.project_name || ''}` : '';
+            patchConfirm(`删除后无法恢复。确认删除产品环境「${name}」？`, '删除产品环境').then(confirmed => {
+                if (!confirmed) return;
+                return patchRequest(`/api/project-envs/${projectEnvDelete.dataset.projectEnvDelete}`, {method: 'DELETE'}).then(() => loadProjectEnvs()).catch(error => patchShowError(error.message, '产品环境删除失败'));
             });
         }
         const productVersions = event.target.closest('[data-product-versions]');

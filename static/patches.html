@@ -55,6 +55,10 @@
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path></svg>
                 <span class="patch-sidenav-label">工作目录</span>
             </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="project_env" href="/patches.html?tab=project_env" title="产品环境变量" hidden>
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"></path></svg>
+                <span class="patch-sidenav-label">产品环境变量</span>
+            </a>
             <a class="patch-sidenav-item" data-sidenav-tab="menus" href="/patches.html?tab=menus" title="菜单可见性" hidden>
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
                 <span class="patch-sidenav-label">菜单可见性</span>
@@ -105,6 +109,7 @@
                 <button id="patchAnalysisTab" class="patch-tab" data-tab="analysis" hidden>待分析补丁</button>
                 <button id="patchProductTab" class="patch-tab" data-tab="product" hidden>产品版本管理</button>
                 <button class="patch-tab" data-tab="directory">工作目录</button>
+                <button class="patch-tab" data-tab="project_env" hidden>产品环境变量</button>
                 <button class="patch-tab" data-tab="menus" hidden>菜单可见性</button>
             </div>
 
@@ -216,9 +221,9 @@
 
             <section id="patchTabProduct" class="patch-tab-panel">
                 <div class="patch-card admin-panel">
-                    <div class="admin-section-header"><div><h2>产品版本管理</h2><p>维护产品名称与版本号字典，补丁上传和编辑时通过下拉选择。删除产品不影响历史补丁数据。</p></div><button id="patchNewProduct" class="patch-primary-btn">新增产品</button></div>
+                    <div class="admin-section-header"><div><h2>产品版本管理</h2><p>维护产品名称与版本号字典，补丁上传、编辑与产品环境变量均通过下拉选择。删除为逻辑删除：仅从选择列表中隐藏，历史补丁与产品环境记录仍可查看。</p></div><button id="patchNewProduct" class="patch-primary-btn">新增产品</button></div>
                     <div id="patchProductMessage" class="patch-message"></div>
-                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>产品名称</th><th>排序</th><th>版本数</th><th>操作</th></tr></thead><tbody id="patchProductBody"><tr><td colspan="4" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>产品名称</th><th>排序</th><th>版本数</th><th>是否删除</th><th>操作</th></tr></thead><tbody id="patchProductBody"><tr><td colspan="5" class="patch-empty">正在加载...</td></tr></tbody></table></div>
                 </div>
             </section>
 
@@ -227,6 +232,14 @@
                     <div class="admin-section-header"><div><h2>工作目录</h2><p>管理当前用户可用的工作目录。管理员创建的内置目录仅可查看和使用。</p></div><button id="patchNewDirectory" class="patch-primary-btn">新增目录</button></div>
                     <div id="patchDirectoryMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>编码</th><th>名称</th><th>路径</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="patchDirectoryBody"></tbody></table></div>
+                </div>
+            </section>
+
+            <section id="patchTabProject_env" class="patch-tab-panel">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>产品环境变量</h2><p>登记你自己项目的产品版本、数据库连接、远程调试地址与代码/包路径。每条记录仅自己可见、可改；产品与版本只能从管理员预置的字典中选择。</p></div><button id="patchNewProjectEnv" class="patch-primary-btn">新增环境</button></div>
+                    <div id="patchProjectEnvMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>项目名称</th><th>产品名称</th><th>版本号</th><th>数据库连接信息</th><th>远程调试地址</th><th>客开代码目录</th><th>home/war包地址</th><th>本地skill地址</th><th>本地jdk路径</th><th>操作</th></tr></thead><tbody id="patchProjectEnvBody"><tr><td colspan="10" class="patch-empty">正在加载...</td></tr></tbody></table></div>
                 </div>
             </section>
 
@@ -325,6 +338,24 @@
         </div>
     </div>
 
+    <div id="patchProjectEnvModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3>产品环境变量</h3><button id="patchProjectEnvClose" class="modal-close">×</button></div>
+            <form id="patchProjectEnvForm" class="patch-admin-form project-env-form">
+                <label class="patch-inline-field"><span class="patch-inline-label">项目名称<span class="patch-required">*</span></span><input name="project_name" maxlength="255" required placeholder="如：客户关系管理系统"></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">产品名称<span class="patch-required">*</span></span><select name="product_id" required><option value="">请选择产品</option></select></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">版本号<span class="patch-required">*</span></span><select name="version_id" required><option value="">请选择版本号</option></select></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">数据库连接信息</span><textarea name="db_connection" rows="2" placeholder="如：jdbc:mysql://10.4.122.21:3306/crm?user=xx&amp;password=xx"></textarea></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">远程调试地址</span><input name="debug_address" maxlength="512" placeholder="如：10.4.122.21:5005"></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">客开代码目录<span class="patch-required">*</span></span><textarea name="code_directory" rows="2" required placeholder="如：D:\project\my-app\src"></textarea></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">home/war包地址<span class="patch-required">*</span></span><input name="package_path" maxlength="1024" required placeholder="如：D:\project\my-app\home"></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">本地skill地址</span><input name="local_skill_path" maxlength="1024" placeholder="本机上 skill 所在位置，如：D:\my-skills\crm（可不填）"></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">本地jdk路径</span><input name="local_jdk_path" maxlength="1024" placeholder="本机 JDK 根目录（JAVA_HOME），如：D:\Software\jdk-17（可不填）"></label>
+            </form>
+            <div class="modal-footer"><button id="patchProjectEnvCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchProjectEnvForm" class="btn-primary">保存</button></div>
+        </div>
+    </div>
+
     <div id="patchProductModal" class="modal-overlay" hidden>
         <div class="modal patch-admin-modal">
             <div class="modal-header"><h3>产品信息</h3><button id="patchProductClose" class="modal-close">×</button></div>
@@ -337,7 +368,7 @@
         <div class="modal patch-admin-modal">
             <div class="modal-header"><h3 id="patchProductVersionTitle">版本管理</h3><button id="patchProductVersionClose" class="modal-close">×</button></div>
             <div class="patch-admin-form">
-                <div class="patch-version-add"><label>新增版本<span class="patch-required">*</span><input id="patchNewVersionInput" maxlength="64" placeholder="如：1.0"></label><button id="patchNewVersionAdd" type="button" class="patch-secondary-btn">添加</button></div>
+                <div id="patchVersionAdd" class="patch-version-add"><label>新增版本<span class="patch-required">*</span><input id="patchNewVersionInput" maxlength="64" placeholder="如：1.0"></label><button id="patchNewVersionAdd" type="button" class="patch-secondary-btn">添加</button></div>
                 <div id="patchVersionList" class="patch-version-list"></div>
             </div>
             <div class="modal-footer"><button id="patchProductVersionDone" type="button" class="btn-primary">完成</button></div>

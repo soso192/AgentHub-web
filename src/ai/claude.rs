@@ -13,6 +13,8 @@ pub struct ClaudeAssistant {
     default_model: String,
     git_bash_path: String,
     claude_cmd: String,
+    /// cc-web 自带的 MCP 配置（解析后的绝对路径），None 表示没配 → 不加 --mcp-config
+    mcp_config_path: Option<String>,
 }
 
 struct ClaudeSession {
@@ -53,11 +55,27 @@ impl ClaudeAssistant {
                 "bash".to_string()
             });
 
+        let mcp_config_path = super::mcp_config::resolve_mcp_config()
+            .map(|path| path.to_string_lossy().to_string());
+
         Self {
             sessions: HashMap::new(),
             default_model,
             git_bash_path,
             claude_cmd,
+            mcp_config_path,
+        }
+    }
+
+    /// 给 claude 追加 MCP 参数；未配置 MCP 时返回空 vec（即照旧不加 flag）
+    ///
+    /// 只在这里拼一次，四处调用点都走它，避免漏掉一处导致「有的会话有 MCP、有的没有」。
+    /// is_available()/version() 不用它：那两个只跑 --version 做探测，带上 flag 会去
+    /// spawn MCP 子进程，又慢又可能因为 exe 没部署而失败。
+    fn mcp_flags(&self) -> Vec<String> {
+        match &self.mcp_config_path {
+            Some(path) => vec!["--mcp-config".to_string(), path.clone()],
+            None => Vec::new(),
         }
     }
 
@@ -390,11 +408,13 @@ impl AiAssistant for ClaudeAssistant {
         let selected_model = model.filter(|value| !value.trim().is_empty()).unwrap_or(&self.default_model).to_string();
         let git_bash = self.git_bash_path.clone();
         let claude_cmd = self.claude_cmd.clone();
+        let mcp_flags = self.mcp_flags();
         tokio::task::spawn_blocking(move || {
-            let args = [
+            let mut args = vec![
                 "--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--model",
                 selected_model.as_str(),
             ];
+            args.extend(mcp_flags.iter().map(|value| value.as_str()));
             let mut cmd = if claude_cmd.starts_with("node:") {
                 let mut command = Command::new("node");
                 command.arg(&claude_cmd[5..]);
@@ -498,9 +518,10 @@ impl AiAssistant for ClaudeAssistant {
         let message = message.to_string();
         let git_bash = self.git_bash_path.clone();
         let claude_cmd = self.claude_cmd.clone();
+        let mcp_flags = self.mcp_flags();
 
         let result = tokio::task::spawn_blocking(move || {
-            let args = vec![
+            let mut args = vec![
                 "--print".to_string(),
                 "--output-format".to_string(),
                 "text".to_string(),
@@ -509,6 +530,7 @@ impl AiAssistant for ClaudeAssistant {
                 "--model".to_string(),
                 model.clone(),
             ];
+            args.extend(mcp_flags);
 
             let mut cmd = Command::new(&claude_cmd);
             cmd.args(&args)
@@ -568,6 +590,7 @@ impl AiAssistant for ClaudeAssistant {
         let model = session.model.clone();
         let git_bash = self.git_bash_path.clone();
         let claude_cmd = self.claude_cmd.clone();
+        let mcp_flags = self.mcp_flags();
 
         callback(AiEvent {
             event_type: "start".to_string(),
@@ -578,7 +601,7 @@ impl AiAssistant for ClaudeAssistant {
         });
 
         tokio::task::spawn_blocking(move || {
-            let args = vec![
+            let mut args = vec![
                 "--print".to_string(),
                 "--output-format".to_string(),
                 "stream-json".to_string(),
@@ -588,6 +611,7 @@ impl AiAssistant for ClaudeAssistant {
                 "--model".to_string(),
                 model.clone(),
             ];
+            args.extend(mcp_flags);
 
             let mut cmd = Command::new(&claude_cmd);
             cmd.args(&args)
@@ -783,6 +807,8 @@ impl AiAssistant for ClaudeAssistant {
             args.push("--resume".to_string());
             args.push(resume_id.to_string());
         }
+
+        args.extend(self.mcp_flags());
 
         let mut cmd = self.create_claude_command();
         cmd.args(&args)
