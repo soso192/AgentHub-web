@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="CC-Web 智能开发流程运行详情，支持实时查看执行进度与步骤输出。">
+    <meta name="description" content="CC-Web 智能分析流程运行详情，支持实时查看执行进度与步骤输出。">
     <meta name="theme-color" content="#f7f8fa">
     <title>流程运行详情 · CC-Web</title>
     <script>try{if(localStorage.getItem('cc-web-help-panel')==='closed'){document.documentElement.classList.add('help-panel-closed');}}catch(e){}</script>
@@ -15,6 +15,10 @@
     <nav class="patch-sidenav" id="patchSidenav" aria-label="主导航">
         <button id="patchSidenavToggle" class="patch-sidenav-toggle" type="button" title="收起菜单" aria-expanded="true" aria-label="收起菜单">‹</button>
         <div class="patch-sidenav-items">
+            <a class="patch-sidenav-item" data-sidenav-tab="node" href="/patches.html?tab=node" title="智能开发">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                <span class="patch-sidenav-label">智能开发</span>
+            </a>
             <a class="patch-sidenav-item" data-sidenav-tab="search" href="/patches.html?tab=search" title="普通检索">
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                 <span class="patch-sidenav-label">普通检索</span>
@@ -27,9 +31,9 @@
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
                 <span class="patch-sidenav-label">我的补丁</span>
             </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="smart" href="/patches.html?tab=smart" title="智能开发">
+            <a class="patch-sidenav-item" data-sidenav-tab="smart" href="/patches.html?tab=smart" title="智能分析">
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                <span class="patch-sidenav-label">智能开发</span>
+                <span class="patch-sidenav-label">智能分析</span>
             </a>
             <a class="patch-sidenav-item" data-sidenav-tab="flow" href="/patches.html?tab=flow" title="流程设置">
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
@@ -203,7 +207,6 @@
             if (!servers.length) throw new Error('补丁服务地址尚未加载，请稍候重试。');
             const start = patchState.patchServerCursor % servers.length;
             patchState.patchServerCursor = start + 1;
-            let lastError = null;
             for (let attempt = 0; attempt < servers.length; attempt += 1) {
                 const base = servers[(start + attempt) % servers.length];
                 const url = `${base.replace(/\/+$/, '')}${path}`;
@@ -212,7 +215,6 @@
                     response = await patchFetchTimeout(url, { ...options, headers }, PATCH_REQUEST_TIMEOUT);
                 } catch (error) {
                     if (options.signal && options.signal.aborted) throw error; // 调用方主动取消，不切换
-                    lastError = error;
                     continue; // 连不上/超时：切换下一条地址
                 }
                 // 只要收到了 HTTP 响应（无论状态码）都视为该地址可达、应答权威，不再切换
@@ -225,9 +227,7 @@
                 if (!response.ok || payload.code !== 0) throw new Error(payload.message || payload.detail || '请求失败');
                 return payload.data;
             }
-            const timedOut = lastError && lastError.name === 'AbortError';
-            const cause = lastError && lastError.message ? `（${lastError.message}）` : '';
-            throw new Error(`无法连接补丁中心：${servers.length} 条服务地址${timedOut ? '均已请求超时' : '均无法连接'}${cause}，请稍后重试。`);
+            throw new Error('无法连接服务器，请稍后重试或联系管理员');
         }
         function patchHandleUnauthorized() {
             if (patchState.authInvalidated) return;
@@ -545,7 +545,7 @@
                     }
                     break;
                 }
-                if (!response) throw new Error('无法连接补丁中心：所有服务地址均无法连接，请稍后重试。');
+                if (!response) throw new Error('无法连接服务器，请稍后重试或联系管理员');
                 if (!response.ok) { if (response.status === 401) patchHandleUnauthorized(); throw new Error('流程连接失败'); }
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -612,11 +612,11 @@
                 document.getElementById('patchCurrentUser').textContent = `${me.display_name || me.username} (${me.role})`;
                 const keys = Array.isArray(me.menus) ? me.menus : null;
                 if (keys) {
-                    // 服务端下发了菜单可见性：没有「智能开发」就没有运行详情页，直接退回补丁中心；
+                    // 服务端下发了菜单可见性：没有「智能分析」就没有运行详情页，直接退回补丁中心；
                     // 其余侧边项跟随配置（本页改造前对所有登录用户可见，现在按配置收敛）。
                     if (!keys.includes('smart')) { location.href = '/patches.html'; return; }
                     document.querySelectorAll('.patch-sidenav-item[data-sidenav-tab]').forEach(item => {
-                        if (item.dataset.sidenavTab === 'smart') return;
+                        if (item.dataset.sidenavTab === 'smart' || item.dataset.sidenavTab === 'node') return;
                         item.hidden = !keys.includes(item.dataset.sidenavTab);
                     });
                 } else {
@@ -663,7 +663,7 @@
                 }
             });
         }
-        // 左侧固定导航：折叠/展开 + 高亮当前（流程运行详情归入“智能开发”）
+        // 左侧固定导航：折叠/展开 + 高亮当前（流程运行详情归入“智能分析”）
         (function patchSidenavInit() {
             const toggle = document.getElementById('patchSidenavToggle');
             const syncToggle = () => {

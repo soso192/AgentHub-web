@@ -15,6 +15,9 @@ pub async fn list_sessions(data: web::Data<AppState>) -> HttpResponse {
             "created": session.created_at.to_rfc3339(),
             "modified": session.updated_at.to_rfc3339(),
             "isStreaming": streaming.contains(id),
+            // 本会话对应的 claude 会话 id。前端靠它判断"同一个 claude 会话是否已经有 cc-web 会话了"，
+            // 避免每次点「继续会话」都新建一个副本（见 app.js 的 resumeSessionFromUrl）。
+            "agent_session_id": session.agent_session_id,
         })
     }).collect();
 
@@ -107,7 +110,7 @@ pub async fn delete_session(
         // Remove from the appropriate assistant (handle-based, no registry write lock)
         let registry = data.registry.read().unwrap();
         if let Some(handle) = registry.get_handle(&session.assistant) {
-            let mut assistant = handle.write().unwrap();
+            let assistant = handle.read().unwrap();
             assistant.delete_session(&session_id);
         }
         HttpResponse::Ok().json(serde_json::json!({ "ok": true }))

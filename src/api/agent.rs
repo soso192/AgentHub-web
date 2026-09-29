@@ -1,5 +1,6 @@
 use actix_web::{web, HttpResponse, HttpRequest};
 use tokio::sync::broadcast;
+use serde::Deserialize;
 use crate::models::{NewSessionRequest, StartPromptRequest, SwitchAssistantRequest, CommandRequest, Message, ContentBlock};
 use crate::AppState;
 use chrono::Utc;
@@ -29,20 +30,27 @@ fn save_event_progress(
         });
     }
     
+    // 方案1：流式还没吐真实文本（final_result 空，content_blocks 也无 Text 块）时，只在内存
+    // streaming_state 留进度，不再把占位符“(streaming...)”写进 session.messages。
+    // 否则一轮启动失败/中断、没真正吐字就跑完的，会在对话里留一条永远不被顶掉的占位符，
+    // 还会被后续 start_prompt 的 auto_history / switch_assistant 当真实助手回复回灌给 claude。
+    // 实时「执行中」展示由 get_session 读取 streaming_state 时注入占位符承担（sessions.rs），无需落盘。
+    let has_real_text = !final_result.is_empty()
+        || content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
+    if !has_real_text {
+        return;
+    }
+
     // Update session file
     let mut sessions = data.sessions.write().unwrap();
     if let Some(session) = sessions.get_mut(session_id) {
         let last_is_assistant = session.messages.last()
             .map(|m| m.role == "assistant")
             .unwrap_or(false);
-        
+
         let blocks = if content_blocks.is_empty() { None } else { Some(content_blocks.to_vec()) };
-        let content = if final_result.is_empty() {
-            "(streaming...)".to_string()
-        } else {
-            final_result.to_string()
-        };
-        
+        let content = final_result.to_string();
+
         if last_is_assistant {
             if let Some(last_msg) = session.messages.last_mut() {
                 last_msg.content = content;
@@ -62,6 +70,61 @@ fn save_event_progress(
     }
     drop(sessions);
     crate::save_sessions_to_disk(&data.sessions.read().unwrap());
+}
+
+/// 收到流式 "start" 事件时，把 claude 的会话 id 尽早绑定到 cc-web 会话上。
+///
+/// Why：claude 的会话 id 在 system/init 那一刻就定了，但旧代码只在整个 run 结束后才写回
+/// Session（见 start_prompt 里 stream_result 那段）。于是**执行期间**后端并不知道这个 cc-web
+/// 会话对应哪个 claude sid，前端点「继续会话」按 sid 查不到已有会话，就会新建一个副本——
+/// 同一个 claude 会话在列表里变成两个；而且那次 POST /api/agent/new 还要等助手写锁（正在跑的
+/// run 一直持着读锁）→ 整个界面卡住。启动时就绑定，让映射在整个执行期间都成立。
+///
+/// 调用点必须先确认没有持有 sessions 写锁；本函数内部自己取锁并立刻释放。
+fn bind_claude_session_id(data: &AppState, session_id: &str, agent_session_id: &str) {
+    let needs_save = {
+        let mut sessions = data.sessions.write().unwrap();
+        match sessions.get_mut(session_id) {
+            Some(session) if session.agent_session_id.as_deref() != Some(agent_session_id) => {
+                session.agent_session_id = Some(agent_session_id.to_string());
+                true
+            }
+            _ => false,
+        }
+    };
+    if needs_save {
+        log::info!("[saver] session={} bound to claude session {} at start", session_id, agent_session_id);
+        save_async(data);
+    }
+}
+
+/// 只读：按 claude 的会话 id 读本机 `~/.claude/projects/*/<sid>.jsonl`，解析成 cc-web 的 Message。
+///
+/// 给聊天页的「只读回放」用——智能开发节点的「继续会话」在找不到对应 cc-web 会话时（被删了、
+/// 或这次运行根本不是本机建的），退到这条按 claude 会话 id 展示已产出的过程。
+/// **不建会话、不落盘、不碰助手锁**，纯读文件（复用 claude_history::load_history）。
+///
+/// `?full=1` 时保留 thinking 思考块（供已解决 run 的会话存档用，存档要完整）。
+#[derive(Deserialize)]
+pub struct ClaudeHistoryQuery {
+    pub full: Option<String>,
+}
+pub async fn claude_session_history(path: web::Path<String>, query: web::Query<ClaudeHistoryQuery>) -> HttpResponse {
+    let sid = path.into_inner();
+    // sid 会被拼进文件名（`<sid>.jsonl`）去找：只放行 UUID 会用到的字符，
+    // 免得有人拿 `../` 之类去翻别的文件。
+    if sid.is_empty() || !sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "invalid session id"
+        }));
+    }
+    let full = query.full.as_deref().map(|v| v == "1" || v == "true").unwrap_or(false);
+    let messages = if full {
+        crate::claude_history::load_history_full(&sid, "claude")
+    } else {
+        crate::claude_history::load_history(&sid, "claude")
+    };
+    HttpResponse::Ok().json(serde_json::json!({ "messages": messages }))
 }
 
 pub async fn new_session(
@@ -85,8 +148,9 @@ pub async fn new_session(
         }
     };
 
-    // Lock only this assistant (other assistants are unaffected)
-    let mut assistant = handle.write().unwrap();
+    // Lock only this assistant (other assistants are unaffected)。
+    // 读锁即可：create_session 内部只锁会话表，不再与流式（同样持读锁）互斥 → 可并发建会话。
+    let assistant = handle.read().unwrap();
 
     let session_id = match assistant.create_session(req.cwd.clone(), model.clone()).await {
         Ok(id) => id,
@@ -176,6 +240,24 @@ pub async fn start_prompt(
     log::info!("[start_prompt] session={}, assistant={}, model={}, agent_session_id={:?}",
         session_id, assistant_name, model, existing_agent_session_id);
 
+    // 并发守卫：同一个会话已有一次流式输出在跑时，直接拒绝，不 spawn、也不写入用户消息。
+    //
+    // 触发场景是"连点两次"或用户手工重放请求。以前这里会无条件再起一个 claude 进程，
+    // 两个进程操作同一批文件（智能开发节点里是同一个暂存目录），互相覆盖且都会写
+    // 同一个会话历史。放在 push 用户消息**之前**是为了让被拒绝的这次请求不留痕迹。
+    //
+    // 这里是"先查后用"而非原子抢占，存在极窄的竞态窗口（两个请求几乎同时通过检查）。
+    // 刻意不改成"提前 insert 抢占"：那样一旦后面任一早退分支没清理
+    // streaming_sessions，这个会话就永久卡在"执行中"。前端发起时的按钮 disable 才是
+    // 主要防线，这一层是防御手工重放/多标签页的兜底。
+    if data.streaming_sessions.read().unwrap().contains(&session_id) {
+        log::warn!("[start_prompt] rejected: session={} is already streaming", session_id);
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "success": false,
+            "error": "该会话正在执行中，请等待本次执行结束或先中断"
+        }));
+    }
+
     // Store user message
     let user_message = Message {
         role: "user".to_string(),
@@ -238,6 +320,11 @@ pub async fn start_prompt(
                         let mut needs_save = false;
                         
                         match event_type {
+                            "start" => {
+                                if let Some(sid) = event.get("agentSessionId").and_then(|v| v.as_str()) {
+                                    bind_claude_session_id(&saver_data, &saver_sid, sid);
+                                }
+                            }
                             "thinking" => {
                                 if let Some(thinking) = event.get("thinking").and_then(|t| t.as_str()) {
                                     // Insert thinking block before any text blocks
@@ -611,7 +698,7 @@ pub async fn switch_assistant(
         registry.get_handle(&new_assistant_name)
     };
     if let Some(ref handle) = new_handle {
-        let mut assistant = handle.write().unwrap();
+        let assistant = handle.read().unwrap();
         if let Err(e) = assistant.create_session(cwd.clone(), new_model.clone()).await {
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "success": false,
@@ -667,7 +754,7 @@ pub async fn switch_assistant(
     {
         let registry = data.registry.read().unwrap();
         if let Some(handle) = registry.get_handle(&old_assistant_name) {
-            let mut assistant = handle.write().unwrap();
+            let assistant = handle.read().unwrap();
             assistant.delete_session(&session_id);
         }
     }
@@ -698,6 +785,11 @@ pub async fn switch_assistant(
                         let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
                         
                         match event_type {
+                            "start" => {
+                                if let Some(sid) = event.get("agentSessionId").and_then(|v| v.as_str()) {
+                                    bind_claude_session_id(&saver_data, &saver_sid, sid);
+                                }
+                            }
                             "thinking" => {
                                 if let Some(thinking) = event.get("thinking").and_then(|t| t.as_str()) {
                                     content_blocks.push(ContentBlock::Thinking { thinking: thinking.to_string() });
@@ -1030,7 +1122,7 @@ pub async fn send_command(
                         }));
                     }
                 };
-                let mut assistant = handle.write().unwrap();
+                let assistant = handle.read().unwrap();
 
                 if let Err(e) = assistant.set_model(&session_id, model) {
                     return HttpResponse::InternalServerError().json(serde_json::json!({

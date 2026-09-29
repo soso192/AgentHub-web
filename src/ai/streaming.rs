@@ -74,7 +74,11 @@ pub fn process_stream_line(
             send_event(tx, serde_json::json!({
                 "type": "start",
                 "sessionId": session_id,
-                "model": model
+                "model": model,
+                // agent 自己的会话 id（claude 的 --resume 目标）。以前只写进 Session 落盘，
+                // 前端拿不到；智能开发节点要用它（上报 claude_session_id、拼「继续会话」链接），
+                // 所以随 start 事件一并下发。非 claude 助手没有这个 id，为 null。
+                "agentSessionId": agent_session_id.clone()
             }));
         }
         // ── Assistant message: thinking + tool_use + text blocks ──

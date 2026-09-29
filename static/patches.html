@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="CC-Web 补丁中心提供补丁检索、上传、智能开发和工作流管理。">
+    <meta name="description" content="CC-Web 补丁中心提供补丁检索、上传、智能分析和工作流管理。">
     <meta name="theme-color" content="#f7f8fa">
     <title>智能开发 · CC-Web</title>
     <script>try{if(localStorage.getItem('cc-web-help-panel')==='closed'){document.documentElement.classList.add('help-panel-closed');}}catch(e){}</script>
@@ -15,9 +15,13 @@
     <nav class="patch-sidenav" id="patchSidenav" aria-label="主导航">
         <button id="patchSidenavToggle" class="patch-sidenav-toggle" type="button" title="收起菜单" aria-expanded="true" aria-label="收起菜单">‹</button>
         <div class="patch-sidenav-items">
-            <a class="patch-sidenav-item" data-sidenav-tab="smart" href="/patches.html?tab=smart" title="智能开发">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            <a class="patch-sidenav-item" data-sidenav-tab="node" href="/patches.html?tab=node" title="智能开发">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
                 <span class="patch-sidenav-label">智能开发</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="smart" href="/patches.html?tab=smart" title="智能分析">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                <span class="patch-sidenav-label">智能分析</span>
             </a>
             <a class="patch-sidenav-item" data-sidenav-tab="search" href="/patches.html?tab=search" title="普通检索">
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
@@ -30,6 +34,10 @@
             <a class="patch-sidenav-item" data-sidenav-tab="mine" href="/patches.html?tab=mine" title="我的补丁">
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
                 <span class="patch-sidenav-label">我的补丁</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="adapt" href="/patches.html?tab=adapt" title="补丁适配">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><path d="M6 21V9a9 9 0 0 0 9 9"></path></svg>
+                <span class="patch-sidenav-label">补丁适配</span>
             </a>
             <a class="patch-sidenav-item" data-sidenav-tab="flow" href="/patches.html?tab=flow" title="流程设置" hidden>
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
@@ -62,6 +70,10 @@
             <a class="patch-sidenav-item" data-sidenav-tab="menus" href="/patches.html?tab=menus" title="菜单可见性" hidden>
                 <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
                 <span class="patch-sidenav-label">菜单可见性</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="sessions" href="/patches.html?tab=sessions" title="会话存档" hidden>
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                <span class="patch-sidenav-label">会话存档</span>
             </a>
         </div>
     </nav>
@@ -99,10 +111,12 @@
             <div class="patch-auth-layout" id="patchAuthLayout" hidden>
                 <div class="patch-auth-content">
             <div class="patch-tabs" role="tablist">
-                <button class="patch-tab active" data-tab="smart">智能开发</button>
+                <button class="patch-tab active" data-tab="node">智能开发</button>
+                <button class="patch-tab" data-tab="smart">智能分析</button>
                 <button class="patch-tab" data-tab="search">普通检索</button>
                 <button class="patch-tab" data-tab="upload">补丁上传</button>
                 <button class="patch-tab" data-tab="mine">我的补丁</button>
+                <button class="patch-tab" data-tab="adapt">补丁适配</button>
                 <button id="patchFlowTab" class="patch-tab" data-tab="flow" hidden>流程设置</button>
                 <button id="patchPromptTab" class="patch-tab" data-tab="prompt" hidden>提示词设置</button>
                 <button id="patchTemplateTab" class="patch-tab" data-tab="template" hidden>流程模板设置</button>
@@ -111,12 +125,13 @@
                 <button class="patch-tab" data-tab="directory">工作目录</button>
                 <button class="patch-tab" data-tab="project_env" hidden>产品环境变量</button>
                 <button class="patch-tab" data-tab="menus" hidden>菜单可见性</button>
+                <button class="patch-tab" data-tab="sessions" hidden>会话存档</button>
             </div>
 
             <section id="patchTabSearch" class="patch-tab-panel">
                 <div class="patch-card patch-search-card">
                     <div class="patch-search-row patch-search-toolbar" id="patchSearchToolbar">
-                        <label class="sr-only" for="patchKeyword">搜索已分析补丁包</label>
+                        <label class="sr-only" for="patchKeyword">搜索补丁包</label>
                         <input id="patchKeyword" class="patch-input" type="search" placeholder="搜索补丁名称、描述、类名或关键词">
                         <button id="patchSearchBtn" class="patch-primary-btn">搜索</button>
                         <button id="patchAdvancedToggle" class="patch-secondary-btn" type="button" aria-expanded="false">高级搜索</button>
@@ -134,18 +149,14 @@
                     <div id="patchSearchMessage" class="patch-message"></div>
                 </div>
                 <div class="patch-card patch-table-card">
-                    <div class="patch-table-header"><h2>已分析补丁包</h2><span id="patchTotal"></span></div>
+                    <div class="patch-table-header"><h2>全部补丁包</h2><span id="patchTotal"></span></div>
                     <div class="patch-table-wrap">
                         <table class="patch-table patch-search-table">
-                            <thead><tr><th>名称</th><th>产品名称</th><th>版本号</th><th>格式</th><th>大小</th><th>分析时间</th><th>操作</th></tr></thead>
-                            <tbody id="patchTableBody"><tr><td colspan="7" class="patch-empty">正在加载...</td></tr></tbody>
+                            <thead><tr><th>名称</th><th>产品名称</th><th>版本号</th><th>格式</th><th>大小</th><th>状态</th><th>分析时间</th><th>操作</th></tr></thead>
+                            <tbody id="patchTableBody"><tr><td colspan="8" class="patch-empty">正在加载...</td></tr></tbody>
                         </table>
                     </div>
-                    <div class="patch-pagination">
-                        <button id="patchPrevBtn" class="patch-secondary-btn">上一页</button>
-                        <span id="patchPageInfo">第 1 页</span>
-                        <button id="patchNextBtn" class="patch-secondary-btn">下一页</button>
-                    </div>
+                    <div class="patch-pager" data-pager="search"></div>
                 </div>
             </section>
 
@@ -169,17 +180,24 @@
                             <tbody id="patchMineBody"><tr><td colspan="7" class="patch-empty">正在加载...</td></tr></tbody>
                         </table>
                     </div>
-                    <div class="patch-pagination">
-                        <button id="patchMinePrev" class="patch-secondary-btn">上一页</button>
-                        <span id="patchMinePageInfo">第 1 页</span>
-                        <button id="patchMineNext" class="patch-secondary-btn">下一页</button>
-                    </div>
+                    <div class="patch-pager" data-pager="mine"></div>
                 </div>
             </section>
 
-            <section id="patchTabSmart" class="patch-tab-panel active">
+            <section id="patchTabAdapt" class="patch-tab-panel">
+                <div id="patchAdaptDropZone" class="patch-card patch-drop-zone">
+                    <div class="patch-drop-icon">⇧</div>
+                    <h2>拖拽补丁包到这里</h2>
+                    <p>支持 ZIP / RAR，可多选；每个补丁需填写对应的问题描述</p>
+                    <button id="patchAdaptChooseBtn" class="patch-primary-btn">点击选择补丁</button>
+                    <input id="patchAdaptFileInput" type="file" accept=".zip,.rar" multiple hidden>
+                </div>
+                <div id="patchAdaptMessage" class="patch-message"></div>
+            </section>
+
+            <section id="patchTabSmart" class="patch-tab-panel">
                 <div class="patch-card smart-dev-card">
-                    <div class="smart-dev-head"><div><h2>智能开发</h2><p>选择流程模板并输入业务需求，启动后实时查看每步执行进度与输出。</p></div></div>
+                    <div class="smart-dev-head"><div><h2>智能分析</h2><p>选择流程模板并输入业务需求，启动后实时查看每步执行进度与输出。</p></div></div>
                     <label class="sr-only" for="workflowTemplateSelect">流程模板</label>
                     <div class="patch-search-row"><select id="workflowTemplateSelect" class="patch-input"><option value="">加载流程模板中...</option></select></div>
                     <p id="workflowTemplateDesc" class="smart-dev-desc" hidden></p>
@@ -188,9 +206,33 @@
                     <div class="patch-detail-actions"><button id="workflowStart" class="patch-primary-btn">开始流程</button></div>
                 </div>
                 <div class="patch-card workflow-history-card">
-                    <div class="patch-table-header workflow-history-header"><div><h3>流程运行记录</h3><p>查看当前登录用户创建的所有智能开发流程。</p></div><button id="workflowHistoryRefresh" class="patch-secondary-btn">刷新</button></div>
+                    <div class="patch-table-header workflow-history-header"><div><h3>流程运行记录</h3><p>查看当前登录用户创建的所有智能分析流程。</p></div><button id="workflowHistoryRefresh" class="patch-secondary-btn">刷新</button></div>
                     <div class="patch-table-wrap"><table class="patch-table workflow-history-table patch-actions-table"><thead><tr><th>流程模板</th><th>业务需求</th><th>状态</th><th>步骤</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="workflowHistoryBody"><tr><td colspan="6" class="patch-empty">正在加载...</td></tr></tbody></table></div>
-                    <div class="patch-pagination"><button id="workflowHistoryPrev" class="patch-secondary-btn">上一页</button><span id="workflowHistoryPageInfo">第 1 页</span><button id="workflowHistoryNext" class="patch-secondary-btn">下一页</button></div>
+                    <div class="patch-pager" data-pager="workflowHistory"></div>
+                </div>
+            </section>
+
+            <section id="patchTabNode" class="patch-tab-panel active">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>智能开发</h2><p>填表后由<b>本机</b> ClaudeCode 结合产品源码与客开代码定位问题并产出补丁包。分析阶段不会改动客开工程；改动先落到补丁输出目录下的暂存目录，点「问题已解决」后才同步回客开工程。</p></div><button id="patchNewNodeRun" class="patch-primary-btn">新建智能开发</button></div>
+                    <div id="patchNodeMessage" class="patch-message"></div>
+                    <div id="patchNodeRunPanel" hidden>
+                        <div class="patch-node-run-head">
+                            <div><h3 id="patchNodeRunTitle">当前运行</h3><p id="patchNodeRunStatus" class="patch-node-run-status"></p></div>
+                            <div class="patch-detail-actions">
+                                <button id="patchNodeAbort" class="patch-secondary-btn" type="button" hidden>中断</button>
+                                <button id="patchNodeResumeSession" class="patch-secondary-btn" type="button" hidden title="在聊天页打开同一个 claude 会话（需在同一台机器）">查看会话</button>
+                                <button id="patchNodeUnsolved" class="patch-secondary-btn" type="button" hidden>问题未解决</button>
+                                <button id="patchNodeSolved" class="patch-primary-btn" type="button" hidden>问题已解决</button>
+                            </div>
+                        </div>
+                        <div id="patchNodeArtifacts" class="patch-node-artifacts" hidden></div>
+                    </div>
+                </div>
+                <div class="patch-card admin-panel">
+                    <div class="patch-table-header"><div><h3>运行记录</h3><p>本机运行清单与服务器存档的合并视图；换机后只剩服务器记录的显示为「仅存档」（不可继续）。</p></div><button id="patchNodeRunsRefresh" class="patch-secondary-btn">刷新</button></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>时间</th><th>问题/需求描述</th><th>产品·版本</th><th>状态</th><th>结论</th><th>操作</th></tr></thead><tbody id="patchNodeRunsBody"><tr><td colspan="6" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-pager" data-pager="nodeRuns"></div>
                 </div>
             </section>
 
@@ -199,6 +241,7 @@
                     <div class="admin-section-header"><div><h2>流程设置</h2><p>可管理自己的流程；管理员共享流程仅可查看和使用。</p></div><button id="patchNewFlow" class="patch-primary-btn">新增流程</button></div>
                     <div id="patchFlowMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>编码</th><th>名称</th><th>调用位置</th><th>保存上下文</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchFlowBody"></tbody></table></div>
+                    <div class="patch-pager" data-pager="flow"></div>
                 </div>
             </section>
 
@@ -207,6 +250,7 @@
                     <div class="admin-section-header"><div><h2>提示词设置</h2><p>可管理自己的提示词；管理员共享提示词仅可查看和使用。</p></div><button id="patchNewPrompt" class="patch-primary-btn">新增提示词</button></div>
                     <div id="patchPromptMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>名称</th><th>描述</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchPromptBody"></tbody></table></div>
+                    <div class="patch-pager" data-pager="prompt"></div>
                 </div>
             </section>
 
@@ -216,6 +260,7 @@
                     <div class="patch-analysis-toolbar"><label><input id="patchAnalysisSelectAll" type="checkbox"> 全选</label><label class="patch-analysis-count">前 <input id="patchAnalysisSelectCount" type="number" min="0" max="1000" placeholder="N" title="输入数字后回车，按列表顺序选中前 N 个补丁包"> 个</label><span id="patchAnalysisSelected">已选择 0 个</span><span id="patchAnalysisProgress"></span></div>
                     <div id="patchAnalysisMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th><input id="patchAnalysisHeaderSelect" type="checkbox"></th><th>名称</th><th>格式</th><th>大小</th><th>状态</th><th>上传时间</th><th>最近更新时间</th></tr></thead><tbody id="patchAnalysisBody"><tr><td colspan="7" class="patch-empty">暂无数据</td></tr></tbody></table></div>
+                    <div class="patch-pager" data-pager="analysis"></div>
                 </div>
             </section>
 
@@ -224,6 +269,7 @@
                     <div class="admin-section-header"><div><h2>产品版本管理</h2><p>维护产品名称与版本号字典，补丁上传、编辑与产品环境变量均通过下拉选择。删除为逻辑删除：仅从选择列表中隐藏，历史补丁与产品环境记录仍可查看。</p></div><button id="patchNewProduct" class="patch-primary-btn">新增产品</button></div>
                     <div id="patchProductMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>产品名称</th><th>排序</th><th>版本数</th><th>是否删除</th><th>操作</th></tr></thead><tbody id="patchProductBody"><tr><td colspan="5" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-pager" data-pager="product"></div>
                 </div>
             </section>
 
@@ -232,6 +278,7 @@
                     <div class="admin-section-header"><div><h2>工作目录</h2><p>管理当前用户可用的工作目录。管理员创建的内置目录仅可查看和使用。</p></div><button id="patchNewDirectory" class="patch-primary-btn">新增目录</button></div>
                     <div id="patchDirectoryMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>编码</th><th>名称</th><th>路径</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="patchDirectoryBody"></tbody></table></div>
+                    <div class="patch-pager" data-pager="directory"></div>
                 </div>
             </section>
 
@@ -240,6 +287,7 @@
                     <div class="admin-section-header"><div><h2>产品环境变量</h2><p>登记你自己项目的产品版本、数据库连接、远程调试地址与代码/包路径。每条记录仅自己可见、可改；产品与版本只能从管理员预置的字典中选择。</p></div><button id="patchNewProjectEnv" class="patch-primary-btn">新增环境</button></div>
                     <div id="patchProjectEnvMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>项目名称</th><th>产品名称</th><th>版本号</th><th>数据库连接信息</th><th>远程调试地址</th><th>客开代码目录</th><th>home/war包地址</th><th>本地skill地址</th><th>本地jdk路径</th><th>操作</th></tr></thead><tbody id="patchProjectEnvBody"><tr><td colspan="10" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-pager" data-pager="projectEnv"></div>
                 </div>
             </section>
 
@@ -248,6 +296,7 @@
                     <div class="admin-section-header"><div><h2>流程模板设置</h2><p>可管理自己的模板；管理员共享模板仅可查看和使用。</p></div><button id="patchNewTemplate" class="patch-primary-btn">新增模板</button></div>
                     <div id="patchTemplateMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>编码</th><th>名称</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchTemplateBody"></tbody></table></div>
+                    <div class="patch-pager" data-pager="template"></div>
                 </div>
             </section>
 
@@ -256,28 +305,31 @@
                     <div class="admin-section-header"><div><h2>普通用户默认</h2><p>控制普通用户登录后可见的菜单。管理员始终可见全部菜单，不受此处设置影响。隐藏后对应接口也会拒绝访问。</p></div><button id="patchMenuRoleSave" class="patch-primary-btn">保存</button></div>
                     <div id="patchMenuRoleMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>菜单</th><th>菜单键</th><th>普通用户可见</th><th>来源</th></tr></thead><tbody id="patchMenuRoleBody"><tr><td colspan="4" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-pager" data-pager="menuRole"></div>
                 </div>
                 <div class="patch-card admin-panel">
                     <div class="admin-section-header"><div><h2>用户例外</h2><p>为个别用户单独覆盖菜单可见性。「跟随角色默认」表示使用上方设置。待分析补丁、产品版本管理仅管理员可用，此处开关只影响页签显隐。</p></div><div class="patch-analysis-actions"><input id="patchMenuUserSearch" class="patch-input" type="search" placeholder="输入用户名筛选后回车" autocomplete="off"><select id="patchMenuUserSelect" class="patch-input"><option value="">选择用户</option></select><button id="patchMenuUserSave" class="patch-primary-btn">保存</button></div></div>
                     <div id="patchMenuUserMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>菜单</th><th>角色默认</th><th>例外设置</th><th>实际可见</th></tr></thead><tbody id="patchMenuUserBody"><tr><td colspan="4" class="patch-empty">请选择用户</td></tr></tbody></table></div>
+                    <div class="patch-pager" data-pager="menuUser"></div>
+                </div>
+            </section>
+            <section id="patchTabSessions" class="patch-tab-panel">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header"><div><h2>会话存档</h2><p>已解决智能开发问题的完整会话内容（含思考过程）。仅管理员可见，可按账号、产品、工单关键字过滤并分页。</p></div></div>
+                    <div class="patch-search-row patch-search-toolbar" style="flex-wrap:wrap">
+                        <input id="patchSessionsUser" class="patch-input" type="search" placeholder="账号ID" style="width:140px" autocomplete="off">
+                        <input id="patchSessionsProduct" class="patch-input" type="search" placeholder="产品名" style="width:160px" autocomplete="off">
+                        <input id="patchSessionsKeyword" class="patch-input" type="search" placeholder="工单(run id)" style="width:200px" autocomplete="off">
+                        <button id="patchSessionsQuery" class="patch-primary-btn">查询</button>
+                        <button id="patchSessionsReset" class="patch-link-btn">重置</button>
+                    </div>
+                    <div id="patchSessionsMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>解决时间</th><th>账号ID</th><th>产品·版本</th><th>问题简述</th><th>消息数</th><th>claude会话</th><th>操作</th></tr></thead><tbody id="patchSessionsBody"><tr><td colspan="7" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-pager" data-pager="sessions"></div>
                 </div>
             </section>
                 </div>
-                <aside class="patch-user-sidebar" id="patchUserSidebar">
-                    <section class="patch-card patch-user-summary">
-                        <h3>我的数据</h3>
-                        <div id="patchUserMetrics" class="patch-user-metrics">正在加载...</div>
-                    </section>
-                    <section class="patch-card patch-leaderboard">
-                        <h3>贡献榜 TOP 10</h3>
-                        <div id="patchLeaderboard" class="patch-leaderboard-list">正在加载...</div>
-                    </section>
-                    <section class="patch-card patch-leaderboard">
-                        <h3>活跃榜 TOP 10</h3>
-                        <div id="patchActivityLeaderboard" class="patch-leaderboard-list">正在加载...</div>
-                    </section>
-                </aside>
             </div>
         </main>
     </div>
@@ -290,7 +342,7 @@
         </div>
         <div class="help-panel-body">
             <section>
-                <h3>智能开发</h3>
+                <h3>智能分析</h3>
                 <ul>
                     <li>登录后可在<b>普通检索</b>按名称、描述、类名或关键词搜索已分析补丁。</li>
                     <li><b>补丁上传</b>支持拖拽或选择 zip/rar，多个文件可批量上传。</li>
@@ -298,7 +350,7 @@
                 </ul>
             </section>
             <section>
-                <h3>智能开发</h3>
+                <h3>智能分析</h3>
                 <ul>
                     <li>选择<b>流程模板</b>并输入业务需求后点击开始流程。</li>
                     <li>每个步骤执行完成后需要点击<b>确认下一步</b>才会继续。</li>
@@ -326,8 +378,22 @@
         </div>
     </div>
 
+    <div id="patchAdaptModal" class="modal-overlay" hidden>
+        <div class="modal patch-upload-modal">
+            <div class="modal-header"><h3>补丁适配</h3><button id="patchAdaptClose" class="modal-close">×</button></div>
+            <div class="patch-upload-items">
+                <div id="patchAdaptItems"></div>
+                <div class="patch-upload-item">
+                    <label class="patch-file-description-label">客开工程目录<span class="patch-required">*</span><input id="patchAdaptProjectDir" maxlength="1024" placeholder="本机绝对路径，如：D:\project\my-app"></label>
+                </div>
+            </div>
+            <div id="patchAdaptModalMessage" class="patch-message"></div>
+            <div class="modal-footer"><button id="patchAdaptCancel" type="button" class="btn-cancel">取消</button><button id="patchAdaptStart" type="button" class="btn-primary">适配</button></div>
+        </div>
+    </div>
+
     <div id="patchDirectoryModal" class="modal-overlay" hidden>
-        <div class="modal patch-admin-modal"><div class="modal-header"><h3>工作目录</h3><button id="patchDirectoryClose" class="modal-close">×</button></div><form id="patchDirectoryForm" class="patch-admin-form"><label>编码<input name="code" required></label><label>名称<input name="name" required></label><p class="patch-muted">内置目录仅供服务器 ClaudeCode 使用，必须是服务器上已存在的绝对路径，仅管理员可建；个人目录用于本地 ClaudeCode 步骤，填运行 cc-web 电脑上的目录，可在「智能开发 → 启动流程」时选用。</p><label>路径<input name="path" required placeholder="内置目录填服务器上已存在的绝对路径；个人目录填运行 cc-web 电脑上的目录"></label><label id="patchDirectoryBuiltinLabel"><input type="checkbox" name="is_builtin"> 管理员内置目录（仅管理员可勾选）</label></form><div class="modal-footer"><button id="patchDirectoryCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchDirectoryForm" class="btn-primary">保存</button></div></div>
+        <div class="modal patch-admin-modal"><div class="modal-header"><h3>工作目录</h3><button id="patchDirectoryClose" class="modal-close">×</button></div><form id="patchDirectoryForm" class="patch-admin-form"><label>编码<input name="code" required></label><label>名称<input name="name" required></label><p class="patch-muted">内置目录仅供服务器 ClaudeCode 使用，必须是服务器上已存在的绝对路径，仅管理员可建；个人目录用于本地 ClaudeCode 步骤，填运行 cc-web 电脑上的目录，可在「智能分析 → 启动流程」时选用。</p><label>路径<input name="path" required placeholder="内置目录填服务器上已存在的绝对路径；个人目录填运行 cc-web 电脑上的目录"></label><label id="patchDirectoryBuiltinLabel"><input type="checkbox" name="is_builtin"> 管理员内置目录（仅管理员可勾选）</label></form><div class="modal-footer"><button id="patchDirectoryCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchDirectoryForm" class="btn-primary">保存</button></div></div>
     </div>
 
     <div id="patchAdminModal" class="modal-overlay" hidden>
@@ -350,9 +416,38 @@
                 <label class="patch-inline-field"><span class="patch-inline-label">客开代码目录<span class="patch-required">*</span></span><textarea name="code_directory" rows="2" required placeholder="如：D:\project\my-app\src"></textarea></label>
                 <label class="patch-inline-field"><span class="patch-inline-label">home/war包地址<span class="patch-required">*</span></span><input name="package_path" maxlength="1024" required placeholder="如：D:\project\my-app\home"></label>
                 <label class="patch-inline-field"><span class="patch-inline-label">本地skill地址</span><input name="local_skill_path" maxlength="1024" placeholder="本机上 skill 所在位置，如：D:\my-skills\crm（可不填）"></label>
-                <label class="patch-inline-field"><span class="patch-inline-label">本地jdk路径</span><input name="local_jdk_path" maxlength="1024" placeholder="本机 JDK 根目录（JAVA_HOME），如：D:\Software\jdk-17（可不填）"></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">本地jdk路径<span class="patch-required">*</span></span><input name="local_jdk_path" maxlength="1024" required placeholder="本机 JDK 根目录（JAVA_HOME），如：D:\Software\jdk-17"></label>
             </form>
             <div class="modal-footer"><button id="patchProjectEnvCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchProjectEnvForm" class="btn-primary">保存</button></div>
+        </div>
+    </div>
+
+    <div id="patchNodeFormModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3>新建智能开发</h3><button id="patchNodeFormClose" class="modal-close">×</button></div>
+            <form id="patchNodeRunForm" class="patch-admin-form">
+                <label class="patch-inline-field"><span class="patch-inline-label">问题/需求描述<span class="patch-required">*</span></span><textarea name="problem_desc" rows="4" required placeholder="描述要解决的问题，或要实现的需求"></textarea></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">触发的url<span class="patch-required">*</span></span><input name="trigger_url" maxlength="2048" required placeholder="触发该问题/需求时的 URL，如：http://10.4.122.21:8080/nccloud/?billid=xxx"></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">关联的产品环境变量<span class="patch-required">*</span></span><select name="env_id" required><option value="">请选择产品环境</option></select></label>
+                <p id="patchNodeEnvHint" class="patch-node-env-hint"></p>
+                <label class="patch-inline-field"><span class="patch-inline-label">补丁输出路径<span class="patch-required">*</span></span><input name="patch_output_path" maxlength="1024" required placeholder="本机绝对路径，如：D:\patch-out\crm-20260920（不设默认值，每次自己填）"></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">相关日志信息</span><textarea name="log_info" rows="4" placeholder="选填。粘贴报错栈/日志，会随本次问题一起交给 claude 定位（不落盘）"></textarea></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">日志文件名称（不需要后缀）</span><input name="log_file_name" maxlength="64" placeholder="默认 ailog；本次 claude 写的排查日志文件名"></label>
+            </form>
+            <div class="modal-footer"><button id="patchNodeFormCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchNodeRunForm" class="btn-primary">开始执行</button></div>
+        </div>
+    </div>
+
+    <div id="patchNodeRerunModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3>未解决 · 重跑</h3><button id="patchNodeRerunClose" class="modal-close">×</button></div>
+            <div class="patch-admin-form">
+                <p id="patchNodeRerunMeta" class="patch-node-env-hint"></p>
+                <label class="patch-inline-field patch-inline-stack"><span class="patch-inline-label">上传日志文件<span class="patch-required">*</span></span><input id="patchNodeRerunFile" type="file" required></label>
+                <label class="patch-inline-field patch-inline-stack"><span class="patch-inline-label">SQL 结果集（选填）</span><textarea id="patchNodeRerunSql" rows="4" placeholder="粘贴本次执行的 SQL 及其结果集……"></textarea></label>
+                <p class="patch-muted" style="margin:4px 0 0; font-size:12px; line-height:1.6;">日志文件必填，会拼到阶段一提示词后面一起交给 claude；SQL 结果集选填，填了也会一起拼上。日志超过约 1MB 自动截断。</p>
+            </div>
+            <div class="modal-footer"><button id="patchNodeRerunCancel" type="button" class="btn-cancel">取消</button><button id="patchNodeRerunConfirm" type="button" class="btn-primary">确认重跑</button></div>
         </div>
     </div>
 

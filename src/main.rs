@@ -51,15 +51,28 @@ pub struct AppState {
     pub streaming_state: RwLock<std::collections::HashMap<String, StreamingState>>,
     /// Local workflow executions keyed by the caller-provided idempotency key.
     pub local_executions: Mutex<std::collections::HashMap<String, LocalExecution>>,
+    /// 智能开发节点的本机运行清单（`~/.cc-web/node_runs.json`）。
+    /// 存的是前端定义的 run 对象，cc-web 不解释其字段（见 api/node_runs.rs）。
+    pub node_runs: RwLock<serde_json::Map<String, serde_json::Value>>,
 }
 
-/// Get the path to the sessions data file
-fn get_sessions_file_path() -> std::path::PathBuf {
+/// `~/.cc-web` 数据目录（不存在则创建）。
+fn cc_web_dir() -> std::path::PathBuf {
     let data_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".cc-web");
     std::fs::create_dir_all(&data_dir).ok();
-    data_dir.join("sessions.json")
+    data_dir
+}
+
+/// Get the path to the sessions data file
+fn get_sessions_file_path() -> std::path::PathBuf {
+    cc_web_dir().join("sessions.json")
+}
+
+/// Get the path to the node runs data file（智能开发节点的本机运行清单）
+fn get_node_runs_file_path() -> std::path::PathBuf {
+    cc_web_dir().join("node_runs.json")
 }
 
 /// Load sessions from disk
@@ -102,6 +115,49 @@ pub fn save_sessions_to_disk_async(data: &AppState) {
     let sessions_snapshot = data.sessions.read().unwrap().clone();
     tokio::task::spawn_blocking(move || {
         save_sessions_to_disk(&sessions_snapshot);
+    });
+}
+
+// ── 智能开发节点的本机运行清单（与 sessions.json 同一套机制） ──
+/// Load node runs from disk. 解析失败按空清单处理：清单是"能不能继续动手"的索引，
+/// 坏了顶多是这次运行要重来，不该影响启动。
+fn load_node_runs_from_disk() -> serde_json::Map<String, serde_json::Value> {
+    let path = get_node_runs_file_path();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&content) {
+            Ok(runs) => {
+                log::info!("📂 Loaded {} node run(s) from {}", runs.len(), path.display());
+                runs
+            }
+            Err(e) => {
+                log::error!("⚠️ Failed to parse node runs file: {}", e);
+                serde_json::Map::new()
+            }
+        },
+        Err(_) => serde_json::Map::new(),
+    }
+}
+
+/// Save node runs to disk（同步版本）
+pub fn save_node_runs_to_disk(runs: &serde_json::Map<String, serde_json::Value>) {
+    let path = get_node_runs_file_path();
+    match serde_json::to_string_pretty(runs) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(&path, content) {
+                log::error!("Failed to save node runs: {}", e);
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to serialize node runs: {}", e);
+        }
+    }
+}
+
+/// Save node runs to disk（异步版本，不阻塞 tokio 工作线程）
+pub fn save_node_runs_to_disk_async(data: &AppState) {
+    let runs_snapshot = data.node_runs.read().unwrap().clone();
+    tokio::task::spawn_blocking(move || {
+        save_node_runs_to_disk(&runs_snapshot);
     });
 }
 
@@ -204,6 +260,12 @@ async fn main() -> std::io::Result<()> {
         log::info!("Restored {} session(s)", session_count);
     }
 
+    // Load persisted node runs（智能开发节点的本机运行清单）
+    let saved_node_runs = load_node_runs_from_disk();
+    if !saved_node_runs.is_empty() {
+        println!("   📂 {} node run(s) restored", saved_node_runs.len());
+    }
+
     let data = web::Data::new(AppState {
         registry: RwLock::new(registry),
         sessions: RwLock::new(saved_sessions),
@@ -212,6 +274,7 @@ async fn main() -> std::io::Result<()> {
         streaming_sessions: RwLock::new(std::collections::HashSet::new()),
         streaming_state: RwLock::new(std::collections::HashMap::new()),
         local_executions: Mutex::new(std::collections::HashMap::new()),
+        node_runs: RwLock::new(saved_node_runs),
     });
 
     let patch_servers = api::patch_config::patch_search_servers();
@@ -250,10 +313,19 @@ async fn main() -> std::io::Result<()> {
             .route("/api/agent/{id}", web::post().to(api::agent::send_command))
             .route("/api/agent/{id}", web::get().to(api::agent::get_state))
             .route("/api/agent/{id}/events", web::get().to(api::agent::events))
+            // 只读：按 claude 会话 id 读本机 ~/.claude/projects 下的记录（聊天页的"只读回放"用）
+            .route("/api/claude-sessions/{sid}", web::get().to(api::agent::claude_session_history))
             .route("/api/files", web::get().to(api::files::list_files))
+            // 原始字节/定位文件：必须在 /api/files/{path:.*} 之前注册（raw/reveal 是更具体的前缀）
+            .route("/api/files/raw/{path:.*}", web::get().to(api::files::read_file_raw))
+            .route("/api/files/reveal", web::post().to(api::files::reveal_file))
             .route("/api/files/{path:.*}", web::get().to(api::files::read_file))
             .route("/api/local-claude/execute", web::post().to(api::local_claude::execute))
             .route("/api/local-claude/{execution_id}/cancel", web::post().to(api::local_claude::cancel))
+            // 智能开发节点的本机运行清单（见 api/node_runs.rs）
+            .route("/api/node/runs", web::get().to(api::node_runs::list_runs))
+            .route("/api/node/runs/{id}", web::put().to(api::node_runs::put_run))
+            .route("/api/node/runs/{id}", web::delete().to(api::node_runs::delete_run))
             // 调试 API：返回所有会话的实时状态快照
             .route("/api/debug/state", web::get().to(debug_state))
             // 补丁中心配置：向前端下发 patch_search 后端地址（代码内写死，无需 patch_config.json）

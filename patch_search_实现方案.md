@@ -2167,6 +2167,14 @@ location.href = `index.html?resume=1&sid=${encodeURIComponent(sid)}&cwd=${encode
 
 → 所以两个阶段只是**对同一个 cc-web 会话连续 start 两次**，`claude.rs` 与 `agent.rs` 零改动。
 
+**落地时唯一的 cc-web 后端改动（1 行，additive）**：`src/ai/streaming.rs` 的 `start` 事件多带一个字段
+
+```rust
+"agentSessionId": agent_session_id.clone()   // 非 claude 助手为 null
+```
+
+原因：`agent_session_id` 第 2 步只写进了 `Session` 并落盘到 `sessions.json`，`GET /api/sessions/{id}` **不返回**它，SSE 也没有别的地方带它 → 前端拿不到「claude 会话 id」，就没法上报 `claude_session_id`，也没法拼 20.15 的「继续会话」链接。加到已有的 `start` 事件上是最小代价（不改接口签名、不改落盘格式、不影响既有消费方）。
+
 **反面**（为什么不能用 `/api/local-claude/execute`）：那条路走 `execute_once_with_session`，是唯一的**无 `--resume`** 分支（`LocalClaudeRequest` 也没有 resume 字段），每次都是全新进程 → 无法满足「同一个会话」。
 
 ### 20.5 ⚠️ `--resume` 与 cwd 强绑定（已实测）
@@ -2234,9 +2242,11 @@ stageDir  = <outDir>/work                       ← 只放"被改过的那几个
 
 | 接口 | 说明 |
 |---|---|
-| `GET /api/node/runs` | 返回全部 run（本机清单，无需分页） |
+| `GET /api/node/runs` | 返回全部 run（本机清单，无需分页）。**额外带一个 `host`**（本机机器名） |
 | `PUT /api/node/runs/{id}` | **upsert**：整对象覆盖式写入，不存在则创建。前端每阶段结束/每次状态变化都 PUT |
 | `DELETE /api/node/runs/{id}` | 从清单移除（**不删** outDir 里的产物，也不删 cc-web 会话） |
+
+**`host` 为什么在 `GET` 上而不是 run 对象里**：浏览器读不到本机机器名（`navigator` 里没有可信来源），而 `client_host` 要上报给服务器（见 20.17"换机后显示原机器名"）。所以由 cc-web 读环境变量（`COMPUTERNAME` → `HOSTNAME` → `"unknown"`，取不到不报错）随列表一起下发，前端在**新建 run** 时把它写进 run 的 `client_host`。存进 run 而不是每次上报现取，是为了让「这台机器」在换机后仍可解释（本机清单是全机共享的一份，换用户也不该漂移）。
 
 run 对象（前端持有，cc-web 只做透明存取，**不解释字段**）：
 
@@ -2245,59 +2255,74 @@ run 对象（前端持有，cc-web 只做透明存取，**不解释字段**）�
   "id": "uuid",
   "problem_desc": "…",
   "env_id": 3,
-  "env_snapshot": { "project_name": "…", "product_name": "…", "product_version": "…",
+  "env_snapshot": { "project_name": "…", "product_id": 7, "version_id": 12,
+                    "product_name": "…", "product_version": "…",
                     "code_directory": "D:\\repo", "package_path": "D:\\home",
-                    "local_jdk_path": "D:\\Software\\jdk-17" },
+                    "local_jdk_path": "D:\\Software\\jdk-17",
+                    "db_connection": "jdbc:mysql://10.4.122.21:3306/patch?user=…&password=…",
+                    "debug_address": "10.4.122.21:5005" },
   "patch_output_path": "D:\\patch-runs\\20260920-1",
+  "out_dir": "<patch_output_path>\\<id>",
+  "stage_dir": "<outDir>\\work",
   "log_info_inline": "短日志原文",
-  "log_info_path": "<outDir>\\logs.txt",
   "session_id": "cc-web 会话 id",
   "agent_session_id": "claude 会话 id",
-  "stage_dir": "<outDir>\\work",
   "phase": "analyzing | awaiting_decision | merging | done | failed",
   "verdict": null,
+  "failure": null,
   "report": "claude 最终结论文本",
   "artifacts": ["<outDir>\\patch.zip", "<outDir>\\方案.txt", "<outDir>\\changes.txt"],
+  "client_host": "本机机器名",
   "reported": false,
-  "created_at": "…", "updated_at": "…"
+  "created_at": "…", "finished_at": "…", "updated_at": "…"
 }
 ```
 
 - `env_snapshot` 存**快照**而不是只存 `env_id`：环境条目事后再被编辑/删除时，这条 run 仍然自解释。
-- 日志信息若很长，写进 `<outDir>/logs.txt`，清单里只留路径，避免 `node_runs.json` 膨胀（它每次状态变化都要整体落盘）。
+- `env_snapshot` 里的 `db_connection` / `debug_address` / `local_skill_path` 是**选填**的（环境条目里没登记就没有这个键、提示词里也没有这一行）：`db_connection` 只在提示词里给 claude 当**只读**查询用（约束见 20.13 第 7 条），`debug_address` 只是把远程调试口告诉它，`local_skill_path` 是**本机 skill 库根目录**（第二十二章），提示词按它点名让 claude 去读 `<库>/java-compiler-mcp/SKILL.md`。⚠️ `db_connection` 通常含账号口令，落进本机 `node_runs.json` 就是**明文存了一份凭据**——可接受的理由：它本来就等价地存在 patch_search 库里、且浏览器每次都要取；但它**不参与上报**（`patchNodePushReport` 是白名单，只送 20.8 那几列），也**不在 UI 上展示**。若不希望本机落盘，可改为只在建 run 时内存里传给提示词、不进快照（代价是 run 不再自解释）。
+- 日志（`log_info`）**不落盘**（2026-09-20 拍板）：它的定位是"用户提供给 claude 的定位输入"，全文进提示词即可；短日志（≤8KB）在清单里留一份 `log_info_inline` 备查，超过 8KB 的**哪里都不存**。原先那套"让 claude 抄一份到 `<outDir>/logs.txt`、清单只留路径"的做法已去掉——理由见 20.13 第 6 条（浏览器写不了文件 → 只能靠 claude 抄，几万行的日志既费输出 token 又可能抄走样）。
+- `out_dir` 是 `patch_output_path`（用户填的父目录）与 `id` 拼出来的，**必须落进 run**：它决定了产物在哪、`stage_dir` 在哪。只在内存里拼、不落盘的话「继续查看」就指不出产物。
+- 相比 20.7 早期草稿多带的字段：`out_dir`、`client_host`、`failure`、`env_snapshot.product_id/version_id`（前两个见上；`failure` 区分"合并失败"与"中断"，因为服务器 `status` 两个值不同；`product_id/version_id` 是为了上报 `problem_run` 的外键列，而 `env_snapshot` 又是 run 里唯一自解释的来源）。
 
 ### 20.8 服务器表 `problem_run`（patch_search）
 
 > 措辞约束：**本表是本机 `node_runs.json` 的只写摘要账本，不是运行的事实来源。**任何执行/判定逻辑都不得以本表状态为驱动依据。
 
+> **以迁移文件为准**：`schema/migration_problem_run.sql`（幂等，可重复执行）。下面这段与它逐字一致，改一处请同步另一处。
+
 ```sql
-CREATE TABLE `problem_run` (
-  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '运行记录主键',
-  `local_run_id` varchar(64) NOT NULL COMMENT '客户端生成的运行标识，幂等键',
+CREATE TABLE IF NOT EXISTS `problem_run` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `local_run_id` varchar(64) NOT NULL COMMENT '客户端生成的运行标识（uuid），幂等上报的唯一键',
   `problem_desc` text NOT NULL COMMENT '问题/需求描述',
-  `env_id` bigint(20) unsigned DEFAULT NULL COMMENT '关联的产品环境变量 ID',
-  `env_project_name` varchar(255) DEFAULT NULL COMMENT '环境快照：项目名称',
-  `product_id` bigint(20) unsigned DEFAULT NULL COMMENT '产品字典 ID',
-  `version_id` bigint(20) unsigned DEFAULT NULL COMMENT '版本字典 ID',
-  `code_directory` varchar(1024) DEFAULT NULL COMMENT '环境快照：客开代码目录（本机路径）',
-  `patch_output_path` varchar(1024) DEFAULT NULL COMMENT '环境快照：补丁输出路径（本机路径）',
-  `status` varchar(32) NOT NULL DEFAULT 'running' COMMENT 'running 执行中、awaiting_decision 待判定、solved 已解决、unsolved 未解决、merge_failed 合并失败、aborted 已中断',
-  `conclusion` text COMMENT '结论摘要（简短结论 / 改动说明）',
-  `claude_session_id` varchar(128) DEFAULT NULL COMMENT 'claude 会话 id；仅同一台客户端机器可用于继续会话',
-  `client_host` varchar(128) DEFAULT NULL COMMENT '执行该运行的客户端机器名',
-  `started_at` datetime DEFAULT NULL COMMENT '开始执行时间',
-  `finished_at` datetime DEFAULT NULL COMMENT '结束时间',
-  `created_by_user_id` bigint(20) unsigned NOT NULL COMMENT '创建用户 ID',
+  `env_id` bigint(20) unsigned DEFAULT NULL COMMENT '关联的产品环境变量 ID（无外键；仅追溯用，展示不 JOIN）',
+  `env_project_name` varchar(255) DEFAULT NULL COMMENT '环境快照：项目名称（环境改名/删除后本记录仍可读）',
+  `product_id` bigint(20) unsigned DEFAULT NULL COMMENT '产品字典 ID（无外键无索引，展示时 LEFT JOIN product 取名称）',
+  `version_id` bigint(20) unsigned DEFAULT NULL COMMENT '版本字典 ID（无外键无索引，展示时 LEFT JOIN product_version 取版本号）',
+  `code_directory` varchar(1024) DEFAULT NULL COMMENT '环境快照：客开代码目录（客户端本机路径；服务器不校验不访问）',
+  `patch_output_path` varchar(1024) DEFAULT NULL COMMENT '环境快照：补丁输出路径（客户端本机路径；服务器不校验不访问）',
+  `status` varchar(32) NOT NULL DEFAULT 'running' COMMENT '运行状态：running 执行中、awaiting_decision 待用户判定、solved 已解决、unsolved 未解决、merge_failed 合并失败、aborted 已中断',
+  `conclusion` text COMMENT '结论摘要（改动说明 / 方案要点）；不存日志正文',
+  `claude_session_id` varchar(128) DEFAULT NULL COMMENT 'claude 会话 id；仅生成它的那台客户端机器能用于「继续会话」',
+  `client_host` varchar(128) DEFAULT NULL COMMENT '执行该运行的客户端机器名，用于解释换机后为何不可继续',
+  `started_at` datetime DEFAULT NULL COMMENT '开始执行时间（客户端上报）',
+  `finished_at` datetime DEFAULT NULL COMMENT '结束时间（客户端上报，用于统计耗时）',
+  `created_by_user_id` bigint(20) unsigned NOT NULL COMMENT '归属用户 ID；每个用户只能看到/改到自己的行',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_problem_run_local_id` (`local_run_id`),
   KEY `idx_problem_run_owner_time` (`created_by_user_id`,`id`),
-  KEY `idx_problem_run_status` (`status`),
-  CONSTRAINT `fk_problem_run_owner` FOREIGN KEY (`created_by_user_id`) REFERENCES `user_account` (`id`),
-  CONSTRAINT `fk_problem_run_env` FOREIGN KEY (`env_id`) REFERENCES `project_environment` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='问题解决节点运行摘要表';
+  CONSTRAINT `fk_problem_run_owner` FOREIGN KEY (`created_by_user_id`) REFERENCES `user_account` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='问题解决节点运行摘要表（本地 node_runs.json 的只写账本）';
 ```
+
+**两处与本文档早期草稿的偏差（落地时改的，以迁移文件为准）：**
+
+| 早期草稿 | 实际落地 | 理由 |
+|---|---|---|
+| `KEY idx_problem_run_status (status)` | **去掉** | 现有查询恒为按 `created_by_user_id` 过滤 + `ORDER BY id DESC`，没有按状态过滤的场景；`status` 只有 6 个取值，低基数索引基本不会被选中，白占写入开销。将来真出现按状态过滤再加。 |
+| `CONSTRAINT fk_problem_run_env FOREIGN KEY (env_id) REFERENCES project_environment (id) ON DELETE SET NULL` | **去掉** | 与 `project_environment` 自己的口径一致——那张表连自己都没有任何外键（隔离全靠应用层）。而且本表展示时不 JOIN `project_environment`（用 `env_project_name` 快照），外键约束不到任何实际用途，反而会给环境删除带来额外锁与失败面。`product_id / version_id` 同样无外键。`created_by_user_id` 的外键保留，与 `workflow_flow / workflow_directory / patch_info` 一致。 |
 
 字段说明：
 
@@ -2306,7 +2331,7 @@ CREATE TABLE `problem_run` (
 | `id` | BIGINT UNSIGNED | 否 | 自增主键。 |
 | `local_run_id` | VARCHAR(64) | 否 | 客户端生成的 uuid，**唯一键即幂等键**：上报天然可重试，不需要"先查后插"。 |
 | `problem_desc` | TEXT | 否 | 问题/需求描述。 |
-| `env_id` | BIGINT UNSIGNED | 是 | 关联的产品环境变量；环境被删则置 NULL（`ON DELETE SET NULL`），历史记录不丢。不想与 `project_environment` 耦合时可去掉该外键，只留列。 |
+| `env_id` | BIGINT UNSIGNED | 是 | 关联的产品环境变量 ID，**只留列、无外键**（见上方偏差表）。环境被删后本列成为悬空引用，但展示用的是 `env_project_name` 快照，所以历史记录照样可读。 |
 | `env_project_name` | VARCHAR(255) | 是 | 环境快照。环境改名/删除后本记录仍可读。 |
 | `product_id` / `version_id` | BIGINT UNSIGNED | 是 | 产品/版本字典 ID。与 `project_environment` 的做法一致：**只存 ID、不存名称文本**，展示时 `LEFT JOIN product` / `product_version` 取名称；字典是逻辑删除、行永远在，所以历史记录永远显示得出名字，且管理员改名后自动跟随。 |
 | `code_directory` / `patch_output_path` | VARCHAR(1024) | 是 | 环境快照，本机绝对路径，**仅供看懂"在哪台机器、哪个目录"**，服务端不校验、不访问。 |
@@ -2324,8 +2349,22 @@ CREATE TABLE `problem_run` (
 running ──(阶段一结束)──> awaiting_decision ──┬─(点已解决，合并成功)─> solved
                                               ├─(点已解决，合并失败)─> merge_failed
                                               └─(点未解决)──────────> unsolved
-running ──(阶段一失败/中断)──> aborted
+running ──(用户点中断)──> aborted
 ```
+
+**本地 `phase`/`verdict`/`failure` → 服务器 `status` 的实际映射**（前端 `patchNodeServerStatus`，本地是事实来源、服务器只是摘要）：
+
+| 本地 | 服务器 | 说明 |
+|---|---|---|
+| `analyzing` / `merging` | `running` | 两个阶段都在跑 |
+| `awaiting_decision` | `awaiting_decision` | |
+| `done` + `verdict=solved` | `solved` | |
+| `done` + `verdict=unsolved` | `unsolved` | 含"点未解决"和"阶段二合并未成功"两种来路 |
+| `failed` + `failure=merge` | `merge_failed` | 合并冲突/未成功（20.14） |
+| `failed` + `failure=abort` | `aborted` | 只有用户点「中断」 |
+
+**与早期草稿的一处语义修正**：草稿写的是「阶段一失败 → aborted」，实际实现里**阶段一执行出错（claude 进程报错、spawn 失败、会话建不起来）也落到 `awaiting_decision`**，不落 `aborted`。
+理由：出错后用户仍然有唯一的收尾入口（未解决 / 已解决 / 删除记录），此时把状态说成"已中断"会误导人以为是用户主动停的；`aborted` 只留给**用户真的点了中断**这一种情况。同理，服务器上不存在"阶段一失败"这个状态——**不是漏了，是刻意不引入**。
 
 **刻意不做的设计**（避免误用）：
 
@@ -2354,22 +2393,23 @@ running ──(阶段一失败/中断)──> aborted
 
 ### 20.11 页面与表单（`static/patches.html` + `static/patches.js`）
 
-**表单**（新增 `patchNodeSetupModal` 风格的弹窗或页内表单）：
+**表单**（实现为 `#patchNodeFormModal`，照 `patchProjectEnvModal` 的既有写法）：
 
 | 字段 | 控件 | 说明 |
 |---|---|---|
-| 问题/需求描述 | textarea，必填 | |
-| 关联的产品环境变量 | select，必填 | 选项来自 `GET /api/project-envs`（既有接口），显示 `项目名称（产品名 版本号）`；选中后把 `code_directory/package_path/local_jdk_path` 存进 `env_snapshot` |
-| 补丁输出路径 | input，必填 | 本机绝对路径。**不设默认值**（已拍板），每次由用户自己填；只做"非空 + 绝对路径"的前端校验 |
-| 相关日志信息 | textarea，选填 | 超过阈值（如 8KB）时前端提示"将写入 logs.txt" |
+| 问题/需求描述 | textarea（`problem_desc`），必填 | 前端 trim 后判空 |
+| 关联的产品环境变量 | select（`env_id`），必填 | 选项来自 `GET /api/project-envs`（既有接口），显示 `项目名称（产品名 版本号）`；选中后把 `code_directory/package_path/local_jdk_path` 以及**选填的 `db_connection`/`debug_address`/`local_skill_path`** 一起存进 `env_snapshot`，并在下方提示行显示前三个值（JDK 没登记时提示"编译前需要补"） |
+| 补丁输出路径 | input（`patch_output_path`），必填 | 本机绝对路径（父目录，`<outDir>` = 它 + `/<runId>`）。**不设默认值**（已拍板），每次由用户自己填；只做"非空 + 绝对路径"的前端校验 |
+| 相关日志信息 | textarea（`log_info`），选填 | 全文**整段内联**进阶段一提示词（给 claude 定位用）；≤8KB 时在清单里另存一份 `log_info_inline` 备查，超过就不存（见 20.7 / 20.13 第 6 条）。**不落盘、不让 claude 抄** |
 
-注：编译依赖根（`home`）不单独填，取所选环境的 `package_path`（"home/war包地址"）；JDK 取环境的 `local_jdk_path`。这两个值都进 `env_snapshot` 并在提示词里给 claude。
+注：编译依赖根（`home`）不单独填，取所选环境的 `package_path`（"home/war包地址"）；JDK 取环境的 `local_jdk_path`；数据库连接、远程调试口、skill 库根目录分别取环境的 `db_connection` / `debug_address` / `local_skill_path`（**三者都选填**）。这些值都进 `env_snapshot` 并在提示词里给 claude。
 
 **流程区**（执行中/结束后的展示）：
 
-- 执行中：流式输出区（同聊天页渲染思路）+ 「中断」按钮（调 `POST /api/agent/{id}/abort`，`agent.rs:930`）
-- 结束后：**问题未解决** / **问题已解决** 两个按钮 + 产物清单（zip / 方案.txt / changes.txt / 结论.md，可点击提示路径）+ 「查看完整会话」
-- 点「问题已解决」前先把 `<outDir>/changes.txt` 展示给用户（见 20.14 的风险说明），再二次确认
+- 执行中：流式输出区 + 「中断」按钮（调 `POST /api/agent/{id}/abort`，`agent.rs:930`）
+- 结束后：**问题未解决** / **问题已解决** 两个按钮 + 产物清单（zip / 方案.txt / changes.txt / 结论.md / 合并说明.md，`GET /api/files?path=<outDir>` 列目录得到）+ 「继续会话」（就是 20.15 那条跳转，**没有**另做一个"查看完整会话"按钮）
+- 产物按钮点一下把**文本**产物内容读进输出区（`GET /api/files/{path}`）；zip 之类读不了，提示"到该路径自行打开"
+- 点「问题已解决」前先把 `<outDir>/changes.txt` 展示给用户（见 20.14 的风险说明），再二次确认；`changes.txt` 也读不到时照常弹确认，但把失败原因写在确认框里
 
 **运行列表**（合并视图 = 本机 `node_runs.json` ∪ 服务器 `problem_run`，按 `local_run_id` 去重、**本地优先**）：
 
@@ -2380,7 +2420,7 @@ running ──(阶段一失败/中断)──> aborted
 | 产品·版本 | 名称 |
 | 状态 | `phase` / `status` 映射为中文：执行中、待判定、已解决、未解决、合并失败、已中断 |
 | 结论 | `report` / `conclusion` 摘要 |
-| 操作 | **本地有** → `继续查看`（打开该 run 的流程区，流式区不重放、只显示已存结果）/ 未解决 / 已解决（未判定时）/ `继续会话`（跳聊天页，见 20.15）/ `删除记录`；**仅服务器有**（换机后）→ 显示「仅存档」并禁用一切操作按钮，`client_host` 列提示原机器。**不做「重跑」**（已拍板）：失败或未解决后要再做一次，就新建一个 run |
+| 操作 | **本地有** → `继续查看`（打开该 run 的流程区，流式区不重放、只显示已存结果）/ 未解决 / 已解决（未判定时）/ `继续会话`（跳聊天页，见 20.15）/ `删除记录`；**仅服务器有**（换机后）→ 不渲染任何按钮，只显示一行文字 `仅存档 · <client_host>`（**没有单独的"机器名"列**，机器名就写在这行提示里），`title` 里解释为什么点不动。**不做「重跑」**（已拍板）：失败或未解决后要再做一次，就新建一个 run |
 
 ### 20.12 两阶段提示词（v1 硬编码在 cc-web）
 
@@ -2401,30 +2441,102 @@ running ──(阶段一失败/中断)──> aborted
 补丁输出目录：{outDir}
 工程 home / war 包地址（编译依赖根）：{package_path}
 JDK：{local_jdk_path}
+[本机 skill 库（FBIP 领域 skill 库根目录，可按需读取）：{local_skill_path}]                  ← 仅当环境登记了 local_skill_path（2026-09-21 新增）
+[数据库连接：{db_connection}（**只读**，见【约束】里关于数据库的那条）]        ← 仅当环境登记了 db_connection
+[远程调试端口：{debug_address}（**只做线程级调试**，见【约束】里关于远程调试的那条）] ← 仅当环境登记了 debug_address
 
 【任务】
-1. 结合产品源码与客开代码定位问题根因，先给出简短分析。
-2. 代码类问题：
-   a) 从 {code_directory} 只读地读出你要改的文件，在 {stageDir} 下按**同样相对路径**建副本
+1. 结合产品源码与客开代码定位问题根因，先给出简短分析；如果证据不足以下结论，如实说明还缺什么，
+   并按第 4 条先补日志。可行的方案有多个时，**你自己挑一个你认为最合适的往下做**，不要停下来等用户选；
+   在结论里写一句你选的是哪个、为什么选它，以及被你放弃的方案是什么。
+2. 动手前先读工具说明书（编译补丁必做；**仅当环境登记了 skill 库时出现，没登记整条换成"跳过这一步"**）：
+   a) 读 {local_skill_path}/java-compiler-mcp/SKILL.md —— 编译 MCP 七个工具（java_compile / java_run / java_scan_home /
+      java_clear_cache / java_generate_patch / java_apply_patch / frontend_build_patch）的参数、路径映射表、
+      GBK 回退与常见错误都在里面。**照它调用，不要自己猜参数**。
+   b) 定位根因/写代码时，还可以读 {local_skill_path}/fbip-skill-router/SKILL.md（L1 路由）与它指到的领域 skill
+      （新建 VO/Action/ServiceImpl 这类代码按 fbip-nc-codegen 的规范写）。
+      若某个 skill 要求的前置 skill 本机不存在（例如 fbip-code-index-analysis），**跳过那条要求继续**，
+      不要卡在这一步，把缺的东西写进结论。
+   c) skill 文档里出现的 D:\ 之类绝对路径只是它成文时的示例：**本机环境一律以【环境】段为准**，
+      与它冲突时以【环境】为准，并把冲突写进结论。
+3. 代码类问题：
+   a) **先只读地看清工程结构，再决定文件放哪一层**：在 {code_directory} 里找到本次的「模块根」
+      —— 含 src/client、src/private、src/public 的那一层（不是客开工程根，也不是模块下的某个子目录），
+      并确认要改/新增的每个文件属于这三类里的哪一类。把它们（模块根的绝对路径 + module_name +
+      每个文件的 source type）写进结论.md。**层级不要猜**：补丁 zip 里每个 class 的目标路径完全由
+      暂存目录里的相对路径推出来 ——
+      src/client/*.java → hotwebs/fbip/WEB-INF/classes/…、src/private → modules/<module_name>/META-INF/classes/…、
+      src/public → modules/<module_name>/classes/…、src/client 下的非 java 文件 → hotwebs/fbip/WEB-INF/extend/…。
+      写错一层，class 就会被打进补丁里错误的位置，部署后加载不到，等于白改。
+   b) 要改的文件已在客开工程里：从 {code_directory} 只读地读出它，在 {stageDir} 下按**与工程逐层一致**的
+      相对路径建副本（原样保留 src/<client|private|public>/… 这几层，不要自创、不要省掉、不要改名）
       （例如 {code_directory}/src/client/ncbs/x/Foo.java → {stageDir}/src/client/ncbs/x/Foo.java）；
-   b) 只修改 {stageDir} 里的副本；
-   c) 调用 java_compiler_mcp 的 java_generate_patch 生成补丁 zip：
+      若工程里同一个类有多份同名文件，以和本次问题同一条调用链上的那份为准，并在结论里说明你选的是哪一份。
+   c) 要改的文件在客开工程里**并不存在**（你在新增类/新增文件）：不要去 {code_directory} 找它，
+      直接在 {stageDir} 下按它将来在工程里的相对路径新建（目录不存在就一并建出）
+      （例如新增 {stageDir}/src/client/ncbs/x/NewHandler.java）；
+      相对路径要与工程里**同类既有文件**逐层一致（先去只读地看一眼同类文件摆在哪个包下），
+      Java 文件的 package 声明必须与这条路径匹配（javac 与补丁目标路径都看它）。
+      若工程里找不到同类先例：把你要放的那一层和判断依据写进结论，不要换一个"看起来更合理"的层级。
+   d) 无论改还是新建，都只往 {stageDir} 里写，不要动 {code_directory} 下的任何东西；
+   e) 调用 java_compiler_mcp 的 java_generate_patch 生成补丁 zip（参数见第 2a 条那份 SKILL.md）：
       module_path = {stageDir}
-      module_name = <你在第 1 步确定的模块名>
+      module_name = <你在第 3a 步确定的模块名>
       home        = {package_path}
-      files       = 你改过的那些文件（相对 module_path 的路径）
+      files       = 你改过或新建的那些文件（相对 module_path 的路径）
       java_home   = {local_jdk_path}
-      产物输出到 {outDir}。
-3. 数据库/配置类问题：把对应 SQL 或实现方案写进 {outDir}/方案.txt。
-4. 把本次改动的文件清单（每行一个，相对 {code_directory} 的路径）写进 {outDir}/changes.txt。
-5. 把结论、以及你使用的 module_name / 模块根路径，写进 {outDir}/结论.md。
+      产物输出到 {outDir}。打包完**把 zip 里的条目列出来自查一遍**（对照第 3a 条的目标路径），
+      发现层级不对就重打包，不要带着错路径交付。
+4. 不要求一次就把问题改到位。如果还不能确定根因，或想先看清运行时的实际走向，就在你认为相关的
+   代码位置补上详细的日志输出（打印关键入参、分支走向、耗时、捕获到的异常栈等），把下次复现时要看的
+   信息打全；这时第 1 步的结论就写"已补日志、待复现反馈"，不要猜一个根因糊弄过去。
+   加日志同样算本次改动：文件照 3b/3c 落到暂存目录、并写进 changes.txt，之后会随补丁同步回客开工程。
+   日志写法沿用工程自己已有的 logger 与级别约定，不要引入新的日志框架或依赖。
+5. 数据库/配置类问题：把对应 SQL 或实现方案写进 {outDir}/方案.txt。
+6. 把本次改动的文件清单（每行一个，相对 {code_directory} 的路径；**新增的文件同样要列**）写进 {outDir}/changes.txt。
+7. 把结论、模块根路径、module_name、每个文件所属的 source type，以及补丁 zip 的条目清单，
+   写进 {outDir}/结论.md。
 
 【约束】
 - **绝对不要修改 {code_directory} 下的任何文件**，也不要新建/删除它下面的任何东西。
-  （阶段二经用户确认后才会把改动同步过去。）
+  （新增的类也一样先建在暂存目录里；阶段二经用户确认后才会把改动同步过去。）
 - 不要改动 .git 目录，不要执行 git commit / push / checkout。
 - 分析源码走 patch_source MCP，不要试图遍历全树（性能原因，见相关记录）。
+- 收尾前在 {code_directory} 执行 git status --porcelain：若输出非空，说明该工程被改动过
+  （可能是你、也可能是别的进程），把输出原样贴进结论并说明，**不要自行回滚**。
+[数据库**只允许执行查询语句**（SELECT / SHOW / DESC / EXPLAIN 之类只读语句）。     ← 仅当环境登记了
+  INSERT / UPDATE / DELETE / DDL / 存储过程 / 加解锁语句**一律禁止**；拿不准算不算写操作就不要执行。   db_connection
+  能开只读事务就用 START TRANSACTION READ ONLY 把查询包起来，多一层保险。
+  连库优先用本机已有的客户端或驱动（mysql 客户端、带 pymysql 的 python 等）；**不要为此安装任何依赖**，
+  连不上就停手，把你要跑的 SQL 原样写进结论，让用户自己执行。
+  连接串里通常带账号口令：**不要**把它抄进结论.md / changes.txt / 方案.txt 或任何要上报的文字里。]
+[远程调试**只允许线程级**：只挂起/单步你正在看的那一个线程（jdb 用 `suspend <thread-id>`，          ← 仅当环境登记了
+  IDE 里把断点的挂起策略设成 Thread / 事件线程），**绝不要挂起整个进程**                              debug_address
+  （裸 `suspend`、Suspend All 策略、或不带 suspend=n 重启目标服务）。
+  看完就 resume 并断开连接，不要把调试器挂着不放——那台环境可能有人在用。]
 ```
+
+> **2026-09-21 的三处改动**（用户提的"根据 skill 来编译" + "新增或修改后的代码要按客开工程的结构构建"）：①【环境】多一行 skill 库（选填，登记了才有）；②新增任务第 2 条"先读工具说明书"——编译 MCP 的用法本来就在 `<库>/java-compiler-mcp/SKILL.md` 里写着，此前是在提示词里重造那份文档；③任务第 3 条 a~e 重排，把"按客开工程的结构构建"写死：先只读地定出**模块根**与每个文件的 source type，暂存目录里的相对路径必须与工程**逐层一致**（它决定 `_get_target_path` 推出的补丁内目标路径，写错一层 = class 打进错位置、部署后不生效），新增文件的 `package` 声明要与路径匹配，打完包还要自己列一遍 zip 条目自查。第 2 条的 b 还带了一句防护：**某个 skill 要求的前置 skill 本机不存在时跳过那条要求继续**——`fbip-skill-router` 就硬依赖一个不存在的 `fbip-code-index-analysis`，写成"从 L1 开始跑"会让它卡死在这一步（详见第二十二章）。
+
+数据库那一段（2026-09-20 用户要求补）值得单独说一句：**它是提示词级的"只读"约束，跟 20.13 第 5 条
+（越界校验）是同一类东西——没有技术隔离**。真正能兜住的是"用只读账号连"这种环境侧措施，提示词里给的
+`START TRANSACTION READ ONLY` 只能算第二层；所以这一段同时写了"连不上就别硬来、把 SQL 交给用户"，把
+"宁可不查"作为默认退路。没登记 `db_connection` 的环境整段不出现——否则 claude 会去追问一个不存在的库。
+
+日志原文在提示词里是**整段内联**的，且**不因长度被摘掉**——即使超过 8KB（后端阈值）会把它从
+`log_info_inline` 里去掉、导致它在任何地方都不留副本，也必须完整出现在提示词里：它本来就是给 claude
+定位问题用的输入。原先还有个"第 7 步：把日志原文保存到 {outDir}/logs.txt"的归档动作，2026-09-20 用户
+拍板**去掉**了——那是让 claude 把日志再抄一遍，几万行的日志既费输出 token 又可能抄走样，而它的唯一价值
+只是"产物目录里留一份现场"，不如不做（理由详见 20.13 第 6 条）。
+
+第 2b 与第 3 条是 2026-09-20 补的（用户提出）：**要改的文件不一定在客开工程里**（可能是新增类），原来的
+写法只覆盖"把已有文件复制到暂存目录再改"，新增类会被卡在"读不到源文件"；**也不要求一次改到位**——定位不
+到根因时允许先补详细日志、等用户拿着日志复现反馈，所以第 1 条的"先给出简短分析"后面跟了"证据不足就如实
+说明"。补日志产出的文件同样是改动，照 2a/2b 落暂存目录并进 `changes.txt`，否则下次合并会把它漏在暂存目录里。
+
+第 1 条后半段"**方案有多个就自己挑一个最合适的**、不要停下来等用户选"也是 2026-09-20 加的用户要求：这是一条
+**减少往返**的指令——阶段一是无人值守跑完的（用户不在旁边答问题），让 claude 停在"请问您想用哪种方案"就是
+白等一轮；配套要求它在结论里写清"选了哪个、为什么、放弃了什么"，避免选择变成黑箱。
 
 **阶段二（同步回客开工程，仍在该会话）**，另发一个 user prompt：
 
@@ -2432,16 +2544,22 @@ JDK：{local_jdk_path}
 用户已确认问题已解决。
 1. 读取 {outDir}/changes.txt。
 2. 把其中列出的文件，从 {stageDir} 复制回 {code_directory} 的对应相对路径（覆盖）。
-3. 若某个目标文件在此期间被改动，导致内容与 {stageDir} 中的基线不一致，**停止并报告**，
-   不要覆盖，也不要尝试自动合并。
-4. 把同步结果（成功/冲突清单）写入 {outDir}/合并说明.md。
+   清单里在客开工程中还不存在的（新增的类/文件）同样按相对路径建出来，目录不存在就一并建出。
+3. 若某个**已存在**的目标文件在此期间被改动，导致内容与 {stageDir} 中的基线不一致，**停止并报告**，
+   不要覆盖，也不要尝试自动合并；新增文件若该路径已被别人创建出来，同样停止并报告。
+4. 把同步结果写入 {outDir}/合并说明.md，并且**第一行固定写成**「结果：成功」或「结果：冲突」，
+   后面再写详细清单。
 ```
+
+第 4 步那个"固定第一行"是**判据**，不是文风要求：cc-web 不参与搬运，唯一的成功/冲突信号就是 claude 写的这份文件，
+前端用正则 `/结果\s*[:：]\s*(成功|冲突)/` 解析它 → 落 `verdict=solved|unsolved`、`status=solved|merge_failed`。
+解析不到（文件没写/写错/读不到）**一律按未成功处理**，让用户用 `git status/diff` 自己核对——宁可漏报成功，不可谎报已解决。
 
 **模块根与 `module_name`**（`java_generate_patch` 的 `module_path` 要的是**模块根**——含 `src/client|private|public` 的那一层，不是仓库根；`module_name` 对 `src/private`、`src/public` 的目标路径映射是必需的，见 `_get_target_path`）：
 
 - v1 方案：表单不加这两个字段，由 claude 在 `code_directory` 内自行判断，并把它用的 `module_name` / 模块根路径写进 `结论.md`；判断错时用户可在下一条消息里纠正（会话延续，不需要重跑）。
 
-### 20.13 五个必须处理的实现约束
+### 20.13 七个必须处理的实现约束
 
 1. **SSE 无重放**：`/api/agent/{id}/events` 只做 `tx.subscribe()`，没有历史回放（`agent.rs:1113-1203`）。所以顺序必须是**先建 `EventSource` 并等到 `connected` 事件，再调 `/api/agent/{id}/start`**；反过来会丢开头的事件。
 2. **`/start` 无并发保护 → 要加守卫（已拍板）**：`start_prompt` 无条件往 `streaming_sessions` 插入（`agent.rs:404`），连点两次会**在同一个 stageDir 上跑两个 claude 进程**，两边同时改同一批文件。两层防护一起做：
@@ -2449,7 +2567,14 @@ JDK：{local_jdk_path}
    - 后端：在 `start_prompt` 进入流式之前先查 `data.streaming_sessions.read().unwrap().contains(&session_id)`，命中则直接返回 **409**（该会话正在执行中），不 spawn。收益是防御一切并发入口（含用户手工重放请求、多标签页）。
 3. **菜单不走 patch_search**：把 `node` 加进 `PATCH_MENU_KEYS`（`patches.js:91`）就会需要服务端下发 `menus`，即要改 `menu_service.MENU_CATALOG` 并**部署 patch_search**。v1 直接**默认可见**、**不进 `PATCH_MENU_KEYS`**——参照 `menus` 页签的先例（它是硬编码 admin-only、刻意不进清单，`patches.js:89/:113`）。这样前端可独立发布，零服务端依赖。
 4. **`java_generate_patch` 要模块根 + 只编译改动文件**：`module_path` 传 **stageDir**（它镜像的是模块结构），不是仓库根；`home` 必须传环境的 `package_path` 否则类解析不了；产物是编译后的 `.class`（zip 内含 `hotwebs/fbip/WEB-INF/classes/...` 或 `modules/<module_name>/...` 结构），不是源码——别把它当成"源码补丁"来解析。
-5. **越界校验**：阶段一每回合结束后在 `code_directory` 跑 `git status --porcelain`，非空即报警（见 20.5；不自动回滚）。
+5. **越界校验由 claude 自己跑（已拍板）**：**浏览器跑不了 shell 命令**，cc-web 也没有"在某个目录执行 git"的接口。所以不新增后端接口，而是把这条写进**阶段一的提示词**（20.12 最后一条约束）：claude 收尾前在 `code_directory` 执行 `git status --porcelain`，非空就把输出原样贴进结论并说明，**不自行回滚**（见 20.5；用户此时可能也在改同一个工程）。代价是"校验由被监督者自己执行"——它是提示词级约束，与 20.16 说的"没有技术级隔离"是同一件事，不是新增缺口；好处是零后端改动。
+6. **浏览器不能写文件**：`合并说明.md`（阶段二第 4 步）必须由 **claude 落盘**，前端只负责事后用 `GET /api/files/{path}` 读回来展示。同理，`changes.txt` 在点「已解决」前是前端**读出来给用户看**（20.11 的二次确认），不是前端写的。
+
+   这条对**日志**的结论（2026-09-20 拍板）：日志原件是用户粘进表单的文本，它**在提示词里已经整段给了 claude**，那就是它定位问题用的形态；**不再要求 claude 抄一份到 `<outDir>\logs.txt`**。原因：cc-web 全库只有 `/api/files*`（只读 GET）与 `/api/node/runs/{id}`（只写它自己的 `~/.cc-web/node_runs.json` 账本）两个端点，**没有任何通用写文件接口**，所以"日志在补丁输出目录里留个原件"这件事只能借 claude 的手写——而 claude 抄写要付与日志长度同阶的输出 token，几万行的日志还可能抄截断/抄走样，换来的只是"产物目录自解释"这一点边际价值，不值。**后果要认**：日志除提示词外只剩 `log_info_inline` 一份（≤8KB 才有），**超 8KB 的日志哪里都不存**；要留档请用户自己存原始日志文件。
+
+7. **数据库"只读"没有技术隔离（2026-09-20 用户要求提供 DB / 调试口）**：环境条目里登记了 `db_connection` 时，提示词会把连接串给 claude 并**要求它只执行 SELECT/SHOW/DESC/EXPLAIN 一类只读语句**，同时建议用 `START TRANSACTION READ ONLY` 包住查询。但这跟第 5 条一样是**提示词级约束，不是技术隔离**——claude 手里是 `bypassPermissions` 的 shell，真要写库没人拦得住。真正兜得住的只有环境侧措施：**给一个只读账号**（`GRANT SELECT ON ...`）。所以这一段同时写了"**不要为此安装任何依赖**"（避免它 pip install 一堆东西）和"**连不上就停手、把 SQL 原样交给用户**"（宁可少查，不可乱写）。`debug_address` 那条则是**线程级调试**约束（2026-09-20 用户要求）：只挂起/单步正在看的那一个线程，**绝不允许挂起整个进程**（裸 `suspend`、Suspend All 策略、或不带 `suspend=n` 重启目标服务），看完 resume 并断开。理由是那台环境**可能有人在用**——挂起整个 JVM 等于把别人的环境停了。这同样是提示词级约束，技术侧没有拦截。
+
+   两个字段都**只在环境里登记了才出现**，且**都不参与上报**：`patchNodePushReport` 是白名单（20.8 那几列），`env_snapshot` 整体不发送；`db_connection` 含账号口令，唯一多出来的副本是本机 `node_runs.json`（见 20.7 的说明）。
 
 ### 20.14 「已解决」阶段的合并语义（读法二）
 
@@ -2489,7 +2614,7 @@ location.href = `index.html?resume=1&sid=${encodeURIComponent(agent_session_id)}
 - 点「问题已解决」→ **同一个 claude 会话**继续（能引用阶段一的上下文，问"你上一步改了什么"答得出）→ `code_directory` 下对应文件内容更新、`outDir/合并说明.md` 生成、服务器 `status=solved`。
 - 冲突场景：合并前手工改动目标文件 → claude 停止并报告，`status=merge_failed`，目标文件**未被覆盖**。
 - **阶段一期间 `code_directory` 始终干净**：run 跑到 `awaiting_decision` 时，在 `code_directory` 跑 `git status --porcelain` 应无输出；改动只出现在 `stageDir`。
-- **越界报警**：手工制造一次越界（让 claude 直接改 `code_directory` 里的文件）→ 页面出现越界提示，且**没有**发生自动回滚。
+- **越界报警**：手工制造一次越界（让 claude 直接改 `code_directory` 里的文件）→ 流式输出区能看到 `git status --porcelain` 的非空输出与说明，且**没有**发生自动回滚（见 20.13 第 5 条：这条校验由 claude 自己执行并报告）。
 - zip 只含改动文件：解压补丁包，里面的 class 应当只有 `changes.txt` 列出的那几个（不是整模块）。
 - 把 patch_search 停掉：仍能完整跑完一个 run（上报失败静默），`reported:false`；恢复后进入页签自动补报成功。
 - 换一台机器打开同一账号：列表能看到服务器摘要行，显示「仅存档」，操作列禁用，`client_host` 显示原机器名。
@@ -2513,6 +2638,502 @@ location.href = `index.html?resume=1&sid=${encodeURIComponent(agent_session_id)}
 ### 20.20 落地顺序
 
 1. **patch_search**：新建 `schema/migration_problem_run.sql`（照 `migration_*.sql` 的 `information_schema` 判存在 + `PREPARE/EXECUTE/DEALLOCATE` 幂等写法），同步 `schema/current_schema.sql`；新增 `app/routes/problem_runs.py` + 注册；在库上手工执行迁移；按既定方式**直调 PyInstaller** 重新打包（**不要用 `build.bat`**，它会删掉 `dist` 里的 `config.yaml`/`data`/`logs`）并部署。
-2. **cc-web**：`src/main.rs` 加 `node_runs.json` 载入/落盘；新增 `src/api/node_runs.rs` 三个接口；`src/api/agent.rs` 的 `start_prompt` 加并发守卫（20.13 第 2 条）；`static/patches.html` 加左侧导航项 + `data-tab="node"` 页签 + `patchTabNode` 面板（表单/流程区/运行列表）；`static/patches.js` 加 `loadProblemRuns`、`patchSwitchTab` 的分支、两阶段提示词与 `fetch('/api/agent/*')` 调用、`EventSource` 时序（先 connected 再 start）。
+2. **cc-web**：`src/main.rs` 加 `node_runs.json` 载入/落盘；新增 `src/api/node_runs.rs` 三个接口（`GET` 附带本机 `host`，见 20.7）；`src/api/agent.rs` 的 `start_prompt` 加并发守卫（20.13 第 2 条）；`src/ai/streaming.rs` 的 `start` 事件补 `agentSessionId`（1 行，见 20.4）；`static/patches.html` 加左侧导航项 + `data-tab="node"` 页签 + `patchTabNode` 面板（表单/流程区/运行列表）；`static/patches.js` 加 `loadProblemRuns`、`patchSwitchTab` 的分支、两阶段提示词与 `fetch('/api/agent/*')` 调用、`EventSource` 时序（先 connected 再 start）。
 3. **构建与分发**：`cargo build --release`（先停掉正在运行的 `cc-web.exe`，否则 os error 5）→ 覆盖 `D:\project\cc-web-dist\cc-web.exe`。`static/*` 是 `include_str!` 编译期内嵌，**改前端必须重编**。
 4. 建议拆两批：先做「本地 run 清单 + 单机全流程（含合并）」，跑通后再接服务器上报；上报是纯加法，可后置。
+
+**落地状态（截至 2026-09-20）**：上面第 2、3 步已完成——cc-web 全部改动已落盘、`cargo build --release` 通过、`cc-web-dist\cc-web.exe` 已覆盖（4,751,872 字节，2026-09-20 11:24）。
+本机冒烟已过：`GET /api/node/runs` 回 `{"code":0,"data":[],"host":"DESKTOP-KNK159N"}`（`host` 生效）；`PUT`/`GET`/`DELETE` 往返一致，`~/.cc-web/node_runs.json` 落盘并回空；`/patches.html` 与 `/patches.js` 内嵌版本均为新版（含 `data-tab="node"`、`patchNodeRunForm`、`本地jdk路径`，`colspan` 与 10 个 `<th>` 对齐）。
+
+剩下的都在你的部署动作里：
+
+1. ✅ **已在库上执行完（2026-09-20）**：`schema/migration_problem_run.sql` 已在 `10.4.122.21:3306/patch`（MySQL 8.0.12）执行，`problem_run` 已建（18 列 / PRIMARY + `uk_problem_run_local_id` + `idx_problem_run_owner_time` + `fk_problem_run_owner → user_account(id)`），`SHOW CREATE TABLE` 与 `schema/current_schema.sql` 的块**逐行一致**（规范化空白/反引号后 23 行全等），幂等重跑无报错，表内 0 行。另用一个 `INSERT` + `ROLLBACK` 的事务验证过路由要写的全部字段（含默认 `status=running`、`created_at`/`updated_at` 自动值、外键）能落得进去，没有留下任何数据。
+2. `local_jdk_path` 那个迁移 `schema/migration_project_environment_local_jdk.sql` **2026-09-18 已经在库上执行并验证过**——本次复查确认该列存在（`varchar(1024) NULL`，位置在 `local_skill_path` 之后），**不用再跑**。它缺的不是 DDL，而是**服务端代码还没上线**：本次新打的包里已带这列，上线后 `GET /api/project-envs` 才会开始返回它。
+3. ✅ **新 exe 已打好（2026-09-20 14:17，第二次重打）**：`dist\patch_search.exe`（27,522,778 字节，md5 `92d9f7b8a51904957ee212f32f5e8062`）。第一次（13:50，md5 `b79bf695…`）之后你又把 `local_jdk_path` 改成了**必填**（`app/schemas.py` 的 `local_jdk_path: str = Field(min_length=1, max_length=1024)` + `project_env.py` 的 `REQUIRED_LABELS` 多一项 + `patches.html` 表单加 `required`），所以重打了一次。旧 exe 备份为 `patch_search.exe.bak-20260920`。**`dist\patch_search.zip` 按既定约定没动**（仍是 9-18 那份、里面是旧 exe），`dist\config.yaml`/`data`/`logs` 也一个字节没动——走的是直调 PyInstaller + 临时 `--distpath`，没碰 `build.bat`。**本机冒烟已过**（起的是打好的 exe）：`/openapi.json` 里 `/api/problem-runs`(GET/POST) 与 `/api/problem-runs/{local_run_id}`(GET/DELETE) 都在、POST 的 body 引用 `ProblemRunUpsert`，`ProjectEnvCreate`/`ProjectEnvUpdate` 的 required 里含 `local_jdk_path`，`/api/health` 200。
+4. **剩下只有上线**：把新包换到服务器上重启。不换的话 `POST/GET /api/problem-runs` 不存在——页面仍能跑，但上报会静默失败（20.10），列表只剩本机清单。
+   顺带一个**与本次改动无关**的观察：仓库里的 `dist\config.yaml`（8-12 那份，1.5 KB）**没有 `mcp:` 段**，用它起包时 13589 端口不会监听。若服务器上那份配置也是这个，MCP 源码检索就是没开的——按需自查，我没动这个文件。
+5. 前端节点页签**刻意没进 `PATCH_MENU_KEYS`**（20.13 第 3 条），所以**默认可见**、不需要 patch_search 下发菜单；若将来要把它做成可授权菜单，那时才需要改 `menu_service.MENU_CATALOG`。
+
+## 二十一、macOS：编译 MCP 怎么用（patch_search 部分仅作参考）
+
+> **范围（2026-09-21 明确）**：patch_search 与源码检索 MCP **只部署在一台 Windows 服务器上，不在 Mac 上跑** —— 所以 **21.1~21.3 的 patch_search mac 打包暂时不用做**，留在本章只作参考（哪天真要搬再用）。当前唯一要落地的是 **21.4：让编译 MCP（`java_compiler_mcp`）在 macOS 上可用**。为什么是它：编译 MCP 跑在**每个开发者自己的机器**上（它要调本机 JDK 编译客开工程），而 Windows 打包出来的 `.exe` 在 Mac 上跑不了，PyInstaller 又不能交叉编译 —— 只能在 Mac 上重新打一份，或让那台 Mac 直接跑源码。**想直接看怎么做，跳到 21.4。**
+
+### 21.1 为什么单开一章（下三节都只针对 patch_search）
+
+- **PyInstaller 不能交叉编译**：Windows 上打不出 mac 包、mac 上也打不出 exe。要在 Mac 上跑，就得在 Mac（或用 GitHub Actions 的 macOS runner）上打。
+- 仓库里**已经有 mac 的三件套**（2026-09-01 加的）：`patch_search_mac.spec`、`build_mac.sh`、`.github/workflows/build-mac.yml`。但它们是**在 MCP 源码检索并进 patch_search 之前写的**（MCP 是 9-17 才进来，Windows 的 `patch_search.spec` 里那套 `collect_all("mcp")` 就是那时补的），所以 **mac spec 缺 MCP 的收集项**：照它直接打出来的包，一旦 `mcp.enabled: true`，`app.mcp.server` 导入会失败（`run_server.py` 只打印"MCP 服务构建失败，已跳过"），**MCP 静默不可用**。21.3 第 2 步必须先补这一块。
+- 另外 mac spec **不带 ripgrep**（`binaries=[]`），Windows spec 会带上 `vendor/rg.exe`。Mac 上要么 `brew install ripgrep` 再在 config 里指 `mcp.rg_path`，要么也往 spec 里加几行（21.3 第 2 步给了代码）。
+
+### 21.2 前置条件
+
+| 项 | 要求 / 命令 | 说明 |
+|---|---|---|
+| macOS | Apple Silicon 或 Intel | **打出来的包只跑同架构**：arm64 包在 Intel Mac 上跑不了（反向也一样）。目标机是哪种就在哪种上打；CI 那套已经拆了 `macos-14`(arm64) / `macos-15-intel`(x86_64) 两个 runner |
+| Python | 3.11（最低 3.10） | `brew install python@3.11`。`build_mac.sh` 会校验 `<3.10` 直接退出 |
+| 编译链 | `xcode-select --install` | PyInstaller 需要 clang/gcc 链 |
+| ripgrep（只有用 MCP 才要） | `brew install ripgrep` | 见 21.3 第 2 步 |
+| 7-Zip（只有要解 RAR5 补丁才要） | `brew install sevenzip` | 纯 Python 的 rarfile 解不了 RAR5；配 `archive.rar_tool_path`（Apple Silicon 是 `/opt/homebrew/bin/7zz`，Intel 是 `/usr/local/bin/7zz`） |
+| claude CLI（只有管理员补丁分析才要） | 装好并在 PATH 里 | 配 `claude.cli`，Apple Silicon 上通常就是 `claude` |
+
+> ⚠️ **一个 venv 装不下两个包**：patch_search 要 `mcp==2.2.0`（`requirements.txt`），而**编译 MCP 要 `mcp>=1.30,<2`**（它 import 的是 `mcp.server.fastmcp`，2.x 已改名成 `mcp.server.mcpserver`）。同一台 Mac 上要打这两样，就用**两个 venv**，别混装。
+
+### 21.3 patch_search 打包步骤（命令级）
+
+**第 1 步：取代码**
+
+```bash
+git clone <仓库地址> patch_search && cd patch_search   # 或直接 scp 一份过去
+```
+
+**第 2 步：先把 mac spec 补上 MCP 收集项（否则白打）**
+
+打开 `patch_search_mac.spec`，把头部的 `hiddenimports` 段改成下面这样（新增的都是照 `patch_search.spec` 抄的，注释在那边有详细理由）：
+
+```python
+import os
+from PyInstaller.utils.hooks import collect_all, collect_submodules
+
+hiddenimports = []
+hiddenimports += collect_submodules("uvicorn")
+hiddenimports += collect_submodules("argon2")
+hiddenimports += collect_submodules("aiomysql")
+hiddenimports += ["pymysql", "pymysql.converters", "pymysql.cursors"]
+
+# 新增：MCP 源码检索（app/mcp/）的收集项。下面两处必须在收集时挡掉，否则一 import 就把整个打包炸掉：
+#   mcp.cli              —— 依赖 typer（mcp 的 [cli] extra），导入失败会 sys.exit(1)
+#   mcp.server.fastmcp   —— mcp 2.x 里这个模块名已废弃，导入时故意抛 ModuleNotFoundError
+def _keep_submodule(name: str) -> bool:
+    return name not in ("mcp.cli", "mcp.server.fastmcp")
+
+datas = []
+binaries = []
+for package in ("mcp", "mcp_types"):
+    package_datas, package_binaries, package_hidden = collect_all(
+        package, filter_submodules=_keep_submodule, on_error="ignore"
+    )
+    datas += package_datas
+    binaries += package_binaries
+    hiddenimports += package_hidden
+hiddenimports += collect_submodules("sse_starlette")
+hiddenimports += collect_submodules("jsonschema")
+hiddenimports += collect_submodules("opentelemetry")
+
+# ripgrep：MCP 的检索引擎。mac 上先 brew install ripgrep，再把二进制拷一份到 vendor/rg：
+#   cp "$(which rg)" vendor/rg
+# 不想让它进包就删掉这几行，改为在 config.yaml 里配 mcp.rg_path。
+rg_path = os.path.join(SPECPATH, "vendor", "rg")
+if os.path.isfile(rg_path):
+    binaries.append((rg_path, "vendor"))
+```
+
+并把下面 `Analysis(...)` 里的两处接上（原值是 `binaries=[]` / `datas=[]`）：
+
+```python
+a = Analysis(
+    ["run_server.py"],
+    pathex=[os.path.abspath(SPECPATH)],   # 注意：Windows 的 spec 这里写死了 "D:\\project\\patch_search"，mac 上必须用 SPECPATH
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    ...
+)
+```
+
+**第 3 步：建 venv、装依赖**
+
+```bash
+cd patch_search
+python3.11 -m venv .venv-mac
+source .venv-mac/bin/activate
+python -m pip install --upgrade pip
+# --prefer-binary：尽量用预编译 wheel；cryptography 之类一旦走源码编译要 Rust+OpenSSL，很慢还可能失败
+python -m pip install --prefer-binary -r requirements.txt pyinstaller
+```
+
+**第 4 步：清旧产物后打包**
+
+```bash
+rm -rf build dist
+python -m PyInstaller --clean --noconfirm patch_search_mac.spec
+```
+
+> `build_mac.sh` 就是把第 3、4 步合起来跑，并且开头会 `rm -rf build dist`。**别把 config.yaml / data / logs 放进 `dist/`**——那个 `rm -rf` 会一起删掉（与 Windows 上不要用 `build.bat` 是同一个坑）。
+> 只有在需要**同时支持 Intel 与 Apple Silicon** 时才加 `--target-arch universal2`（要求 Python 本身是 universal2 版，Homebrew 默认不是）；一般不必。
+
+**第 5 步：冒烟（别跳过；先在终端里跑一次，不要双击）**
+
+```bash
+cd dist
+cp ../config.mac.example.yaml ./config.yaml   # 改成真实数据库/路径/token
+./patch_search.app/Contents/MacOS/patch_search     # 直接跑二进制，日志就在这个终端里
+# 另开一个终端：
+curl -s http://localhost:13587/api/health
+curl -s http://localhost:13587/openapi.json | python3 -c "import sys,json;print('/api/problem-runs' in sys.stdin.read())"
+# 用到 MCP 时确认第二个监听起来了（没起会有 "[patch_search] MCP 服务构建失败，已跳过：…" 这一行）
+curl -s http://localhost:13589/mcp -H 'Authorization: Bearer <mcp.token>' \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+**第 6 步：过 Gatekeeper（未签名一定会被拦）**
+
+```bash
+xattr -dr com.apple.quarantine patch_search.app
+# 或 Finder 里右键 → 打开 → 再点「打开」
+```
+
+**第 7 步：放 config.yaml（查找顺序要记住）**
+
+`find_config_path()`（`app/config.py:21`）在**打包后（frozen）**且 `sys.platform == "darwin"` 时的顺序：
+
+1. **`.app` 所在的外层文件夹**（`Path(sys.executable).parents[3]`，即 `patch_search.app` 的上一级）—— 推荐放这里，与 Windows「config 放 exe 旁边」的体验一致
+2. `~/patch_search/config.yaml`
+3. `Contents/MacOS/`（`sys.executable` 所在目录，用户不便编辑）
+4. 当前工作目录
+
+也可用 `PATCH_SEARCH_CONFIG=/绝对路径/config.yaml` 显式指定。
+
+**第 8 步：打包分发 zip**
+
+```bash
+cd ..
+# -y 必须加：.app 里的 Framework 目录带符号链接，不加会把链接解引用、包就坏了
+zip -r -y -X patch_search-mac-arm64.zip patch_search.app config.mac.example.yaml
+```
+
+分发时提醒对方：mac 那份 `config.mac.example.yaml` **没有 `mcp:` 段**（截至 2026-09-21）——要用源码检索 MCP，就照 Windows 的 `config.yaml` 补上 `enabled/host/port/path/token/rg_path/roots/limits` 整段，否则 13589 不监听。
+
+**（可选）不本机打，用 CI**：`.github/workflows/build-mac.yml` 已就绪（`workflow_dispatch` 手动触发，或推 `v*` tag），产出两个架构的 zip artifact；它跑的就是 `patch_search_mac.spec`，所以**第 2 步的 spec 补丁必须先提交上去**，否则打出来的包没有 MCP。
+
+### 21.4 编译 MCP（java_compiler_mcp）在 macOS 上可用 —— 当前唯一要做的事
+
+Windows 侧是 `build-mcp.ps1` 打出 `dist_onedir/java_compiler_mcp/java_compiler_mcp.exe`。那个 exe 在 Mac 上跑不了（PE 二进制），而 PyInstaller **不能交叉编译** → 必须在 Mac 上重新打一份。两条路任选：
+
+- **路线 A：Mac 上装 Python，直接跑源码。** 最省事（开发机本来就要装 JDK，多一个 Python 不难），冷启动和手工跑 `.py` 一样快，改代码也不用重打包。
+- **路线 B：打成 onedir 可执行文件。** 那台机器不想留 Python、或要把包分发给别人时用。
+
+**仓库里已经备好两样（2026-09-21）**，都在 `D:\project\mcpadd\`：
+
+| 文件 | 是什么 |
+|---|---|
+| `java_compiler_mcp_mac.py` | macOS/Linux 移植版，74,615 字节，md5 `f2b3f4f17baaf09d8facafa0cf187cd6`。与 Windows 那份 `java_compiler_mcp.py`（78,116 字节）是**同一份代码的两个平台移植，七个工具与参数语义完全一致**；差别只在：javac 走 `bin/javac`（无 `.exe`）、用 `os.access(X_OK)` 判可执行、坏链接按 symlink 判、npm 用 `shutil.which` 找、默认 JDK 候选路径换成 `/Library/Java/...` 与 Homebrew 那几个。**别用 Windows 那份** —— 它找 `javac.exe`、用 `GetFileAttributesW` 判 junction，在 mac 上直接失败。 |
+| `build-mcp-mac.sh` | `build-mcp.ps1` 的 macOS 版，一条命令做完「建 venv → 装依赖 → onedir 打包 → MCP 握手冒烟 → 清 quarantine」。 |
+
+**路线 B：跑打包脚本**
+
+```bash
+# 把 mcpadd 整个目录拷到 Mac（拷之前先删掉 Windows 留下的 .venv、build*、dist*，
+# 免得把 Windows 的解释器和陈旧产物一起带过去）
+cd mcpadd
+chmod +x build-mcp-mac.sh
+./build-mcp-mac.sh
+# 想指定解释器：PYTHON=/opt/homebrew/bin/python3.12 ./build-mcp-mac.sh
+```
+
+脚本做的事（与 PowerShell 那份逐条对应）：
+
+1. **选解释器**：`$PYTHON` → 否则 `.venv-mac/bin/python3` → 都没有就用 `python3 -m venv .venv-mac` **现建一个**（这样就避开了新版 macOS / Homebrew 往系统 Python 装包被拒的 `externally-managed-environment`；Windows 那份用的是 `.venv/Scripts/`，所以 mac 版另起 `.venv-mac`，两个环境不会互相踩）
+2. `pip install --quiet "mcp>=1.30,<2" pyinstaller` —— **版本必须 `<2`**：2.x 把 `mcp.server.fastmcp` 改名成了 `mcp.server.mcpserver`，而这个脚本 import 的是老路径。（patch_search 要的正好相反 `mcp==2.2.0`，所以要用两个 venv，见 21.2 那个提示。）
+3. `python -m PyInstaller --onedir --console --name java_compiler_mcp --distpath dist_onedir --workpath build_onedir --specpath build_onedir --noconfirm java_compiler_mcp_mac.py`
+   —— `--name` 与源文件名**故意不同**：源是 `_mac` 那份，产物仍叫 `java_compiler_mcp`，两个平台的目录布局就一致了。
+4. **冒烟**：起进程做 `initialize` + `tools/list` 握手，**应回 7 个工具**（java_compile / java_run / java_scan_home / java_clear_cache / java_generate_patch / java_apply_patch / frontend_build_patch）；不是 7 个就中止，不打这个包。
+5. `xattr -dr com.apple.quarantine` + `chmod +x`，最后把注册命令打印出来。
+
+理由与 Windows 完全一样，**onedir 不要 onefile**：onefile 每次启动都要把整个 bundle 解压到临时目录，冷启动 4~6s；onedir 不用解压，1.1~1.3s。而 Claude Code 每个 claude 进程起一个 MCP 子进程，cc-web 又是每条用户消息起一个 claude 进程 —— 这笔开销每条消息都付一遍。产物是 `dist_onedir/java_compiler_mcp/`（可执行文件 `java_compiler_mcp` + `_internal/`），**必须整个文件夹一起拷**。
+
+> ⚠️ **产物的架构 = 用来打包的那个 Python 的架构**（arm64 的 python 出 arm64 包）。要在 Apple Silicon 上分发，就别在 Rosetta 的 x86_64 python 里打。
+
+**注册进 Claude Code**
+
+Claude Code 自己用（不经过 cc-web 时）：
+
+```bash
+# 路线 B：注册打出来的可执行文件
+claude mcp add java_compiler_mcp "/绝对路径/dist_onedir/java_compiler_mcp/java_compiler_mcp"
+```
+
+**路线 A：直接跑 `mcpadd/add_mcp.sh`** 就行（2026-09-21 改过：mac/Linux 上它会自动挑 `java_compiler_mcp_mac.py`、解释器优先用 `.venv-mac/bin/python3` 再退到 `python3`；Windows/Cygwin 上仍用 `java_compiler_mcp.py` + `python`）。手工等价的命令：
+
+```bash
+claude mcp add java_compiler_mcp python3 "/绝对路径/mcpadd/java_compiler_mcp_mac.py"
+```
+
+若这台 Mac 上也跑 cc-web，就登记进 `mcp-servers.json` —— 相对路径的基准是 **cc-web 可执行文件所在目录**（`mcp_config.rs` 的 `base_dir()`），保持与 Windows 相同的相对布局，只是 mac 上没有 `.exe` 后缀：
+
+```json
+{
+  "mcpServers": {
+    "java_compiler_mcp": { "type": "stdio", "command": "java_compiler_mcp/java_compiler_mcp" }
+  }
+}
+```
+
+（前提是把 `dist_onedir/java_compiler_mcp/` 放到 cc-web 可执行文件旁边。`patch_source` 那条 HTTP + Bearer token 的写法不变。）
+
+> ⚠️ 未签名的可执行文件被 Gatekeeper 拦时，**表现是 cc-web 起来后 MCP 静默不加载**，界面上完全看不出来（与 Windows 上不设 `CC_WEB_MCP_CONFIG` 那个坑同类）。装完先在终端里手动跑一次那个可执行文件，确认不弹「无法打开」。
+
+**别忘了 `java_home` 要指到 Mac 上的 JDK**：`java_home` 是**每次工具调用的入参**、不是配置文件里的项 —— 就是产品环境变量里「本地jdk路径」那一列（`local_jdk_path`，见 20.11 的节点表单与 20.12 的提示词）。mac 上是 `/Library/Java/JavaVirtualMachines/<jdk>.jdk/Contents/Home`（用 `/usr/libexec/java_home -V` 列出来）。Apple Silicon 上要用 arm64 的 JDK。
+
+### 21.5 验收清单（mac）
+
+**编译 MCP（本次要做的）**
+
+- [ ] `build-mcp-mac.sh` 跑完最后一行是 7 个工具（`tools -> 7: java_compile, java_run, …`）
+- [ ] 手动跑一次 `dist_onedir/java_compiler_mcp/java_compiler_mcp`，不弹「无法打开」（= Gatekeeper 已放行）
+- [ ] `claude mcp list` 里有 `java_compiler_mcp`；真跑一次 `claude -p "调用 mcp__java_compiler_mcp__java_scan_home 扫一遍 <某个 home> 并原样输出"` 能回真结果
+- [ ] 若走 cc-web：`~/.cc-web/mcp-servers.resolved.json` 里拼出来的路径是对的（点开看一眼，别只看日志）
+- [ ] `java_home` 在产品环境变量「本地jdk路径」里登记了，且指向的是**这台 Mac 上**的 JDK 根目录
+
+**patch_search（仅参考，当前不用做）**
+
+- [ ] `patch_search.app` 在目标架构的 Mac 上能起，窗口里有 `[patch_search] 补丁检索服务 … 监听地址 http://0.0.0.0:13587`
+- [ ] `curl -s localhost:13587/api/health` 200；`/openapi.json` 里能看到 `/api/problem-runs`
+- [ ] `mcp.enabled: true` 时**没有** `MCP 服务构建失败，已跳过` 这行；13589 的 `tools/list` 能回 6 个工具
+- [ ] 直接跑 `./patch_search.app/Contents/MacOS/patch_search` 时，日志里的 `配置文件:` 指到你想要的那份（位置放对了）
+- [ ] 从 Finder 双击（不是终端跑）也起得来（= Gatekeeper 已放行）
+
+### 21.6 mac 特有的坑（都踩得上）
+
+**打包/分发编译 MCP 时**
+
+1. **架构不匹配是第一高频失败**：包能起但立刻崩，或报 `mach-o file, but is an incompatible architecture` —— 在 Rosetta / x86_64 python 下打的包在 Apple Silicon 上跑不了（反之亦然）。产物的架构取决于**用来打包的那个 Python**，用 `python3 -c "import platform;print(platform.machine())"` 确认。
+2. **单个文件拷过去 = 打开就崩**：onedir 的可执行文件与同目录的 `_internal/` 是一体的，必须**整个文件夹**压缩分发。只拷那个可执行文件是最常见的错。
+3. **解压后丢掉可执行位 / 被杀**：`killed: 9` 或「无法验证开发者」。先 `xattr -dr com.apple.quarantine <文件夹>`；还不行就在目标机上 `codesign --force --deep --sign - <文件夹>/java_compiler_mcp` 做一次 ad-hoc 重签（PyInstaller 打的包本来带 ad-hoc 签名，经压缩/解压/某些拷贝工具后签名可能失效）。
+4. **`mcp` 版本必须 `<2`**：这个 MCP import 的是 `mcp.server.fastmcp`，2.x 已改成 `mcp.server.mcpserver`，升上去直接 `ModuleNotFoundError`；而 patch_search 要 `mcp==2.2.0` —— 一台机器两个 venv，别混装。
+5. **`java_home` 是每次调用的入参**，不会从别处读配置：Mac 上的 JDK 路径必须逐台登记在产品环境变量的「本地jdk路径」里，Apple Silicon 上要用 arm64 的 JDK。
+
+**打包/分发 patch_search 时（本章 21.1~21.3 若启用才相关）**
+
+6. **mac spec 与 windows spec 不同步**：MCP 的 `collect_all` 只在 windows spec 里、ripgrep 的 `binaries` 只在 windows spec 里、`pathex` 在 windows spec 里是写死的 `D:\project\patch_search`。改任何一处都要问一句"另一份要不要跟"。
+7. **`rm -rf build dist`**：`build_mac.sh` 里有，先确认 `dist/` 里没有你要留的东西。
+8. **`zip` 不带 `-y`** 会把 `.app` 里的符号链接解引用，包直接损坏。
+9. **`.app` 里的 `sys.executable` 在 `Contents/MacOS/`**：所有"exe 同目录"的直觉都要换成"`.app` 外一层"，见 21.3 第 7 步。
+
+## 二十二、FBIP skill 库的安装与提示词接入
+
+### 22.1 这套 skill 库是什么
+
+- **本体**：FBIP 领域 skill 库（`D:\project\fbip-skill\` 是它的一面：`README.md` 写着 210+ skills、L1/L2 两级路由、各域 CODEGEN 规范；`D:\tmp\.claude(1)\.claude\skills\` 那份副本规模更大——**731 个目录 / 722 个 SKILL.md / 5,430 个 md**）。
+- **格式**：`<库>/.claude/skills/<skill 名>/SKILL.md`；frontmatter 是 `name` / `tier`(frontend|backend|fullstack) / `description`(中文 + 触发关键词) / `version` / `tools`；正文固定章节：功能边界 → 前后端 Action 对照表 → 核心实现 → **Bug 模式库** → 关联 Skills → **AI 生成代码注意事项（❌/✅）** → References（按需加载）。`references/` 里是生成的文档（`DB_TABLE_REF.md` 268 个 skill / `PAGE_TEMPLATE_REF.md` 567 个 / `BIZ_RELATION_REF.md` 26 个）。
+- **路由**：`fbip-skill-router`(L1，判 tier/domain/entryPoint) → `fbip-{domain}-router`(L2) → 业务 skill(L3)。
+- **与本节点的关系**：`local_skill_path` 这个环境变量登记的就是**这份库在本机的根目录**。装上它 = 让节点的 claude 用这套领域知识，而不是我们在提示词里手写。
+
+### 22.2 安装：三种装法，推荐 A + B 一起
+
+Claude Code 发现 skill 的路径（**只认一层**：`skills/<skill 名>/SKILL.md`，再深一层静默忽略）：
+
+| 级别 | 路径 |
+|---|---|
+| 用户级 | `~/.claude/skills/`（Windows 是 `%USERPROFILE%\.claude\skills`） |
+| 项目级 | `<cwd>/.claude/skills/`（会向上找到仓库根） |
+| 额外目录 | `--add-dir <path>` 会加载 `<path>/.claude/skills/`（`permissions.additionalDirectories` **不会**，它只给文件权限） |
+
+**A. 用户级联接（推荐，零改代码、每台机一次）**
+
+```powershell
+:: Windows（Junction 不需要管理员权限）
+mklink /J "%USERPROFILE%\.claude\skills" "D:\fbip-skill\.claude\skills"
+```
+
+```bash
+# macOS / Linux
+ln -s "/Users/you/fbip-skill/.claude/skills" ~/.claude/skills
+```
+
+装完**这台机器上的每一次 claude 调用**（含节点——cc-web 不传 `--bare`，cwd 是不是项目根都不影响）都能看到。⚠️ **若 `~/.claude/skills` 已存在**（本机就有一个 `mobile-portal-extend`），不要直接联接覆盖：先把已有的挪进库里，或改为逐个 skill 建联接。
+
+**B. 登记 `local_skill_path` + 提示词点名绝对路径（本次已做，见 22.3）**
+
+不依赖"自动发现"，最稳。**这条必须做**，理由见 22.4。
+
+**C. `--add-dir`（要改 cc-web，v1 不做）**
+
+cc-web 目前只传 `--mcp-config`（`claude.rs` 的 `mcp_flags()`）。要让"某一次运行只挂某个 skill 目录"，就得在 `claude.rs` 里给 `claude` 加 `--add-dir <path>`。等真有"按 run 挑 skill 库"的需求再说。
+
+### 22.3 提示词怎么接入（本次已改）
+
+改动都在 `static/patches.js`（v1 提示词硬编码在 cc-web，见 20.12）：
+
+1. **建 run 时**：`env_snapshot` 新增 `local_skill_path`（取自产品环境变量，选填；只落本机 `node_runs.json`，**不上报**）。
+2. **阶段一【环境】段**：登记了才多一行「本机 skill 库（FBIP 领域 skill 库根目录，可按需读取）：…」。
+3. **阶段一【任务】新增第 2 条"先读工具说明书"**（登记了才出现；没登记整条退化成"跳过这一步"）：
+   - 读 `<库>/java-compiler-mcp/SKILL.md` —— 编译 MCP 七个工具的参数、路径映射表、GBK 回退、常见错误，**照它调用、不要自己猜参数**；
+   - 需要领域知识时读 `<库>/fbip-skill-router/SKILL.md` 与它指到的 skill；**某个 skill 要求的前置 skill 本机不存在就跳过那条继续**（见 22.4）；
+   - skill 文档里的 `D:\…` 绝对路径只是它成文时的示例，**本机环境一律以【环境】段为准**。
+4. **阶段一【任务】第 3 条**（"按客开工程的结构构建"，见 20.12 的 2026-09-21 说明）：先只读地定出模块根与每个文件的 source type → 暂存目录里逐层照抄 → 目录层级不许猜 → 打完包列 zip 条目自查。
+
+### 22.4 为什么不靠"自动发现"、为什么还要点名
+
+两条硬限制（决定了 22.2 里 B 必须做）：
+
+1. **skill 列表有预算**：所有 skill 的 `name` + `description` 会进 system prompt，预算约为上下文窗口的 **2%**，**超出的部分被静默丢弃、没有任何报错**。731 个 skill 的描述远超这个预算 —— 装是装上了，但**不能指望"装上就会被自动路由到"**。库里 `description` 越短越有利；真要给自动路由用，只能靠"L1 router 当唯一入口"的设计。
+2. **L1 router 有一个硬缺失**：`fbip-skill-router`（以及 `fbip-jira-solver`、`fbip-jira-search`、`fbip-skill-generator`、`fbip-erm-loan-offset`）**硬性要求一个不存在的 `fbip-code-index-analysis`**（已确认无此目录）。所以提示词里**不要**写"从 L1 开始按路由执行"——那会让它卡在第一步；本次改成"按需读，遇到不存在的前置就跳过并写进结论"。
+
+另外这份库里有**大量机器绝对路径硬编码**（`D:/Tools/jdk1.8.0_201`、`D:/work/ideaworkspace/fbipaihome/home/gl`、`D:/home/hotwebs/hotwebs` 等）。这正是产品环境变量里 `package_path` / `local_jdk_path` 要替代的东西 —— 所以第 2 条 c 明确写了"以【环境】为准"。
+
+### 22.5 落地动作（每台开发机）
+
+1. 把 skill 库放到本机固定位置（建议 `<盘>:\fbip-skill`，与 `D:\project\fbip-skill` 一致）。
+2. 到「产品环境变量」里把该产品的 **本地skill路径** 填成库根目录（例如 `D:\fbip-skill\.claude\skills`）——它只登记、服务器不校验。
+3. （可选，但推荐）按 22.2 A 做用户级联接，让交互式 claude 也能用这套 skill。
+4. 重编 cc-web 并分发（本次已做，见 22.6）。
+
+### 22.6 本次落地状态（2026-09-21）
+
+- `static/patches.js`：`env_snapshot.local_skill_path`、阶段一【环境】新增 skill 库行、【任务】新增第 2 条并重排第 3 条（a~e）——均已改完，`node --check` 通过，提示词用脱机渲染核对过（登记 / 未登记两种形态）。
+- **cc-web 已重编并分发**：`cargo build --release` → 4,765,696 字节（2026-09-21 08:55），已覆盖 `target/release/cc-web.exe`、仓库根 `cc-web.exe`、`D:\project\cc-web-dist\cc-web.exe`（三份都验过二进制里含新提示词串）。
+- **待用户动作**：重启正在跑的 cc-web（当时那个进程还是 9-20 19:09 的版本）；把 skill 库路径登记进产品环境变量。
+- **没做的**：cc-web 不加 `--add-dir`；`fbip-code-index-analysis` 的缺失不补（属 skill 库自身的问题）；skill 库不下发/不自动安装（v1 由各机自己放）。
+
+## 二十三、源码检索 MCP 的审计日志
+
+### 23.1 需求与边界
+
+源码检索 MCP（`app/mcp/`，随 patch_search 同进程、第二个监听端口 13589，见 21.3 的收集项说明）是给**开发者的 Claude Code** 用的：模型拿它去服务器上的源码树里翻东西。问题是翻完之后没人知道它**翻过哪些文件** —— 主日志里只有一行光秃秃的摘要（`app/mcp/server.py` 的 `_timed()`，:53）：
+
+```
+INFO [patch_search.mcp] [request_id=-] mcp tool name=read_file elapsed_ms=0.7 bytes=337
+```
+
+没有参数、没有文件名。于是要做一份**审计日志：这次分析到底读了/搜了哪些源码文件**，用来核对模型是不是查对了地方。
+
+四条已拍板的取舍（2026-09-21）：
+
+| 问题 | 决定 |
+|---|---|
+| 记哪些工具 | **六个全记**（list_roots / grep / glob / read_file / list_dir / stat_path），grep 与 glob 连命中的文件列表一起记 |
+| 写到哪 | **单独一个 `logs/mcp_audit.log`**，不混进主日志 |
+| 怎么把一次分析串起来 | 每行带 **`session=` 短号**（MCP 的 `mcp-session-id` 前 12 位） |
+| 模型给的搜索词要不要记 | **记 `pattern`**（见 23.6 的取舍说明） |
+
+硬边界：**只记路径与计数，绝不记文件内容、也绝不记命中的行文本** —— 与 `README.md` 里「日志不会记录查询结果内容」的口径一致。唯一的例外是 `pattern` / `include`，它们属于**模型输入**而非源码内容。
+
+### 23.2 为什么单开一个 `mcp_audit.log`
+
+主日志是给运维看服务运行的；这份是给「这次分析到底翻了哪些源码」用的。混在一起的后果是主日志被 grep / read_file 的流水淹掉 —— 一次分析动辄几十上百行。所以：
+
+- 独立的 `TimedRotatingFileHandler`、独立的 `backup_count`（默认 30 天）
+- **`propagate = False`**：不关掉的话审计行会冒泡进 `patch_search.log`，变成静默双写
+- 格式里**不掺 main log 的那几列**（没有 `[name]`、没有 `[request_id=…]`，MCP 请求本来也没有 request_id）：
+
+```
+%(asctime)s %(levelname)s %(message)s
+```
+
+### 23.3 日志格式
+
+行前缀固定 `mcp audit `，值与主日志同款 `key=value`。**字符串值一律 `json.dumps(..., ensure_ascii=False)`** —— 一举解决换行/空格/引号，模型给的 `pattern` 是任意文本也不怕；数字/布尔/null 裸值；列表渲染成 `["a","b"]`，超过 `max_items` 折叠成 `(+M more)`。
+
+键序是稳定的：先是 `tool=` / `session=`，然后是这次调用传进来的**原始参数**（按定义顺序），最后是工具执行中 `merge()` 进来的**结果字段**。空值照常输出（不省略键），便于 grep。
+
+实测样例（真实跑出来的，见 23.7）：
+
+```
+mcp audit event=ready file="…/logs/mcp_audit.log" enabled=true max_items=20
+mcp audit event=session_start session=3e871d8ccbe0
+mcp audit tool=list_roots session=3e871d8ccbe0 count=1 names=["src"] ok=true
+mcp audit tool=grep session=3e871d8ccbe0 root="src" path="a" pattern="NEEDLE" include="" cursor=0 target="src/a" files=25 hits=25 truncated=false list=["src/a/F11.java(1)",…] (+5 more) ok=true
+mcp audit tool=grep session=3e871d8ccbe0 root="src" path="a" pattern="zzzznope" include="*.java" cursor=0 target="src/a" files=0 hits=0 truncated=false list=[] ok=true
+mcp audit tool=glob session=3e871d8ccbe0 root="src" path="a" pattern="**/*.java" cursor=0 target="src/a" files=26 truncated=false list=["src/a/Foo.java",…] (+6 more) ok=true
+mcp audit tool=read_file session=3e871d8ccbe0 root="src" path="src/a/Foo.java" start_line=5 max_lines=4 lines="5-8" returned=4 eof=false ok=true
+mcp audit tool=read_file session=3e871d8ccbe0 root="src" path="src/a/blob.bin" start_line=1 max_lines=0 ok=false error="错误：src/a/blob.bin 看起来是二进制文件，已拒绝读取。"
+mcp audit tool=read_file session=3e871d8ccbe0 root="src" path="../escape.txt" start_line=1 max_lines=0 ok=false error="错误：路径不在允许的目录范围内：../escape.txt"
+mcp audit tool=list_dir session=3e871d8ccbe0 root="src" path="src/a" max_entries=0 dirs=0 files=27 shown=27 capped=false ok=true
+mcp audit tool=stat_path session=3e871d8ccbe0 root="src" path="src/a/Foo.java" type="file" size_bytes=603 is_binary=false line_count=31 ok=true
+```
+
+每个工具记什么：
+
+| 工具 | 原始参数 | 结果字段（`merge` 进来的） |
+|---|---|---|
+| `list_roots` | — | `count`、`names`（白名单名字列表） |
+| `grep` | `root` `path` `pattern` `include` `cursor` | `target`（解析后的归一化路径）、`files`、`hits`、`truncated`、`list=["路径(条数)",…]` |
+| `glob` | `root` `path` `pattern` `cursor` | `target`、`files`、`truncated`、`list=["路径",…]` |
+| `read_file` | `root` `path` `start_line` `max_lines` | `path`（归一化）、`lines="首-末"`、`returned`、`eof` |
+| `list_dir` | `root` `path` `max_entries` | `path`、`dirs`、`files`、`shown`、`capped` |
+| `stat_path` | `root` `path` | `path`、`type`、`size_bytes`、`is_binary`、`line_count` |
+
+两点说明：
+
+- **`path` 与 `target` 会同时出现**，故意保留：前者是模型**写的**（可能写成 `a` 或 `src/a` 两种写法），后者是我们**解析成的**。核对"模型是不是查错了地方"时，这一对差异往往就是线索。
+- **`stat_path` 不记 `absolute_path`**。工具返回体里有它，但审计里 `path`（`<root 名字>/<相对路径>`）已经足够定位，少一处多余的服务器路径暴露。
+
+### 23.4 配置项（`config.yaml` 的 `mcp.audit`）
+
+```yaml
+mcp:
+  audit:
+    enabled: true
+    file: "mcp_audit.log"
+    dir: ""                  # 留空 = 跟随 logging.dir
+    level: "INFO"
+    rotation: "midnight"
+    backup_count: 30
+    max_items: 20            # 列表类字段最多列几项，其余折叠成 (+M more)
+    max_value_length: 512    # 单值截断长度，标记与主日志一致 ...<truncated>
+    session_tag_length: 12   # 完整 session id 是 32 位 hex，取前 N 位做短标签
+```
+
+- 目录解析复用 `app/logging_config.py` 的 **`resolve_log_dir()`**（本次从 `configure_logging` 里抽出来的）。抽出来就是为了让两份日志**同口径**：config 放在哪日志就落到它旁边的 `logs/`，打包成 exe 后也是 exe 同目录 —— 两边各写一份解析逻辑迟早会走偏。
+- 默认值在 `app/config.py` 的 `MCP_AUDIT_DEFAULTS`，`Settings.mcp_audit` 按 `mcp_limits` 同款写法回落。**没配 `mcp.audit` 也能工作**（`config.mac.example.yaml` 至今整个没有 `mcp:` 段，不改也不会缺键）。
+- `dir` 留空 / `file` 改名 / `enabled: false` 都是就地生效的开关，不需要动代码。
+
+### 23.5 怎么用：按会话捞一次分析
+
+会话号就是 MCP 的 `mcp-session-id`（客户端 `initialize` 时服务端新发的那串 32 位 hex），从工具函数的 `Context.headers` 里取。一次分析的所有读取靠 `session=` 串起来：
+
+```bash
+grep 'session=3e871d8ccbe0' logs/mcp_audit.log
+```
+
+- **`event=session_start`** 是这个会话**第一次真正干活**时补的一行（不是 `initialize` 时刻 —— initialize 的请求头里还没有 session id，值是响应里新发的）。用来在日志里一眼看出一次分析的起点。实现是「本进程首次见到该 id 时打一行」，用一个有界 `deque(maxlen=4096)` + `set` 去重，进程长跑不会无限涨。
+- **不做 `event=session_end`**：只有客户端显式 `DELETE` 才判别得出，idle 超时拿不到。加了会让人误以为日志是完整的，宁缺毋滥。
+
+要统计「这次分析一共碰了多少个文件」，直接数 `tool=read_file` 的 `path=` 和 `tool=grep` 的 `list=` 就行。
+
+### 23.6 实现要点（都是踩过的坑）
+
+1. **不用自己加 ASGI 中间件。** MCP SDK 2.2.0 支持给工具函数加一个 `Context` 类型注解的形参，SDK 自动注入，`ctx.headers` 就是当前 HTTP 请求头。本方案最初打算用「中间件 + ContextVar」，实测可行，但既然 SDK 有第一方入口，就用第一方的，省掉一层 ASGI 包装和 `lifespan` 透传的顾虑。相关 API 已逐条在装好的 SDK 里核对：`Context.headers`（`mcpserver/context.py:282`）、`MCP_SESSION_ID_HEADER`（`streamable_http.py:54`，审计模块直接 import 这个常量而不是写死字面量）。
+2. ⚠️ **`Context` 必须是 `app/mcp/server.py` 顶部的运行时 import。** 该文件有 `from __future__ import annotations`，注解是字符串，SDK 靠 `typing.get_type_hints()` 从模块全局解析；而 SDK 在解析失败时**静默返回 None** —— 于是 `ctx` 会退化成工具的一个**必填参数**出现在 `inputSchema` 里，模型开始瞎传，而运行时没有任何报错提示。写进 `TYPE_CHECKING` 或只在函数体内 import 都会踩这个坑。**改动 `server.py` 顶部 import 之后，务必重跑 23.7 的"ctx 不进 inputSchema"断言。**
+3. **`ctx: Context` 必须是 wrapper 的第一个形参**（不能跟在带默认值的形参后面）。
+4. **`ok` 靠返回串是否以 `错误：` 开头判断。** 这是 `tools.py` 的既有约定（17 处失败返回全部这么写，已 grep 确认 17/17），好处是 `tools.py` 的错误路径一个都不用改。**这个约定是脆的**：将来新增错误返回时若不按这个前缀写，`ok` 会失真（行不会丢，只是标错）。改动时要么照样用这个前缀，要么把 `_ERROR_PREFIX` 换成共享常量。
+5. **审计轨迹不能挂在 `SourceTools` 实例上。** 它是跨请求共享的单例，并发两个 `tools/call` 会互相覆盖。做法是每个 wrapper 新建一个 `AuditTrail`，外面套 `try/finally`，`finally` 里 `trail.finish(result).emit()` —— 成功、失败、抛异常都**恰好一行**（抛异常时 `result` 还是 None，`finish(None)` 记 `ok=false`）。
+6. **埋点只在成功路径上 `merge()`**，而且可以**无条件**调用：`tools.py` 六个方法各加一个形参 `audit: AuditTrail = NOOP_TRAIL`（模块级 noop 实例，不存 per-call 状态，共享安全），不用到处 `if audit`。失败返回时由 `finish(text)` 自己判 `ok=false`。
+7. **审计 logger 必须在 build 期装好**，不能在 `app/main.py` 的 lifespan 里装：`run_server.py` 是先 `create_task(mcp_server.serve())` 再 `await main_server.serve()`，后者的 lifespan 里才连 MySQL —— 这期间 MCP 端口已经在收请求了。所以调用点在 `build_mcp_asgi_app()` 的**第一行**。顺带也让「只跑 MCP」的场景有审计。
+8. **`configure_mcp_audit()` 绝不能抛异常。** 它的调用点被 `run_server.py` 包在 try/except 里，抛出去会让 **MCP 整体不启动**，而不是只丢审计。所以目录建不出来、文件开不出来，都只在主日志留一条 warning 后退化成 `NullHandler`。
+9. **`grep` 的 `files`/`hits` 是"当前这一页"**（`cursor` 之后），而且 `hits` **含上下文行**。所以审计行里 `cursor=` 与 `truncated=` 必须一起看 —— 单看数字对不上不是 bug，这点写进了代码注释。
+10. `pattern` 会落盘（用户已确认接受）：模型搜的自由文本进审计文件，可能含 `password` 之类字样。与 `app/db.py` 记录 SQL 模板同级信任域。
+
+**日志格式的细节**：所有字符串值都 JSON 编码，所以 `stat_path` 的 `type="file"` 是带引号的（不是裸 `file`）。这是刻意的统一 —— 一条规则比"某些字段特殊处理"更可预测。
+
+### 23.7 验证（2026-09-21 已跑）
+
+不碰 DB 的独立冒烟（起临时 config + 临时源码树 + 空端口 13599，走完 `initialize` → `notifications/initialized` → `tools/list` → 六个工具若干次）：
+
+1. ✅ `python -m compileall -q app` 全过。
+2. ✅ **`ctx` 没有泄漏进 `inputSchema`**：六个工具的 `properties` 分别是 `[]` / `[pattern,root,path,include,fixed_strings,case_sensitive,word,context_lines,include_hidden,max_matches,cursor]` / `[pattern,root,path,include_hidden,max_results,cursor]` / `[path,root,start_line,max_lines]` / `[path,root,max_entries]` / `[path,root]` —— 无 `ctx`。**这条是上面坑 2 的唯一兜底。**
+3. ✅ 每个工具**恰好一行**，`session=` 六次相同（`3e871d8ccbe0`），首次调用前有一行 `event=session_start`。
+4. ✅ 覆盖到的边界：grep 零命中（`files=0 hits=0 list=[]`）、越界 path（`ok=false error="错误：路径越界…"`）、二进制文件（`ok=false error="错误：…二进制文件…"`）、`read_file` 分段（`lines="5-8" returned=4 eof=false`）。
+5. ✅ **列表折叠**：25 个 java 的 grep 与 26 个文件的 glob 都正确折叠成 `(+5 more)` / `(+6 more)`（`max_items: 20`）。
+6. ✅ **主日志没被污染**：同一进程里先 `configure_logging()` 再跑工具，`patch_search.log` 里有 9 行 `mcp tool name=…`（原有格式一字不变），**`mcp audit` 一次都没出现**（证明 `propagate=False` 生效）。
+7. ✅ 审计文件是**合法 UTF-8、无 BOM**，中文错误信息原样落盘（控制台里看到的乱码只是 Windows 终端 cp936 的显示问题）。
+
+**还没做的验证**：真服务端到端（`python run_server.py` 连 `10.4.122.21` + 真源码根，跑 `mcptest.ps1`）；`build.bat` 出包后确认 exe 同目录能建出 `logs/mcp_audit.log`。这两条留到下次部署时顺带看。
+
+### 23.8 明确不做的
+
+- **不把 session 号回写进 `list_roots` 的返回**，也不在节点提示词里要求 Claude 把 session 写进 `结论.md` —— 用户选了"先不做"。本次改动**纯 patch_search 服务端**：不重编 cc-web、不动提示词、不动数据库。
+- 不做 `session_end`、不记文件内容、不记命中行文本。
+- **不更新 `README.md`**：它到现在都没有 `mcp:` 段的说明（是 MCP 并入前的版本），单独补一段 `mcp.audit` 反而突兀。
+
+### 23.9 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `app/mcp/audit.py` | **新增**。`configure_mcp_audit()` / `AuditTrail` / `session_tag()` / `NOOP_TRAIL`，以及格式化与 `event=session_start` 去重 |
+| `app/mcp/tools.py` | 六个方法各加 `audit: AuditTrail = NOOP_TRAIL` 形参，成功路径上 `merge()` |
+| `app/mcp/server.py` | 顶部运行时 import `Context`；六个 wrapper 加 `ctx` 形参与 `try/finally`；`build_mcp_asgi_app()` 第一行调 `configure_mcp_audit()`。`_timed()` 与 `BearerAuth(...)` 一行未动 |
+| `app/logging_config.py` | 抽出 `resolve_log_dir()`，`configure_logging` 改用它（行为不变） |
+| `app/config.py` | 新增 `MCP_AUDIT_DEFAULTS` 与 `Settings.mcp_audit` |
+| `config.yaml` | `mcp:` 下新增 `audit:` 段 |
+

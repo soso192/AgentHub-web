@@ -4,3 +4,4 @@ pub mod agent;
 pub mod files;
 pub mod local_claude;
 pub mod patch_config;
+pub mod node_runs;

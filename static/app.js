@@ -136,18 +136,75 @@ async function init() {
     }
 }
 
-// 通过 URL 参数 resume=1&sid=...&cwd=... 恢复本地 ClaudeCode 会话。
-// 创建带 resume_session_id 的会话，首次消息将自动 --resume 恢复上下文；
-// 不自动发送消息，由用户继续输入。
+// 通过 URL 参数恢复会话。三种入口，按顺序判：
+//   1) session=<cc-web 会话 id>：直接选中它。智能开发节点的「继续会话」走这条 —— **不新建会话**，
+//      选中后既能看到已产出的过程，后端 isStreaming 时 selectSession 还会自动挂 SSE 看实时输出。
+//   2) history=<claude 会话 id>：只读回放（那个 cc-web 会话已经不在了，但 claude 的本机记录还在）。
+//   3) resume=1&sid=&cwd=：ch.18 老协议（workflow_run.html 的继续会话）。
 async function resumeSessionFromUrl() {
     const params = new URLSearchParams(location.search);
+    const wantSession = params.get('session');
+    const historySid = params.get('history');
+
+    if (wantSession) {
+        const existing = sessions.find(s => s.id === wantSession);
+        if (existing) {
+            currentSessionId = existing.id;
+            currentAssistant = existing.assistant || currentAssistant;
+            await selectSession(existing.id);
+            clearUrlQuery();
+            return true;
+        }
+    }
+    if (historySid && await openClaudeHistoryView(historySid)) {
+        clearUrlQuery();
+        return true;
+    }
+    if (wantSession || historySid) {
+        // 明确是"要看某一次运行"，却什么都没有：说清楚，且不要静默跳到别的会话上去
+        showAppNotice(
+            wantSession
+                ? `找不到这次运行对应的聊天会话（${wantSession}）。可能它已被删除，或这条运行是在另一台机器上跑的。`
+                : `读不到 claude 会话 ${historySid} 的本机记录（本机 ~/.claude/projects 下没有它，或它是别的机器上跑的）。`,
+            '无法打开会话'
+        );
+        clearUrlQuery();
+        return true;
+    }
+
     if (params.get('resume') !== '1') return false;
     const sid = params.get('sid');
     const cwd = params.get('cwd') || '';
     if (!sid) return false;
+
+    // 已存在同一个 claude 会话的 cc-web 会话 → 直接选中，不再新建。
+    // （旧行为每次都 POST /api/agent/new 造副本，点一次多一个，看着像不同会话其实是同一个。）
+    // 后端是收到流式 "start" 事件才把 sid 绑到会话上（agent.rs 的 bind_claude_session_id），
+    // 刚发完消息的一两秒内可能还没绑上 —— 先重查几次，别急着走"新建"。
+    let existing = findSessionByAgentSession(sid, cwd);
+    for (let attempt = 0; !existing && attempt < 3; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await loadSessions();
+        existing = findSessionByAgentSession(sid, cwd);
+    }
+    if (existing) {
+        currentSessionId = existing.id;
+        currentAssistant = existing.assistant || currentAssistant;
+        await selectSession(existing.id);
+        clearUrlQuery();
+        return true;
+    }
+
+    // 真的没有这个 claude 会话对应的 cc-web 会话 → 按 ch.18 建一个（首次消息会自动 --resume）。
+    // **必须加超时**：执行中的 run 全程持着助手的读锁（agent.rs 的 start_prompt），
+    // POST /api/agent/new 要写锁 → 会一直等下去；以前这里没超时，连带把整个 init() 卡死，
+    // 页面停在欢迎页不动，看着就是「跳不到聊天窗口」。
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     try {
         const res = await fetch(`${API_BASE}/api/agent/new`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
             body: JSON.stringify({ cwd, message: null, model: null, assistant: currentAssistant, resume_session_id: sid })
         });
         const data = await res.json();
@@ -156,14 +213,109 @@ async function resumeSessionFromUrl() {
             currentAssistant = data.assistant || currentAssistant;
             await loadSessions(); renderSessionList();
             await selectSession(data.sessionId);
-            if (history.replaceState) history.replaceState(null, '', location.pathname + location.hash);
+            clearUrlQuery();
             return true;
         }
         console.error('Failed to resume session:', data.error);
+        showAppNotice(`恢复 claude 会话失败：${data.error || '未知错误'}`, '无法打开会话');
     } catch (e) {
         console.error('Failed to resume session:', e);
+        showAppNotice(
+            e && e.name === 'AbortError'
+                ? '新建会话请求超时了：很可能有个助手正在执行中（执行期间新建会话要等它跑完）。等这次执行结束再点，或直接在左侧列表里打开已有会话。'
+                : `恢复 claude 会话失败：${e.message}`,
+            '无法打开会话'
+        );
+    } finally {
+        clearTimeout(timeout);
     }
     return false;
+}
+
+// 跳转用的查询参数清掉，免得刷新页面又跳一次
+function clearUrlQuery() {
+    if (history.replaceState) history.replaceState(null, '', location.pathname + location.hash);
+}
+
+// 只读回放：拿 claude 会话 id 读本机 ~/.claude/projects/*/<sid>.jsonl。
+// 后端 /api/claude-sessions/{sid} 就是包了一层早就写好的 claude_history::load_history。
+// 用在「cc-web 会话已经不在、但 claude 的运行记录还在」的场合：**只展示，不新建会话、不能发消息**。
+// jsonl 是按步落盘的（一次助手消息/一次工具调用一行），所以每 2s 重读一次追新；
+// 内容连续 20s 没变化就停（那次 claude 会话应该是结束了）。
+async function openClaudeHistoryView(sid) {
+    const viewId = `claude:${sid}`;
+    const load = async () => {
+        const res = await fetch(`${API_BASE}/api/claude-sessions/${encodeURIComponent(sid)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return (await res.json()).messages || [];
+    };
+    let messages;
+    try {
+        messages = await load();
+    } catch (e) {
+        console.error('Failed to load claude session history:', e);
+        return false;
+    }
+    if (!messages.length) return false;   // 本机没这个 jsonl / 还什么都没写 → 交给调用方提示
+
+    const view = getSessionView(viewId);
+    view.innerHTML = '';
+    const banner = document.createElement('div');
+    banner.className = 'claude-history-banner';
+    banner.textContent = `只读回放：原聊天会话已不在，下面是 claude 会话 ${sid} 的本机记录（不能在此继续对话）。`;
+    view.appendChild(banner);
+    welcomeScreen.style.display = 'none';
+    chatContainer.style.display = 'flex'; chatContainer.flexDirection = 'column';
+    typingIndicator.style.display = 'none';
+    inputArea.style.display = 'none';   // 只读：不给发送入口（切到别的会话时 selectSession 会恢复）
+    showSessionView(viewId);
+
+    let rendered = 0;
+    const render = list => {
+        const atBottom = chatContainer.scrollTop + chatContainer.clientHeight >= chatContainer.scrollHeight - 40;
+        const keep = chatContainer.scrollTop;
+        if (rendered > 0 && list.length >= rendered) {
+            // 只重画「可能还在变长的那一条 + 新来的」：load_history 会把 tool_result 追加到上一条
+            // 助手消息上，所以最后一条随时会变；整块重画会把用户展开的工具调用折叠回去。
+            const last = view.lastElementChild;
+            if (last && last.classList.contains('message')) last.remove();
+            renderMessagesInto(view, list.slice(rendered - 1), 'claude');
+        } else {
+            // 首屏，或者记录反而变短了（jsonl 被重写/压缩）→ 整块重来
+            while (view.lastElementChild && view.lastElementChild !== banner) view.lastElementChild.remove();
+            renderMessagesInto(view, list, 'claude');
+        }
+        if (!atBottom) chatContainer.scrollTop = keep;   // renderMessagesInto 会滚到底，别抢用户的滚动位置
+        rendered = list.length;
+    };
+    render(messages);
+
+    let stale = 0;
+    const timer = setInterval(async () => {
+        // 用户切去别的会话了：停掉轮询，别让后续重画把别人的滚动位置拽到底部
+        if (view.style.display === 'none') { clearInterval(timer); return; }
+        try {
+            const list = await load();
+            if (list.length !== rendered) { render(list); stale = 0; }
+            else if (++stale >= 10) clearInterval(timer);
+        } catch (e) {
+            // 单次失败忽略，下一轮再来
+        }
+    }, 2000);
+    return true;
+}
+
+// 按 claude 会话 id 在已加载的会话列表里找对应的 cc-web 会话。
+// cwd 必须一致：--resume 与 cwd 强绑定，选一个 cwd 不同的会话，下一条消息会
+// 报 "No conversation found with session ID"。正在流式输出的那个优先（它是真正
+// 在跑的那次，切过去能看到实时输出）；否则取最近更新的一个。
+function findSessionByAgentSession(sid, cwd) {
+    const norm = p => (p || '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+    const wantCwd = norm(cwd);
+    const matches = sessions.filter(s => s.agent_session_id === sid
+        && (!wantCwd || !s.cwd || norm(s.cwd) === wantCwd));
+    if (!matches.length) return null;
+    return matches.find(s => s.isStreaming) || matches[0]; // sessions 已按 modified 倒序
 }
 
 async function loadAssistants() {
@@ -353,6 +505,37 @@ function renderSessionList() {
 // It syncs the topbar assistant/model selectors, loads messages
 // from the backend (if not already loaded), and shows the session view.
 let selectSessionGeneration = 0; // 竞态条件保护：每次调用递增，丢弃过期调用
+// ── 智能开发会话只读 ──
+// 判定某 cc-web 会话是不是「智能开发节点」创建的：在 node_runs.json（/api/node/runs）里按 session_id 反查。
+// 是的话，聊天页只允许查看：隐藏输入框与发送按钮（sendBtn 在 inputArea 内，藏一个即可），并显示提示条。
+// 判定粒度是「会话属于智能开发」，不区分入口（点「查看会话」或手动从列表点开都一样只读）。
+let nodeRunsCache = null;
+let nodeRunsCacheAt = 0;
+async function isNodeRunSession(sessionId) {
+    const now = Date.now();
+    if (!nodeRunsCache || now - nodeRunsCacheAt > 30000) {
+        const res = await fetch(`${API_BASE}/api/node/runs`);
+        const data = await res.json().catch(() => ({}));
+        nodeRunsCache = Array.isArray(data.data) ? data.data : [];
+        nodeRunsCacheAt = now;
+    }
+    return nodeRunsCache.some(run => String(run.session_id) === String(sessionId));
+}
+async function refreshInputReadonlyState() {
+    const banner = document.getElementById('nodeReadonlyBanner');
+    const sid = currentSessionId;
+    if (!sid) { if (banner) banner.style.display = 'none'; return; }
+    let isNode = false;
+    try { isNode = await isNodeRunSession(sid); } catch {}
+    if (sid !== currentSessionId) return; // 查询期间用户已切到别的会话
+    if (isNode) {
+        inputArea.style.display = 'none'; // 输入框 + 发送按钮一起隐藏
+        if (banner) banner.style.display = 'block';
+    } else if (banner) {
+        banner.style.display = 'none';
+    }
+}
+
 async function selectSession(sessionId) {
     const gen = ++selectSessionGeneration;
     currentSessionId = sessionId;
@@ -421,6 +604,8 @@ async function selectSession(sessionId) {
     welcomeScreen.style.display = 'none';
     chatContainer.style.display = 'flex'; chatContainer.style.flexDirection = 'column';
     inputArea.style.display = 'block';
+    // 智能开发创建的会话 → 聊天页只读（隐藏输入框 + 发送按钮，显示提示条）
+    refreshInputReadonlyState();
 
     // If backend says this session is still streaming but frontend has no connection,
     // check if the backend is really still streaming before reconnecting
@@ -1716,6 +1901,7 @@ async function createSession() {
     // 更新当前助手和模型
     currentAssistant = assistant;
     currentSessionId = null;
+    refreshInputReadonlyState(); // 新建会话前清掉可能残留的「智能开发只读」提示条
     currentModel = model; pendingCwd = cwd;
 
     // 同步更新顶栏选择器
@@ -2056,6 +2242,7 @@ class SplitViewManager {
                 chatContainer.style.display = 'flex';
                 chatContainer.style.flexDirection = 'column';
                 inputArea.style.display = 'block';
+                refreshInputReadonlyState(); // 智能开发会话退出面板模式后仍保持只读
 
                 // 退出面板模式时，如果 AI 仍在流式传输，将 SSE 连接重定向回主视图
                 const isStreaming = streamingSessions.has(currentSessionId);

@@ -401,6 +401,19 @@ button:active:not(:disabled), [role="button"]:active { transform: translateY(1px
 
 .session-view { width: 100%; max-width: 860px; margin: 0 auto; padding: 20px 0; display: none; }
 
+/* 只读回放（聊天页）：那个 cc-web 会话已不在，这里展示的是本机 claude 会话记录 */
+.claude-history-banner {
+    margin-bottom: 16px;
+    padding: 11px 12px;
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
 .message {
     margin-bottom: 16px;
     display: flex;
@@ -1059,6 +1072,9 @@ html.help-panel-closed .help-panel { transform: translateX(102%); }
 .patch-admin-form label.patch-inline-field > select,
 .patch-admin-form label.patch-inline-field > textarea { flex: 1 1 auto; width: auto; min-width: 0; margin-top: 0; }
 .patch-admin-form label.patch-inline-field > datalist { display: none; }
+/* 未解决重跑弹框：默认 inline-field 是左右排，这里改成标签在上、输入框在下 */
+.patch-admin-form label.patch-inline-field.patch-inline-stack { flex-direction: column; align-items: stretch; gap: 6px; }
+.patch-admin-form label.patch-inline-field.patch-inline-stack > .patch-inline-label { min-width: 0; }
 /* 产品环境变量：标签文字长短不一（2~7 个字），统一标签宽度，右侧控件左边缘才能对齐；
    文本框高度按 rows 走，不要吃 .patch-admin-form textarea 的 96px 下限。 */
 .patch-admin-form.project-env-form label.patch-inline-field > .patch-inline-label { min-width: 8em; }
@@ -1119,6 +1135,79 @@ html.help-panel-closed .help-panel { transform: translateX(102%); }
 .workflow-run-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
 .workflow-run-progress { color: var(--accent); font-weight: 600; }
 
+/* Node run detail page (运行详情) */
+.patch-main.node-run-main { max-width: none; }
+.node-run-layout { display: block; }
+.node-run-layout > .node-run-page { margin-right: 344px; }
+/* 右侧固定列：资源管理器（上）+ 判定按钮（下） */
+.node-run-side {
+    position: fixed;
+    top: 88px;
+    right: 24px;
+    width: 320px;
+    display: flex; flex-direction: column; gap: 12px;
+}
+.node-run-explorer {
+    height: calc(100vh - 280px);
+    display: flex; flex-direction: column;
+    background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+.node-run-explorer .file-browser-header { border-bottom: 1px solid var(--border); }
+.node-run-explorer .file-browser-content { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+.node-run-decision {
+    display: flex; gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg-panel);
+}
+.node-run-decision .patch-primary-btn,
+.node-run-decision .patch-secondary-btn { flex: 1 1 0; }
+@media (max-width: 1100px) {
+    .node-run-layout > .node-run-page { margin-right: 0; }
+    .node-run-side { position: static; top: auto; right: auto; width: auto; margin-top: 16px; }
+    .node-run-explorer { height: 340px; }
+}
+.node-run-page { padding: 0 24px 24px; }
+.node-run-section { margin-top: 18px; }
+.node-run-section h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--text-muted); }
+.node-run-section > pre { margin-top: 0; }
+/* 详情页 md 文本框：一个带边框、可滚动的框，框内按 markdown 渲染（复用 .text-block 的子元素样式） */
+.md-box {
+    min-height: 260px;
+    max-height: 58vh;
+    overflow: auto;
+    padding: 16px 18px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--code-bg);
+    color: var(--code-text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.65;
+}
+.md-box.text-block { margin: 0; }
+/* 问题描述：随内容收缩、上限约 10 行文本（13px/1.65 ≈ 21.5px/行 → 10 行 ≈ 215px + 上下内边距 32px） */
+.md-box.md-box-compact {
+    min-height: 0;
+    max-height: 246px;
+}
+/* 深色框内，嵌套代码块/行内码再压深一档，避免和框底糊成一片 */
+.md-box .text-block pre { background: rgba(0,0,0,0.35); border-color: var(--code-border); }
+.md-box .text-block code:not(pre code) { background: rgba(0,0,0,0.4); color: var(--code-text); }
+.node-run-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px 20px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-hover); }
+.node-run-kv-row { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.node-run-kv-key { color: var(--text-muted); font-size: 11px; }
+.node-run-kv-value { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; line-height: 1.5; }
+.node-run-artifacts { display: flex; flex-direction: column; gap: 6px; }
+.node-run-artifact-item { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-hover); }
+.node-run-artifact-label { flex: 0 0 auto; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 600; }
+.node-run-artifact-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; font-family: var(--font-mono); }
+.node-artifact-clickable { cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+.node-artifact-clickable:hover { border-color: var(--accent); background: var(--bg-elevated); }
+/* 产物 md 查看浮层：markdown 渲染内容，覆盖 file-viewer-content 的等宽/pre-wrap */
+.file-viewer-content.node-run-md { white-space: normal !important; font-family: inherit !important; font-size: 13px; line-height: 1.65; overflow: auto; }
+
 /* Smart dev entry card */
 .smart-dev-card { padding: 18px 20px; }
 .smart-dev-head h2 { margin: 0; font-size: 17px; }
@@ -1127,7 +1216,7 @@ html.help-panel-closed .help-panel { transform: translateX(102%); }
 
 /* Patches page */
 .patch-page { height: 100vh; background: var(--bg); color: var(--text); overflow-x: hidden; overflow-y: auto; }
-.patch-topbar { min-height: 56px; display: flex; align-items: center; gap: 18px; padding: 10px 24px; background: var(--bg-panel); border-bottom: 1px solid var(--border); }
+.patch-topbar { position: sticky; top: 0; z-index: 10; min-height: 56px; display: flex; align-items: center; gap: 18px; padding: 10px 24px; background: var(--bg-panel); border-bottom: 1px solid var(--border); }
 .patch-brand { font-weight: 700; font-size: 15px; white-space: nowrap; }
 .patch-topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .patch-api-status { color: var(--text-muted); font-size: 11px; background: var(--bg-hover); border-radius: 10px; padding: 4px 10px; }
@@ -1135,9 +1224,7 @@ html.help-panel-closed .help-panel { transform: translateX(102%); }
 .patch-api-status.error { color: var(--error); }
 .patch-main { max-width: 1440px; margin: 0 auto; padding: 28px 24px 48px; }
 .patch-main-fill { max-width: none; }
-/* 我的数据 / 贡献榜 / 活跃榜在右侧栏；窄屏（见下方媒体查询）改为整块横排置顶 */
-.patch-auth-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; align-items: start; }
-.patch-user-sidebar { position: sticky; top: 20px; display: grid; gap: 16px; }
+.patch-auth-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
 .patch-user-summary, .patch-leaderboard { padding: 18px; }
 .patch-user-summary h3, .patch-leaderboard h3 { margin: 0 0 14px; font-size: 14px; }
 .patch-leaderboard-list { max-height: 260px; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; scrollbar-gutter: stable; }
@@ -1271,6 +1358,8 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .patch-table th, .patch-table td { text-align: left; padding: 12px 18px; border-top: 1px solid var(--border-light); white-space: nowrap; }
 /* 普通检索表 / 我的补丁表：操作列固定在每行右侧，横向滚动时保持可见；列宽可拖拽调整 */
 .patch-search-table, .patch-mine-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+/* 名称列是 auto（见 initPatchColumnResize 的 freeColumn），窄屏时给它留出下限，别被挤没 */
+.patch-search-table { min-width: 1120px; }
 .patch-search-table th, .patch-mine-table th { position: relative; }
 .patch-search-table td.patch-name-cell, .patch-mine-table td.patch-name-cell { width: auto; max-width: none; }
 .patch-search-table .patch-truncated-name, .patch-mine-table .patch-truncated-name { max-width: 100%; }
@@ -1405,11 +1494,6 @@ body.patch-col-resizing * { cursor: col-resize !important; user-select: none !im
     .patch-topbar { align-items: center; flex-wrap: wrap; gap: 8px 10px; padding: 10px 12px; }
     .patch-topbar-actions { width: 100%; margin-left: 0; order: 3; overflow-x: auto; padding-bottom: 2px; }
     .patch-main { padding: 18px 12px 32px; }
-    .patch-auth-layout { grid-template-columns: 1fr; }
-    /* order:-1 让侧栏在窄屏仍然排在内容上方（DOM 里它在内容之后，是为了桌面端靠右） */
-    .patch-user-sidebar { position: static; order: -1; display: flex; grid-template-columns: none; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
-    .patch-user-sidebar > .patch-card { flex: 0 0 min(280px, 78vw); scroll-snap-align: start; }
-    .patch-leaderboard-list { max-height: 190px; }
     .patch-upload-item { grid-template-columns: 1fr; }
     .patch-progress { grid-column: auto; }
     .patch-search-row { flex-direction: column; }
@@ -1498,3 +1582,69 @@ html.sidenav-collapsed .patch-sidenav-label { display: none; }
 /* 左侧固定菜单仅在补丁中心登录态下展示（html.patch-auth）；未登录（登录卡片）/ 非补丁界面不展示 */
 html:not(.patch-auth) .patch-sidenav { display: none; }
 html:not(.patch-auth) .patch-sidenav + .patch-page { margin-left: 0; }
+
+/* ── 智能开发节点（patchTabNode）：流程区 + 流式输出 + 产物清单 ── */
+.patch-node-run-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 16px 18px 0;
+}
+.patch-node-run-head h3 { font-size: 14px; }
+.patch-node-run-status { margin-top: 4px; color: var(--text-muted); font-size: 12px; }
+/* 流式输出区：等宽字体 + 定高滚动，避免长输出把页面撑长（与聊天页代码块同一套 terminal 配色） */
+.patch-node-output {
+    margin: 12px 18px 18px;
+    padding: 14px 16px;
+    min-height: 120px;
+    max-height: 420px;
+    overflow: auto;
+    border: 1px solid var(--code-border);
+    border-radius: var(--radius-sm);
+    background: var(--code-bg);
+    color: var(--code-text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    tab-size: 4;
+}
+.patch-node-output:empty::before { content: '等待输出…'; color: var(--text-dim); }
+.patch-node-artifacts { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 18px 18px; }
+.patch-node-env-hint {
+    margin: -4px 0 4px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-panel);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.7;
+    word-break: break-all;
+}
+.patch-node-env-hint:empty { display: none; }
+/* 仅服务器有、本机点不动的那一行：做成说明文字而不是按钮的样子，避免用户以为能点 */
+.patch-node-archived { color: var(--text-dim); font-size: 12px; cursor: help; }
+
+/* 会话存档查看浮层（管理员） */
+.session-viewer { max-width: 880px; width: 92vw; }
+.session-scroll { max-height: 72vh; overflow: auto; }
+.session-msg { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-hover); }
+.session-role { display: inline-block; margin-bottom: 6px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 600; }
+.session-text { font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.session-block { margin: 6px 0 0; }
+.session-think summary { color: var(--text-secondary); cursor: pointer; font-size: 12px; }
+.session-tool summary { color: var(--accent); cursor: pointer; font-size: 12px; }
+.session-pre { margin: 6px 0 0; padding: 8px; background: var(--code-bg); border-radius: var(--radius-sm); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; }
+
+/* 仅存档运行详情弹层：账本字段列表（正常字体，非等宽） */
+.archived-detail-body { flex: 1; margin: 0; padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+
+/* 统一分页条（所有列表共用）：共N条·第X/Y页 + 上/下页 + 跳转 + 每页条数 */
+.patch-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+.patch-pager-info { color: var(--text-muted); font-size: 12px; margin-right: auto; }
+.patch-pager-select { padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-secondary); font-size: 12px; }
+.patch-pager-jump { width: 72px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-secondary); font-size: 12px; }
+.patch-pager button[disabled] { opacity: 0.5; cursor: not-allowed; }

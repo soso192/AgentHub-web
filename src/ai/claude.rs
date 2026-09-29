@@ -4,12 +4,15 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::io::Write;
+use std::sync::RwLock;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// Claude Code CLI assistant implementation
 pub struct ClaudeAssistant {
-    sessions: HashMap<String, ClaudeSession>,
+    // 内部锁：create/delete/set 只锁这一小块，流式（stream_session）不碰它 →
+    // 外层 handle 只需读锁（可共享），建会话与并发流式互不阻塞。
+    sessions: RwLock<HashMap<String, ClaudeSession>>,
     default_model: String,
     git_bash_path: String,
     claude_cmd: String,
@@ -59,7 +62,7 @@ impl ClaudeAssistant {
             .map(|path| path.to_string_lossy().to_string());
 
         Self {
-            sessions: HashMap::new(),
+            sessions: RwLock::new(HashMap::new()),
             default_model,
             git_bash_path,
             claude_cmd,
@@ -496,11 +499,11 @@ impl AiAssistant for ClaudeAssistant {
         &self.default_model
     }
 
-    async fn create_session(&mut self, cwd: String, model: Option<String>) -> Result<String, String> {
+    async fn create_session(&self, cwd: String, model: Option<String>) -> Result<String, String> {
         let session_id = Uuid::new_v4().to_string();
         let model = model.unwrap_or_else(|| self.default_model.clone());
 
-        self.sessions.insert(session_id.clone(), ClaudeSession {
+        self.sessions.write().unwrap().insert(session_id.clone(), ClaudeSession {
             cwd,
             model,
         });
@@ -509,9 +512,9 @@ impl AiAssistant for ClaudeAssistant {
     }
 
     async fn send_message(&self, session_id: &str, message: &str) -> Result<AiResponse, String> {
-        let session = self.sessions.get(session_id)
-            .ok_or_else(|| "Session not found".to_string())?
-            .clone();
+        let session = self.sessions.read().unwrap().get(session_id)
+            .cloned()
+            .ok_or_else(|| "Session not found".to_string())?;
 
         let cwd = session.cwd.clone();
         let model = session.model.clone();
@@ -581,9 +584,9 @@ impl AiAssistant for ClaudeAssistant {
         message: &str,
         callback: Box<dyn Fn(AiEvent) + Send>,
     ) -> Result<(), String> {
-        let session = self.sessions.get(session_id)
-            .ok_or_else(|| "Session not found".to_string())?
-            .clone();
+        let session = self.sessions.read().unwrap().get(session_id)
+            .cloned()
+            .ok_or_else(|| "Session not found".to_string())?;
 
         let message = message.to_string();
         let cwd = session.cwd.clone();
@@ -761,8 +764,8 @@ impl AiAssistant for ClaudeAssistant {
         Ok(())
     }
 
-    fn set_model(&mut self, session_id: &str, model: &str) -> Result<(), String> {
-        if let Some(session) = self.sessions.get_mut(session_id) {
+    fn set_model(&self, session_id: &str, model: &str) -> Result<(), String> {
+        if let Some(session) = self.sessions.write().unwrap().get_mut(session_id) {
             session.model = model.to_string();
             Ok(())
         } else {
@@ -771,11 +774,11 @@ impl AiAssistant for ClaudeAssistant {
     }
 
     fn get_model(&self, session_id: &str) -> Option<String> {
-        self.sessions.get(session_id).map(|s| s.model.clone())
+        self.sessions.read().unwrap().get(session_id).map(|s| s.model.clone())
     }
 
-    fn delete_session(&mut self, session_id: &str) {
-        self.sessions.remove(session_id);
+    fn delete_session(&self, session_id: &str) {
+        self.sessions.write().unwrap().remove(session_id);
     }
 
     fn stream_session(

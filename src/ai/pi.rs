@@ -3,12 +3,13 @@ use super::streaming::StreamResult;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
+use std::sync::RwLock;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// Pi Coding Agent assistant implementation
 pub struct PiAssistant {
-    sessions: HashMap<String, PiSession>,
+    sessions: RwLock<HashMap<String, PiSession>>,
     default_model: String,
     pi_cmd: String,
 }
@@ -80,7 +81,7 @@ impl PiAssistant {
         });
 
         Self {
-            sessions: HashMap::new(),
+            sessions: RwLock::new(HashMap::new()),
             default_model,
             pi_cmd,
         }
@@ -333,11 +334,11 @@ impl AiAssistant for PiAssistant {
         &self.default_model
     }
 
-    async fn create_session(&mut self, cwd: String, model: Option<String>) -> Result<String, String> {
+    async fn create_session(&self, cwd: String, model: Option<String>) -> Result<String, String> {
         let session_id = Uuid::new_v4().to_string();
         let model = model.unwrap_or_else(|| self.default_model.clone());
 
-        self.sessions.insert(session_id.clone(), PiSession {
+        self.sessions.write().unwrap().insert(session_id.clone(), PiSession {
             cwd,
             model,
             session_file: None,
@@ -347,9 +348,9 @@ impl AiAssistant for PiAssistant {
     }
 
     async fn send_message(&self, session_id: &str, message: &str) -> Result<AiResponse, String> {
-        let session = self.sessions.get(session_id)
-            .ok_or_else(|| "Session not found".to_string())?
-            .clone();
+        let session = self.sessions.read().unwrap().get(session_id)
+            .cloned()
+            .ok_or_else(|| "Session not found".to_string())?;
 
         let cwd = session.cwd.clone();
         let model = session.model.clone();
@@ -451,8 +452,8 @@ impl AiAssistant for PiAssistant {
         Err("Use stream_session instead".to_string())
     }
 
-    fn set_model(&mut self, session_id: &str, model: &str) -> Result<(), String> {
-        if let Some(session) = self.sessions.get_mut(session_id) {
+    fn set_model(&self, session_id: &str, model: &str) -> Result<(), String> {
+        if let Some(session) = self.sessions.write().unwrap().get_mut(session_id) {
             session.model = model.to_string();
             Ok(())
         } else {
@@ -461,11 +462,11 @@ impl AiAssistant for PiAssistant {
     }
 
     fn get_model(&self, session_id: &str) -> Option<String> {
-        self.sessions.get(session_id).map(|s| s.model.clone())
+        self.sessions.read().unwrap().get(session_id).map(|s| s.model.clone())
     }
 
-    fn delete_session(&mut self, session_id: &str) {
-        self.sessions.remove(session_id);
+    fn delete_session(&self, session_id: &str) {
+        self.sessions.write().unwrap().remove(session_id);
     }
 
     /// Stream a session message through the Pi Agent CLI.

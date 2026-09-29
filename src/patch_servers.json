@@ -1,7 +1,6 @@
 {
   "patch_search_servers": [
-    "http://fast9.shenzhuo.vip:17408",
     "http://fast9.shenzhuo.vip:22664",
-    "http://fast9.shenzhuo.vip:45876"
+    "http://fast9.shenzhuo.vip:64097"
   ]
 }

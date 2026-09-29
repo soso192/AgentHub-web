@@ -30,7 +30,7 @@ pub trait AiAssistant: Send + Sync {
     fn default_model(&self) -> &str;
 
     /// Create a new session
-    async fn create_session(&mut self, cwd: String, model: Option<String>) -> Result<String, String>;
+    async fn create_session(&self, cwd: String, model: Option<String>) -> Result<String, String>;
 
     /// Send a message and get a response
     async fn send_message(&self, session_id: &str, message: &str) -> Result<AiResponse, String>;
@@ -44,13 +44,13 @@ pub trait AiAssistant: Send + Sync {
     ) -> Result<(), String>;
 
     /// Set the model for a session
-    fn set_model(&mut self, session_id: &str, model: &str) -> Result<(), String>;
+    fn set_model(&self, session_id: &str, model: &str) -> Result<(), String>;
 
     /// Get the current model for a session
     fn get_model(&self, session_id: &str) -> Option<String>;
 
     /// Delete a session
-    fn delete_session(&mut self, session_id: &str);
+    fn delete_session(&self, session_id: &str);
 
     /// Stream a session message. Each agent implements its own CLI invocation.
     /// Default implementation does nothing (returns empty StreamResult).

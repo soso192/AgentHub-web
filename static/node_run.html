@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CC-Web 智能开发运行详情，展示单次智能开发的完整运行数据。">
+    <meta name="theme-color" content="#f7f8fa">
+    <title>运行详情 · CC-Web</title>
+    <script>try{if(localStorage.getItem('cc-web-help-panel')==='closed'){document.documentElement.classList.add('help-panel-closed');}}catch(e){}</script>
+    <script>try{if(localStorage.getItem('cc-web-patch-sidenav')==='0'){document.documentElement.classList.add('sidenav-collapsed');}}catch(e){}</script>
+    <script>try{document.documentElement.classList.add('patch-auth');}catch(e){}</script>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <nav class="patch-sidenav" id="patchSidenav" aria-label="主导航">
+        <button id="patchSidenavToggle" class="patch-sidenav-toggle" type="button" title="收起菜单" aria-expanded="true" aria-label="收起菜单">‹</button>
+        <div class="patch-sidenav-items">
+            <a class="patch-sidenav-item" data-sidenav-tab="node" href="/patches.html?tab=node" title="智能开发">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                <span class="patch-sidenav-label">智能开发</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="smart" href="/patches.html?tab=smart" title="智能分析">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                <span class="patch-sidenav-label">智能分析</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="search" href="/patches.html?tab=search" title="普通检索">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <span class="patch-sidenav-label">普通检索</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="upload" href="/patches.html?tab=upload" title="补丁上传">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                <span class="patch-sidenav-label">补丁上传</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="mine" href="/patches.html?tab=mine" title="我的补丁">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                <span class="patch-sidenav-label">我的补丁</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="flow" href="/patches.html?tab=flow" title="流程设置">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
+                <span class="patch-sidenav-label">流程设置</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="prompt" href="/patches.html?tab=prompt" title="提示词设置">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                <span class="patch-sidenav-label">提示词设置</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="template" href="/patches.html?tab=template" title="流程模板设置">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span class="patch-sidenav-label">流程模板设置</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="analysis" href="/patches.html?tab=analysis" title="待分析补丁">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
+                <span class="patch-sidenav-label">待分析补丁</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="product" href="/patches.html?tab=product" title="产品版本管理">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                <span class="patch-sidenav-label">产品版本管理</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="directory" href="/patches.html?tab=directory" title="工作目录">
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path></svg>
+                <span class="patch-sidenav-label">工作目录</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="project_env" href="/patches.html?tab=project_env" title="产品环境变量" hidden>
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"></path></svg>
+                <span class="patch-sidenav-label">产品环境变量</span>
+            </a>
+            <a class="patch-sidenav-item" data-sidenav-tab="menus" href="/patches.html?tab=menus" title="菜单可见性" hidden>
+                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
+                <span class="patch-sidenav-label">菜单可见性</span>
+            </a>
+        </div>
+    </nav>
+    <div class="patch-page">
+        <header class="patch-topbar">
+            <div class="patch-brand">⚡ CC-Web</div>
+            <nav class="app-mode-toggle" aria-label="应用模式">
+                <button class="mode-btn" type="button" onclick="location.href='/chat.html'">聊天</button>
+                <button class="mode-btn active" type="button" onclick="location.href='/patches.html?tab=smart'" aria-current="page">智能开发</button>
+            </nav>
+            <div class="patch-topbar-actions">
+                <span id="patchCurrentUser" class="patch-api-status"></span>
+                <button id="patchBackBtn" type="button" class="patch-secondary-btn">返回</button>
+                <button id="patchThemeToggle" class="theme-btn" type="button" title="切换主题" aria-label="切换主题">🌙</button>
+            </div>
+        </header>
+
+        <main class="patch-main node-run-main">
+            <div class="node-run-layout">
+            <div class="patch-card node-run-page">
+                <div class="workflow-run-header">
+                    <div><h2>运行详情</h2><span id="nodeRunSubtitle" class="workflow-result-subtitle"></span></div>
+                    <div class="workflow-run-actions"><button id="nodeRunResumeSession" type="button" class="patch-secondary-btn" hidden>查看会话</button></div>
+                </div>
+                <div id="nodeRunMeta" class="workflow-result-meta"></div>
+
+                <section class="node-run-section">
+                    <h3>问题描述</h3>
+                    <div id="nodeRunProblem" class="md-box md-box-compact text-block">正在加载...</div>
+                    <div class="node-run-kv-row" style="margin-top:8px"><span class="node-run-kv-key">触发的url</span><span class="node-run-kv-value" id="nodeRunTriggerUrl">—</span></div>
+                </section>
+
+                <section class="node-run-section">
+                    <h3>会话</h3>
+                    <div id="nodeRunSession" class="node-run-kv"></div>
+                </section>
+
+                <section class="node-run-section">
+                    <h3>结论</h3>
+                    <div id="nodeRunReport" class="md-box text-block">（暂无结论）</div>
+                </section>
+
+                <section class="node-run-section" id="nodeRunTimingSection" hidden>
+                    <h3>耗时</h3>
+                    <div id="nodeRunTiming"></div>
+                </section>
+
+                <section class="node-run-section" id="nodeRunLogSection" hidden>
+                    <h3>相关日志（已内联部分）</h3>
+                    <pre id="nodeRunLog" class="workflow-result-code"></pre>
+                </section>
+
+                <section class="node-run-section">
+                    <h3>产物</h3>
+                    <div id="nodeRunArtifacts" class="node-run-artifacts"><span class="patch-muted">暂无</span></div>
+                </section>
+            </div>
+            <aside class="node-run-side" aria-label="操作面板">
+                <div class="node-run-explorer" aria-label="资源管理器">
+                    <div class="file-browser-header">
+                        <span class="file-browser-icon">📁</span>
+                        <span class="file-browser-title">资源管理器</span>
+                        <span id="nodeRunExplorerPath" class="file-browser-path"></span>
+                        <button id="nodeRunExplorerRefresh" class="file-refresh-btn" type="button" title="刷新">🔄</button>
+                        <span id="nodeRunExplorerToggle" class="file-browser-toggle">▼</span>
+                    </div>
+                    <div class="file-browser-content">
+                        <div id="nodeRunExplorerList" class="file-list"></div>
+                    </div>
+                </div>
+                <div class="node-run-decision" id="nodeRunDecision" hidden>
+                    <button id="nodeRunSolved" type="button" class="patch-primary-btn">已解决</button>
+                    <button id="nodeRunUnsolved" type="button" class="patch-secondary-btn">未解决</button>
+                </div>
+            </aside>
+            </div>
+        </main>
+    </div>
+
+    <div id="patchErrorModal" class="modal-overlay patch-notice-overlay" role="alertdialog" aria-modal="true" aria-labelledby="patchErrorTitle" hidden>
+        <div class="modal patch-notice-modal">
+            <button id="patchErrorClose" class="patch-notice-close" type="button" aria-label="关闭">×</button>
+            <div class="patch-notice-icon" aria-hidden="true">!</div>
+            <div class="patch-notice-content">
+                <h3 id="patchErrorTitle">操作失败</h3>
+                <p id="patchErrorMessage"></p>
+            </div>
+            <div class="patch-notice-footer">
+                <button id="patchErrorConfirm" type="button" class="patch-primary-btn">我知道了</button>
+            </div>
+        </div>
+    </div>
+    <script>
+    (function () {
+        'use strict';
+        const PATCH_TOKEN_KEY = 'patch-search-access-token';
+        const patchState = { theme: 'light', patchSearchServers: [], patchServerCursor: 0, authInvalidated: false };
+
+        // ── 本页数据全来自 cc-web 本机（/api/node/runs、/api/files），不依赖补丁中心在不在线；
+        //    补丁中心只用于右上角用户标签（尽力而为，挂了不影响看详情）。
+        function patchEscape(value) {
+            const div = document.createElement('div');
+            div.textContent = value == null ? '' : String(value);
+            return div.innerHTML;
+        }
+        // 与聊天页同一套 markdown 渲染（先整体转义再替换标记，安全）：headings/加粗/斜体/行内码/
+        // 代码块/列表/引用/分隔线/链接/表格/段落。结论、问题描述这类"展示文本"用它，日志类保持纯文本。
+        function renderMarkdown(text) {
+            if (!text) return '';
+            let html = patchEscape(text);
+            const codeBlocks = [];
+            const inlineCodes = [];
+            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+                const placeholder = `__CODE_BLOCK_${codeBlocks.length}__`;
+                codeBlocks.push(`<pre><code>${code}</code></pre>`);
+                return placeholder;
+            });
+            html = html.replace(/`([^`\n]+)`/g, (_, code) => {
+                const placeholder = `__INLINE_CODE_${inlineCodes.length}__`;
+                inlineCodes.push(`<code>${code}</code>`);
+                return placeholder;
+            });
+            html = html.replace(/\*\*((?:[^*]|\*(?!\*))*)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/(?<!\*)\*([^*\n]*[a-zA-Z][^*\n]*)\*(?!\*)/g, '<em>$1</em>');
+            html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+            html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+            html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+            html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+            html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+            html = html.replace(/^---$/gm, '<hr>');
+            html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+            html = html.replace(/\n\n/g, '</p><p>');
+            html = html.replace(/\n/g, '<br>');
+            for (let i = 0; i < codeBlocks.length; i++) html = html.replace(`__CODE_BLOCK_${i}__`, codeBlocks[i]);
+            for (let i = 0; i < inlineCodes.length; i++) html = html.replace(`__INLINE_CODE_${i}__`, inlineCodes[i]);
+            if (!html.startsWith('<')) html = '<p>' + html + '</p>';
+            return html;
+        }
+        function patchFormatDateTime(value) {
+            if (value == null || value === '') return '-';
+            const date = value instanceof Date ? value : new Date(value);
+            if (Number.isNaN(date.getTime())) return String(value);
+            const pad = n => String(n).padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+        }
+        function patchCloseError() { document.getElementById('patchErrorModal').hidden = true; }
+        function patchShowError(message, title = '操作失败') {
+            if (patchState.authInvalidated) return;
+            document.getElementById('patchErrorTitle').textContent = title;
+            document.getElementById('patchErrorMessage').textContent = message || '发生未知错误，请稍后重试。';
+            document.getElementById('patchErrorModal').hidden = false;
+            requestAnimationFrame(() => document.getElementById('patchErrorConfirm').focus());
+        }
+        function patchSetTheme(theme) {
+            patchState.theme = theme;
+            document.documentElement.dataset.theme = theme;
+            localStorage.setItem('cc-web-theme', theme);
+            document.getElementById('patchThemeToggle').textContent = theme === 'dark' ? '☀️' : '🌙';
+        }
+        function patchInitTheme() {
+            const saved = localStorage.getItem('cc-web-theme');
+            patchSetTheme(saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+        }
+        function patchToken() { return localStorage.getItem(PATCH_TOKEN_KEY) || ''; }
+
+        function nodeRunStatusLabel(run) {
+            if (run.phase === 'analyzing') return '执行中';
+            if (run.phase === 'merging') return '合并中';
+            if (run.phase === 'awaiting_decision') return run.error ? '执行出错' : '待判定';
+            if (run.phase === 'done') return run.verdict === 'solved' ? '已解决' : '未解决';
+            if (run.phase === 'failed') return run.failure === 'aborted' ? '已中断' : '合并失败';
+            return '未知';
+        }
+        // 与 patches.js 的 patchNodeCcWeb 同款：同源接口，失败即抛
+        async function ccWeb(path, options = {}) {
+            const response = await fetch(path, options);
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload.success === false) {
+                throw new Error(payload.error || `请求失败（HTTP ${response.status}）`);
+            }
+            return payload;
+        }
+        function kvRow(key, value, title) {
+            const text = value == null || value === '' ? '—' : String(value);
+            return `<div class="node-run-kv-row"><span class="node-run-kv-key">${patchEscape(key)}</span><span class="node-run-kv-value"${title ? ` title="${patchEscape(text)}"` : ''}>${patchEscape(text)}</span></div>`;
+        }
+        function fileUrl(absPath) {
+            return `/api/files/${String(absPath || '').replace(/\\/g, '/')}`;
+        }
+        // 「查看会话」：session_id 直选 cc-web 会话，只剩 agent_session_id 时退到只读回放
+        function nodeRunResumeSession(run) {
+            const query = new URLSearchParams();
+            if (run.session_id) query.set('session', run.session_id);
+            if (run.agent_session_id) query.set('history', run.agent_session_id);
+            if (![...query].length) return;
+            location.href = `/chat.html?${query}`;
+        }
+        // 右侧判定区按钮：与列表操作列同一套语义
+        function nodeRunDecisionActions(run) {
+            if (run.phase === 'awaiting_decision' && !run.error) return { solved: true, unsolved: true, unsolvedLabel: '未解决' };
+            if (run.phase === 'awaiting_decision' && run.error) return { solved: false, unsolved: true, unsolvedLabel: '重新执行' };
+            if (run.phase === 'failed' && run.failure === 'merge') return { solved: false, unsolved: true, unsolvedLabel: '重新合并' };
+            if (run.phase === 'failed' && run.failure === 'aborted') return { solved: false, unsolved: true, unsolvedLabel: run.stage === 2 ? '重新合并' : '重新执行' };
+            return { solved: false, unsolved: false, unsolvedLabel: '未解决' };
+        }
+        // 耗时：每轮一条（阶段一/二），显示总耗时、首字延迟(思考)、各工具耗时（编译/打包/差异分析等）
+        function renderTiming(run) {
+            const section = document.getElementById('nodeRunTimingSection');
+            const box = document.getElementById('nodeRunTiming');
+            if (!section || !box) return;
+            const list = Array.isArray(run.timings) ? run.timings : [];
+            if (!list.length) { section.hidden = true; return; }
+            const sec = ms => (ms == null ? '—' : (ms / 1000).toFixed(1) + 's');
+            section.hidden = false;
+            box.innerHTML = list.map(t => {
+                const tools = (t.tools || []).map(x => `<span style="display:inline-block;margin:2px 8px 2px 0;padding:1px 8px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-size:11px">${patchEscape(x.name)} ${sec(x.ms)}</span>`).join('');
+                return `<div style="margin:6px 0;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm)">
+                    <div style="font-size:12px;color:var(--text-secondary)">阶段${Number(t.stage) || 1} · 总耗时 <strong>${sec(t.total_ms)}</strong>${t.first_token_ms != null ? ` · 首字延迟(思考) ${sec(t.first_token_ms)}` : ''}</div>
+                    ${tools ? `<div style="margin-top:6px">${tools}</div>` : ''}
+                </div>`;
+            }).join('');
+        }
+        function renderRun(run) {
+            document.getElementById('nodeRunSubtitle').textContent = `运行 ID：${run.id}`;
+            const env = run.env_snapshot || {};
+            const product = `${env.product_name || ''} ${env.product_version || ''}`.trim();
+            document.getElementById('nodeRunMeta').innerHTML =
+                `<span class="workflow-result-status">${patchEscape(nodeRunStatusLabel(run))}</span>` +
+                `<span>产品·版本：${patchEscape(product || '—')}</span>` +
+                `<span>创建：${patchEscape(patchFormatDateTime(run.created_at))}</span>` +
+                `<span>更新：${patchEscape(patchFormatDateTime(run.updated_at))}</span>` +
+                `<span>本机：${patchEscape(run.client_host || '—')}</span>`;
+            document.getElementById('nodeRunProblem').innerHTML = renderMarkdown(run.problem_desc || '（无）');
+            const triggerUrlEl = document.getElementById('nodeRunTriggerUrl');
+            if (triggerUrlEl) triggerUrlEl.textContent = run.trigger_url || '—';
+
+            const sessionRows = [
+                kvRow('cc-web 会话 id', run.session_id),
+                kvRow('claude 会话 id', run.agent_session_id),
+            ].join('');
+            document.getElementById('nodeRunSession').innerHTML = sessionRows || '<span class="patch-muted">无</span>';
+            document.getElementById('nodeRunResumeSession').hidden = !(run.session_id || run.agent_session_id);
+            // 右侧判定区：与列表操作列同一套状态语义（待判定→已解决/未解决；执行出错→重新执行；合并失败→重新合并）
+            const na = nodeRunDecisionActions(run);
+            document.getElementById('nodeRunDecision').hidden = !(na.solved || na.unsolved);
+            document.getElementById('nodeRunSolved').hidden = !na.solved;
+            const uBtn = document.getElementById('nodeRunUnsolved');
+            uBtn.hidden = !na.unsolved;
+            if (na.unsolved) uBtn.textContent = na.unsolvedLabel;
+
+            document.getElementById('nodeRunReport').innerHTML = renderMarkdown(run.report || '（暂无结论）');
+            renderTiming(run);
+
+            const logInfo = run.log_info_inline;
+            const logSection = document.getElementById('nodeRunLogSection');
+            if (logInfo) {
+                logSection.hidden = false;
+                document.getElementById('nodeRunLog').textContent = logInfo;
+            } else {
+                logSection.hidden = true;
+            }
+
+            const box = document.getElementById('nodeRunArtifacts');
+            renderArtifacts(run);
+        }
+
+        // 服务器账本里的运行状态文案（仅存档记录用；与 patches.js 的 PATCH_NODE_SERVER_STATUS_LABEL 同口径）
+        const NODE_SERVER_STATUS_LABEL = {
+            running: '执行中', awaiting_decision: '待判定', solved: '已解决',
+            unsolved: '未解决', merge_failed: '合并失败', aborted: '已中断',
+        };
+
+        // 从补丁中心服务器账本取一条运行摘要（仅存档记录用）。token / 服务器地址口径同 patches.js。
+        async function fetchLedgerRun(localRunId) {
+            const token = patchToken();
+            if (!token) return null;
+            let servers = [];
+            try {
+                const cfg = await ccWeb('/api/patch-config');
+                if (Array.isArray(cfg.patch_search_servers)) servers = cfg.patch_search_servers;
+                else if (cfg.patch_search_api) servers = [cfg.patch_search_api];
+            } catch (e) { return null; }
+            servers = (servers || []).map(v => String(v).trim()).filter(Boolean);
+            for (const base of servers) {
+                try {
+                    const res = await fetch(`${base.replace(/\/+$/, '')}/api/problem-runs/${encodeURIComponent(localRunId)}`, {
+                        headers: { 'Authorization': `Bearer ${token}` },
+                    });
+                    if (!res.ok) continue; // 401/404 等：换下一条地址
+                    const payload = await res.json().catch(() => ({}));
+                    if (payload && payload.code === 0 && payload.data) return payload.data;
+                } catch (e) { /* 连不上：换下一条地址 */ }
+            }
+            return null;
+        }
+
+        // 仅存档记录详情：只有服务器账本摘要，隐藏本机专属区块（产物/资源管理器/会话跳转/判定按钮）
+        function renderArchivedRun(row) {
+            document.getElementById('nodeRunSubtitle').textContent = `运行 ID：${row.local_run_id}（仅存档 · 另一台机器执行）`;
+            const product = `${row.product_name || ''} ${row.product_version || ''}`.trim();
+            document.getElementById('nodeRunMeta').innerHTML =
+                `<span class="workflow-result-status">${patchEscape(NODE_SERVER_STATUS_LABEL[row.status] || row.status || '')}</span>` +
+                `<span>产品·版本：${patchEscape(product || '—')}</span>` +
+                `<span>执行机器：${patchEscape(row.client_host || '—')}</span>` +
+                `<span>开始：${patchEscape(patchFormatDateTime(row.started_at))}</span>` +
+                `<span>结束：${patchEscape(patchFormatDateTime(row.finished_at))}</span>`;
+            document.getElementById('nodeRunProblem').innerHTML = renderMarkdown(row.problem_desc || '（无）');
+            document.getElementById('nodeRunTriggerUrl').textContent = '—';
+            document.getElementById('nodeRunSession').innerHTML =
+                kvRow('claude 会话 id', row.claude_session_id) +
+                kvRow('环境', row.env_project_name) +
+                kvRow('客开目录', row.code_directory) +
+                kvRow('补丁输出', row.patch_output_path);
+            document.getElementById('nodeRunReport').innerHTML = renderMarkdown(row.conclusion || '（暂无结论）');
+            document.getElementById('nodeRunLogSection').hidden = true;
+            document.getElementById('nodeRunArtifacts').innerHTML = '<span class="patch-muted">本机无产物（该记录在另一台机器上执行）</span>';
+            document.getElementById('nodeRunDecision').hidden = true;
+            document.getElementById('nodeRunResumeSession').hidden = true;
+            const explorer = document.querySelector('.node-run-explorer');
+            if (explorer) explorer.hidden = true;
+        }
+
+        async function loadRun(runId, mePromise) {
+            const meta = document.getElementById('nodeRunMeta');
+            const problem = document.getElementById('nodeRunProblem');
+            try {
+                const payload = await ccWeb('/api/node/runs');
+                const runs = Array.isArray(payload.data) ? payload.data : [];
+                // 本机运行记录是机器级，详情页同样按当前账号过滤归属（拿不到用户时不做二次校验——
+                // 入口已被列表的账号过滤挡住，且登录是进入本页的前提）
+                const me = mePromise ? await mePromise.catch(() => null) : null;
+                const currentUserId = me && me.id;
+                const run = runs.find(item => String(item.id) === String(runId)
+                    && (currentUserId == null || String(item.user_id) === String(currentUserId)));
+                if (!run) {
+                    // 本机没有：可能是仅存档记录（在另一台机器执行）→ 从服务器账本取一次渲染
+                    const ledger = await fetchLedgerRun(runId).catch(() => null);
+                    if (ledger) { renderArchivedRun(ledger); return; }
+                    problem.textContent = '';
+                    meta.innerHTML = '<span class="patch-muted">本机没有这条运行记录（可能不属于当前账号，或是在另一台机器上执行的）。</span>';
+                    return;
+                }
+                renderRun(run);
+                loadArtifactsOnce(run);   // 进页只查一次产物目录（不轮询）
+                loadReportOnce(run);      // run.report 为空时从 总结.md/结论.md 兜底读一次
+                // 资源管理器默认根目录 = 本次补丁输出路径（没有就退回暂存目录）
+                explorerSetRoot(run.turn_dir || run.out_dir || run.stage_dir);
+            } catch (error) {
+                problem.textContent = '';
+                meta.innerHTML = '<span class="patch-muted">本机运行清单读取失败。</span>';
+                patchShowError(error.message, '运行详情加载失败');
+            }
+        }
+        // 产物：只按类型打标签列出来，不提供点击查看（要看内容去右侧资源管理器或补丁输出目录）
+        function artifactLabel(path) {
+            const name = String(path).split(/[\\/]/).pop().toLowerCase();
+            if (name.includes('changes') || name.includes('改动')) return '改动清单';
+            if (name.endsWith('.zip') || name.endsWith('.rar')) return '补丁';
+            if (name.endsWith('.sql')) return '数据库脚本';
+            if (name.includes('方案') || name.includes('plan')) return '方案';
+            if (name.includes('结论') || name.includes('report') || name.includes('result')) return '结论';
+            if (name.includes('合并') || name.includes('merge')) return '合并说明';
+            return '其他';
+        }
+        // 产物点击行为按类型分：html 浏览器打开；md 渲染查看；txt/log/sql 等文本页内查看；zip/rar 等系统资源管理器定位
+        function artifactOpenType(path) {
+            const name = String(path).toLowerCase();
+            if (/\.(html?)$/.test(name)) return 'html';
+            if (/\.(md|markdown)$/.test(name)) return 'md';
+            if (/\.(txt|log|sql|java|xml|json|yaml|yml|properties|csv|sh|bat)$/.test(name)) return 'text';
+            if (/\.(zip|rar|jar|7z|tar|gz)$/.test(name)) return 'reveal';
+            return '';
+        }
+        function artifactActionHint(type) {
+            return { html: '浏览器打开', md: '查看（markdown 渲染）', text: '查看', reveal: '资源管理器定位' }[type] || '';
+        }
+        async function nodeRunOpenArtifact(path) {
+            const type = artifactOpenType(path);
+            if (type === 'html') {
+                const rawUrl = fileUrl(path).replace('/api/files/', '/api/files/raw/');
+                window.open(rawUrl, '_blank');
+                return;
+            }
+            if (type === 'reveal') {
+                try {
+                    const res = await fetch('/api/files/reveal', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!data || data.success !== true) patchShowError((data && data.error) || '打开失败', '定位文件');
+                } catch (error) { patchShowError(error.message, '定位文件'); }
+                return;
+            }
+            if (type === 'md' || type === 'text') {
+                try {
+                    const payload = await ccWeb(fileUrl(path));
+                    const content = payload.content == null ? '' : String(payload.content);
+                    const name = String(path).split(/[\\/]/).pop();
+                    const overlay = document.createElement('div');
+                    overlay.className = 'file-overlay';
+                    overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+                    const inner = type === 'md'
+                        ? `<div class="file-viewer-content node-run-md text-block">${renderMarkdown(content) || '<p>（空内容）</p>'}</div>`
+                        : `<pre class="file-viewer-content">${patchEscape(content)}</pre>`;
+                    overlay.innerHTML = `<div class="file-viewer"><div class="file-viewer-header"><span class="file-viewer-name">📄 ${patchEscape(name)}</span><button class="file-viewer-close" type="button">×</button></div>${inner}</div>`;
+                    overlay.querySelector('.file-viewer-close').onclick = () => overlay.remove();
+                    document.body.appendChild(overlay);
+                } catch (error) {
+                    patchShowError(error.message, '查看文件失败');
+                }
+            }
+        }
+
+        function renderArtifacts(run) {
+            const box = document.getElementById('nodeRunArtifacts');
+            const items = run.artifacts || [];
+            if (!items.length) { box.innerHTML = '<span class="patch-muted">暂无</span>'; return; }
+            box.innerHTML = items.map(path => {
+                const name = String(path).split(/[\\/]/).pop();
+                const type = artifactOpenType(path);
+                const hint = artifactActionHint(type);
+                const clickable = type ? ' node-artifact-clickable' : '';
+                return `<div class="node-run-artifact-item${clickable}" data-artifact-path="${patchEscape(path)}" title="${patchEscape(path)}${hint ? `\n点击：${hint}` : ''}"><span class="node-run-artifact-label">${patchEscape(artifactLabel(path))}</span><span class="node-run-artifact-name">${patchEscape(name)}</span></div>`;
+            }).join('');
+        }
+
+        // 产物：进详情页（点「详情」）时按「本步产物目录」扫一次文件——run.artifacts 是收尾（settle）才写入的，
+        // 执行期间为空，所以这里直接读目录。**只查这一次，不轮询**；要看最新就重新点「详情」进页。
+        function activeArtifactsDir(run) { return run.turn_dir || run.out_dir || run.stage_dir; }
+        async function loadArtifactsOnce(run) {
+            const dir = activeArtifactsDir(run);
+            if (!dir) return;
+            try {
+                const data = await ccWeb(`/api/files?path=${encodeURIComponent(dir)}`);
+                if (!data) return;
+                const paths = (Array.isArray(data.files) ? data.files : [])
+                    .filter(item => !item.is_dir)
+                    .map(item => item.path);
+                renderArtifacts({ artifacts: paths });
+            } catch (err) { /* 目录还没建成（路径不存在）→ 保持 run.artifacts 的展示，不报错 */ }
+        }
+
+        // 结论兜底：run.report 为空时，就地从本步产物目录读 总结.md / 结论.md（只读这一次）。
+        // 主要给「本次改动之前就跑完」的旧 run 用——它们终态已定，不会再走收尾回填 run.report。
+        async function loadReportOnce(run) {
+            if (run.report) return;
+            const dir = activeArtifactsDir(run);
+            const el = document.getElementById('nodeRunReport');
+            if (!dir || !el) return;
+            for (const name of ['总结.md', '结论.md']) {
+                try {
+                    const payload = await ccWeb(fileUrl(`${dir}\\${name}`));
+                    const text = payload && payload.content != null ? String(payload.content).trim() : '';
+                    if (text) { el.innerHTML = renderMarkdown(text); return; }
+                } catch (err) { /* 该文件不存在，试下一个 */ }
+            }
+        }
+
+        // ── 右侧资源管理器（同聊天页的 Files 面板，根目录默认 = 本次补丁输出路径）──
+        const explorerState = { path: '', expanded: true };
+        function getFileIcon(name) {
+            const ext = String(name).split('.').pop().toLowerCase();
+            const icons = { rs:'🦀', js:'📜', ts:'📘', py:'🐍', go:'🔵', html:'🌐', css:'🎨', json:'📋', toml:'⚙️', yaml:'⚙️', yml:'⚙️', md:'📝', txt:'📄', log:'📃', png:'🖼️', jpg:'🖼️', gif:'🖼️', svg:'🖼️', sh:'💻', bat:'💻', cmd:'💻', ps1:'💻', exe:'⚙️', dll:'⚙️', so:'⚙️', zip:'📦', tar:'📦', gz:'📦', lock:'🔒', env:'🔐' };
+            return icons[ext] || '📄';
+        }
+        function formatFileSize(bytes) {
+            if (!bytes) return '';
+            if (bytes < 1024) return bytes + 'B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'K';
+            return (bytes / (1024 * 1024)).toFixed(1) + 'M';
+        }
+        function explorerCreateItem(icon, name, size, isDir) {
+            const div = document.createElement('div');
+            div.className = `file-item ${isDir ? 'is-dir' : 'is-file'}`;
+            div.innerHTML = `<span class="file-icon">${icon}</span><span class="file-name">${patchEscape(name)}</span><span class="file-size">${patchEscape(size)}</span>`;
+            return div;
+        }
+        async function explorerLoad(dirPath) {
+            explorerState.path = dirPath;
+            const list = document.getElementById('nodeRunExplorerList');
+            document.getElementById('nodeRunExplorerPath').textContent = String(dirPath).split(/[/\\]/).slice(-2).join('/');
+            try {
+                const data = await ccWeb(`/api/files?path=${encodeURIComponent(dirPath)}`);
+                const files = Array.isArray(data.files) ? data.files : [];
+                list.innerHTML = '';
+                if (data.parent) {
+                    const parent = explorerCreateItem('⬆️', '..', '', true);
+                    parent.classList.add('file-parent');
+                    parent.onclick = () => explorerLoad(data.parent);
+                    list.appendChild(parent);
+                }
+                files.forEach(f => {
+                    const icon = f.is_dir ? '📁' : getFileIcon(f.name);
+                    const item = explorerCreateItem(icon, f.name, f.is_dir ? '' : formatFileSize(f.size), f.is_dir);
+                    item.onclick = () => f.is_dir ? explorerLoad(f.path) : explorerViewFile(f.path);
+                    list.appendChild(item);
+                });
+                if (!list.children.length) list.innerHTML = '<div class="file-empty">空目录</div>';
+            } catch (error) {
+                list.innerHTML = `<div class="file-error">${patchEscape(error.message)}</div>`;
+            }
+        }
+        function explorerRefresh() { if (explorerState.path) explorerLoad(explorerState.path); }
+        function explorerToggle() {
+            explorerState.expanded = !explorerState.expanded;
+            const content = document.querySelector('.node-run-explorer .file-browser-content');
+            content.style.display = explorerState.expanded ? '' : 'none';
+            document.getElementById('nodeRunExplorerToggle').textContent = explorerState.expanded ? '▼' : '▶';
+        }
+        function explorerSetRoot(path) {
+            const list = document.getElementById('nodeRunExplorerList');
+            document.getElementById('nodeRunExplorerPath').textContent = '';
+            if (!path) {
+                list.innerHTML = '<div class="file-empty">该记录没有补丁输出路径，无法打开资源管理器</div>';
+                return;
+            }
+            explorerLoad(path);
+        }
+        async function explorerViewFile(filePath) {
+            try {
+                const payload = await ccWeb(fileUrl(filePath));
+                const content = payload.content == null ? '' : String(payload.content);
+                const name = String(filePath).split(/[\\/]/).pop();
+                const overlay = document.createElement('div');
+                overlay.className = 'file-overlay';
+                overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+                overlay.innerHTML = `<div class="file-viewer"><div class="file-viewer-header"><span class="file-viewer-name">📄 ${patchEscape(name)}</span><button class="file-viewer-close" type="button">×</button></div><pre class="file-viewer-content">${patchEscape(content)}</pre></div>`;
+                overlay.querySelector('.file-viewer-close').onclick = () => overlay.remove();
+                document.body.appendChild(overlay);
+            } catch (error) {
+                patchShowError(error.message, '读取文件失败');
+            }
+        }
+        // 侧边栏随菜单权限显隐（与列表页一致）：管理员全量可见；「智能开发」页签在运行详情页始终可见。
+        // 旧后端（无 menus 字段）时只对 analysis/product 按 admin 收敛，flow/prompt/template 保持可见。
+        function applyNodeSidebarVisibility(me) {
+            const isAdmin = me.role === 'admin';
+            const keys = Array.isArray(me.menus) ? me.menus : null;
+            document.querySelectorAll('.patch-sidenav-item[data-sidenav-tab]').forEach(item => {
+                const tab = item.dataset.sidenavTab;
+                if (tab === 'node') return; // 智能开发始终可见
+                if (tab === 'menus') { item.hidden = !isAdmin; return; } // 管理端，硬编码 admin-only
+                if (keys) item.hidden = !keys.includes(tab);
+                else if (tab === 'analysis' || tab === 'product') item.hidden = !isAdmin;
+            });
+        }
+        // 当前登录用户：逐条地址试 /api/auth/me（单条 8s 超时），失败返回 null。
+        // 右上角用户标签 + 详情归属过滤共用这一次请求。
+        async function fetchCurrentUserMe(token) {
+            let servers = [];
+            try {
+                const response = await fetch('/api/patch-config');
+                if (response.ok) {
+                    const config = await response.json().catch(() => ({}));
+                    servers = [].concat(config.patch_search_servers || config.patch_search_api || []).filter(Boolean);
+                }
+            } catch {}
+            for (const base of servers) {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 8000);
+                try {
+                    const res = await fetch(`${String(base).replace(/\/+$/, '')}/api/auth/me`, {
+                        headers: { 'Authorization': `Bearer ${token}` },
+                        signal: controller.signal,
+                    });
+                    clearTimeout(timer);
+                    if (res.ok) {
+                        // 注意：/api/auth/me 返回 {code, data:{...}}，用户信息在 data 里
+                        const payload = await res.json().catch(() => ({}));
+                        return (payload && payload.data) || null;
+                    }
+                } catch (error) {
+                    clearTimeout(timer);
+                }
+            }
+            return null;
+        }
+        function initPage() {
+            const token = patchToken();
+            const runId = new URLSearchParams(location.search).get('run_id');
+            if (!token || !runId) { location.href = '/patches.html?tab=node'; return; }
+            // 拿当前用户：标签展示 + 详情归属过滤共用；尽力而为，拿不到不影响详情渲染
+            const mePromise = fetchCurrentUserMe(token);
+            mePromise.then(me => {
+                const label = document.getElementById('patchCurrentUser');
+                if (me) {
+                    label.textContent = `${me.display_name || me.username || '—'} (${me.role || '—'})`;
+                    applyNodeSidebarVisibility(me);
+                } else {
+                    label.textContent = '—';
+                }
+            });
+            loadRun(runId, mePromise);
+
+            document.getElementById('patchBackBtn').onclick = () => { location.href = '/patches.html?tab=node'; };
+            // 「已解决/未解决/重新执行/重新合并」回列表页执行：详情页只负责展示，弹框/续跑都在列表页现有逻辑里
+            document.getElementById('nodeRunSolved').onclick = () => {
+                const runId = new URLSearchParams(location.search).get('run_id');
+                location.href = `/patches.html?tab=node&node_action=solved&run=${encodeURIComponent(runId)}`;
+            };
+            document.getElementById('nodeRunUnsolved').onclick = () => {
+                const runId = new URLSearchParams(location.search).get('run_id');
+                // 待判定（未解决）→ unsolved：回列表页弹「上传日志 → 阶段一提示词+日志」；
+                // 执行出错/合并失败/已中断（重新执行/重新合并）→ rerun：回列表页直接发「继续」
+                ccWeb('/api/node/runs').then(payload => {
+                    const run = (payload.data || []).find(item => String(item.id) === String(runId));
+                    const action = (run && run.phase === 'awaiting_decision' && !run.error) ? 'unsolved' : 'rerun';
+                    location.href = `/patches.html?tab=node&node_action=${action}&run=${encodeURIComponent(runId)}`;
+                }).catch(() => {
+                    location.href = `/patches.html?tab=node&node_action=rerun&run=${encodeURIComponent(runId)}`;
+                });
+            };
+            document.getElementById('patchThemeToggle').onclick = () => patchSetTheme(patchState.theme === 'dark' ? 'light' : 'dark');
+            document.getElementById('nodeRunExplorerRefresh').onclick = (event) => { event.stopPropagation(); explorerRefresh(); };
+            const explorerHeader = document.querySelector('.node-run-explorer .file-browser-header');
+            if (explorerHeader) explorerHeader.onclick = (event) => {
+                if (event.target.closest('.file-refresh-btn')) return;
+                explorerToggle();
+            };
+            document.getElementById('nodeRunResumeSession').onclick = () => {
+                const runId = new URLSearchParams(location.search).get('run_id');
+                ccWeb('/api/node/runs').then(payload => {
+                    const run = (payload.data || []).find(item => String(item.id) === String(runId));
+                    if (run) nodeRunResumeSession(run);
+                }).catch(error => patchShowError(error.message, '打开会话失败'));
+            };
+            document.getElementById('patchErrorClose').onclick = patchCloseError;
+            document.getElementById('patchErrorConfirm').onclick = patchCloseError;
+            document.getElementById('patchErrorModal').onclick = event => { if (event.target.id === 'patchErrorModal') patchCloseError(); };
+            // 产物点击：按类型（html 浏览器打开 / md·txt 页内查看 / zip 定位）
+            document.getElementById('nodeRunArtifacts').addEventListener('click', event => {
+                const item = event.target.closest('[data-artifact-path]');
+                if (item) nodeRunOpenArtifact(item.dataset.artifactPath).catch(error => patchShowError(error.message, '打开产物失败'));
+            });
+        }
+        // 左侧固定导航：折叠/展开 + 高亮当前（运行详情归入「智能开发」）
+        (function patchSidenavInit() {
+            const toggle = document.getElementById('patchSidenavToggle');
+            const syncToggle = () => {
+                if (!toggle) return;
+                const collapsed = document.documentElement.classList.contains('sidenav-collapsed');
+                toggle.textContent = collapsed ? '›' : '‹';
+                toggle.title = collapsed ? '展开菜单' : '收起菜单';
+                toggle.setAttribute('aria-label', toggle.title);
+                toggle.setAttribute('aria-expanded', String(!collapsed));
+            };
+            if (toggle) toggle.addEventListener('click', () => {
+                const collapsed = document.documentElement.classList.toggle('sidenav-collapsed');
+                try { localStorage.setItem('cc-web-patch-sidenav', collapsed ? '0' : '1'); } catch {}
+                syncToggle();
+            });
+            syncToggle();
+            const nav = document.getElementById('patchSidenav');
+            if (nav) nav.querySelectorAll('.patch-sidenav-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.sidenavTab === 'node');
+            });
+        })();
+
+        patchInitTheme();
+        initPage();
+    })();
+    </script>
+</body>
+</html>

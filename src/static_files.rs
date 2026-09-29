@@ -6,6 +6,7 @@ const APP_JS: &str = include_str!("../static/app.js");
 const PATCHES_HTML: &str = include_str!("../static/patches.html");
 const PATCHES_JS: &str = include_str!("../static/patches.js");
 const WORKFLOW_RUN_HTML: &str = include_str!("../static/workflow_run.html");
+const NODE_RUN_HTML: &str = include_str!("../static/node_run.html");
 
 /// Generate ETag based on content hash for cache validation
 fn generate_etag(content: &str) -> String {
@@ -20,13 +21,14 @@ pub async fn serve(req: HttpRequest) -> HttpResponse {
     let path = req.path();
     
     let (content, content_type) = match path {
-        // 根路径默认落到「智能开发」（原补丁中心）；聊天页改用 /chat.html（/index.html 保留兼容）
+        // 根路径落到补丁中心 SPA（默认「智能开发」页签）；聊天页改用 /chat.html（/index.html 保留兼容）
         "/" | "/patches.html" => (PATCHES_HTML, "text/html; charset=utf-8"),
         "/chat.html" | "/index.html" => (INDEX_HTML, "text/html; charset=utf-8"),
         "/style.css" => (STYLE_CSS, "text/css; charset=utf-8"),
         "/app.js" => (APP_JS, "application/javascript; charset=utf-8"),
         "/patches.js" => (PATCHES_JS, "application/javascript; charset=utf-8"),
         "/workflow_run.html" => (WORKFLOW_RUN_HTML, "text/html; charset=utf-8"),
+        "/node_run.html" => (NODE_RUN_HTML, "text/html; charset=utf-8"),
         _ => {
             return HttpResponse::NotFound().body("Not Found");
         }

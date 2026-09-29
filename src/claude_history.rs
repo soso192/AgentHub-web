@@ -24,11 +24,17 @@ pub fn find_session_file(sid: &str) -> Option<PathBuf> {
     None
 }
 
-/// 解析 claude 会话 jsonl 为 cc-web Message 列表。
-///
-/// 展示粒度（折中）：用户提问 + 助手回复文本 + 工具调用（tool_use / tool_result，前端默认折叠展示），
-/// 不包含思考过程（thinking 块被跳过）。仅用于展示，claude 的上下文仍由 --resume 自带。
+/// 解析 claude 会话 jsonl 为 cc-web Message 列表（不含思考块，供展示/回放）。
 pub fn load_history(sid: &str, assistant: &str) -> Vec<Message> {
+    parse_history(sid, assistant, false)
+}
+
+/// 同上，但**保留 thinking 思考块**——已解决 run 的会话存档用（存档要完整，含思考过程）。
+pub fn load_history_full(sid: &str, assistant: &str) -> Vec<Message> {
+    parse_history(sid, assistant, true)
+}
+
+fn parse_history(sid: &str, assistant: &str, include_thinking: bool) -> Vec<Message> {
     let Some(path) = find_session_file(sid) else {
         return Vec::new();
     };
@@ -70,7 +76,14 @@ pub fn load_history(sid: &str, assistant: &str) -> Vec<Message> {
                                 let input = block.get("input").cloned().unwrap_or(serde_json::Value::Null);
                                 blocks.push(ContentBlock::ToolUse { id, name, input });
                             }
-                            // thinking 块跳过：折中粒度不展示思考过程
+                            "thinking" => {
+                                // 默认不展示思考过程；存档（load_history_full）才保留
+                                if include_thinking {
+                                    if let Some(t) = block.get("thinking").and_then(|v| v.as_str()) {
+                                        blocks.push(ContentBlock::Thinking { thinking: t.to_string() });
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
