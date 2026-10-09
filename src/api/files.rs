@@ -11,6 +11,109 @@ pub struct RevealRequest {
     pub path: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct PickFolderQuery {
+    /// 输入框当前值：是个目录就从它接着浏览（rfd 的 set_directory）
+    pub start: Option<String>,
+}
+
+/// 在运行 cc-web 的机器上弹出系统原生「选择文件夹」对话框，返回选中的绝对路径。
+///
+/// 为什么在后端弹：浏览器出于安全不把绝对路径给网页（webkitdirectory 只有相对路径），
+/// 而 cc-web 就跑在使用者本机——localhost 使用时对话框正好弹在用户面前。
+/// 与 reveal_file（弹资源管理器定位文件）是同一设计模式。
+///
+/// GET /api/pick-folder?start=<输入框当前值>
+/// - 返回 {success:true, path:"D:\\xx"}；用户取消返回 {success:true, path:null}（前端不动输入框）
+/// - 同时只允许一个对话框（对话框会阻塞到用户操作，期间再请求直接 409）
+///
+/// 平台实现（见 pick_folder_blocking）：
+/// - Windows/Linux：rfd 的 IFileDialog（任意线程可用）
+/// - macOS：rfd 要求主线程+应用事件循环，服务器线程里用不了 → 改调系统自带的
+///   osascript `choose folder`，同样是原生对话框，且不需要 GUI 应用环境
+#[allow(unused_variables)]
+pub async fn pick_folder(query: web::Query<PickFolderQuery>) -> HttpResponse {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static PICKING: AtomicBool = AtomicBool::new(false);
+    if PICKING.swap(true, Ordering::SeqCst) {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "success": false,
+            "error": "已有目录选择窗口打开，请先处理它"
+        }));
+    }
+
+    let start = query
+        .start
+        .clone()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && std::path::Path::new(value).is_dir());
+    let picked = tokio::task::spawn_blocking(move || pick_folder_blocking(start.as_deref())).await;
+    // 无论成功/取消/panic 都复位，对话框窗口随之关闭
+    PICKING.store(false, Ordering::SeqCst);
+
+    match picked {
+        Ok(Ok(Some(path))) => HttpResponse::Ok().json(serde_json::json!({
+            "success": true,
+            "path": path
+        })),
+        Ok(Ok(None)) => HttpResponse::Ok().json(serde_json::json!({
+            "success": true,
+            "path": null   // 用户点了取消
+        })),
+        Ok(Err(error)) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "success": false,
+            "error": error
+        })),
+        Err(error) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "success": false,
+            "error": format!("打开目录选择窗口失败: {error}")
+        })),
+    }
+}
+
+/// 阻塞式弹目录选择框（跑在 spawn_blocking 线程里）：Ok(Some(绝对路径)) / Ok(None)=取消 / Err=失败
+#[cfg(target_os = "macos")]
+fn pick_folder_blocking(start: Option<&str>) -> Result<Option<String>, String> {
+    // AppleScript 源码里嵌路径：转义反斜杠和双引号
+    let escape = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut script = String::from("POSIX path of (choose folder with prompt \"选择文件夹\"");
+    if let Some(dir) = start {
+        script.push_str(&format!(" default location POSIX file \"{}\"", escape(dir)));
+    }
+    script.push(')');
+
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|error| format!("调用 osascript 失败: {error}"))?;
+
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().trim_end_matches('/').to_string();
+        if path.is_empty() {
+            return Err("目录选择返回了空路径".to_string());
+        }
+        Ok(Some(path))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // 用户点取消：AppleScript 报错 -128 "User canceled"（中文系统是「用户取消」）
+        let lowered = stderr.to_lowercase();
+        if lowered.contains("user canceled") || stderr.contains("用户取消") || lowered.contains("cancelled") {
+            return Ok(None);
+        }
+        Err(format!("目录选择失败: {}", stderr.trim()))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pick_folder_blocking(start: Option<&str>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new().set_title("选择文件夹");
+    if let Some(dir) = start {
+        dialog = dialog.set_directory(dir);
+    }
+    Ok(dialog.pick_folder().map(|path| path.to_string_lossy().to_string()))
+}
+
 pub async fn list_files(query: web::Query<ListFilesQuery>) -> HttpResponse {
     let dir_path = query.path.as_deref().unwrap_or(".");
 

@@ -1,7 +1,7 @@
 const PATCH_TOKEN_KEY = 'patch-search-access-token';
 const PATCH_REQUEST_TIMEOUT = 60000; // 单个服务地址单次请求超时（毫秒），超时视为该地址不可用并切换下一条
 
-const patchState = { page: 1, search: { page: 1, size: 10, total: 0 }, keyword: '', files: [], adaptFiles: [], theme: 'light', patchSearchServers: [], patchServerCursor: 0, user: null, authInvalidated: false, searchGeneration: 0, products: null, advancedOpen: false, advanced: { name: '', product: '', version: '', keyword: '', description: '' }, searchItems: [], admin: { kind: '', id: null, flows: [], prompts: [], templates: [], directories: [], directoryId: null, projectEnvs: [], projectEnvId: null, menuConfig: { roleItems: [], roleVisible: {}, defaults: {}, users: [], userId: '', userItems: [], userOverrides: {} }, analysisPatches: [], selectedAnalysisIds: new Set(), analysisTimer: null, analysisPager: {page:1,size:20,total:0}, analysisGeneration: 0, products: [], productId: null }, workflow: { runId: '', steps: [], currentStep: 0, status: '', source: null, token: '', lastEventId: 0, localExecutions: new Set(), templates: [] }, workflowHistory: { page: 1, size: 10, total: 0, items: [] }, workflowDetail: { runId: '', snapshot: null }, mine: { page: 1, size: 10, total: 0, items: [], generation: 0 }, node: { host: '', runs: [], current: null, es: null, streaming: false, pendingPrompt: null, liveTranscript: '', flushHandle: 0 }, projectEnv: { page: 1, size: 10, total: 0 }, clientPagers: {} };
+const patchState = { page: 1, search: { page: 1, size: 10, total: 0 }, searchStatus: '', keyword: '', files: [], adaptEntries: [], theme: 'light', patchSearchServers: [], patchServerCursor: 0, user: null, authInvalidated: false, searchGeneration: 0, products: null, advancedOpen: false, advanced: { name: '', product: '', version: '', keyword: '', description: '' }, searchItems: [], admin: { kind: '', id: null, flows: [], prompts: [], templates: [], directories: [], directoryId: null, projectEnvs: [], projectEnvId: null, menuConfig: { roleItems: [], roleVisible: {}, defaults: {}, users: [], userId: '', userItems: [], userOverrides: {} }, analysisPatches: [], selectedAnalysisIds: new Set(), analysisTimer: null, analysisPager: {page:1,size:20,total:0}, analysisStatus: '', analysisGeneration: 0, products: [], productId: null }, workflow: { runId: '', steps: [], currentStep: 0, status: '', source: null, token: '', lastEventId: 0, localExecutions: new Set(), templates: [] }, workflowHistory: { page: 1, size: 10, total: 0, items: [] }, workflowDetail: { runId: '', snapshot: null }, mine: { page: 1, size: 10, total: 0, items: [], generation: 0 }, node: { host: '', runs: [], current: null, es: null, streaming: false, pendingPrompt: null, liveTranscript: '', flushHandle: 0 }, projectEnv: { page: 1, size: 10, total: 0 }, clientPagers: {}, adapt: { current: null, runs: [] } };
 
 // 服务地址由 cc-web 在代码内写死（可配多条），经 /api/patch-config 下发。
 // 轮询策略：每个请求取一个起始地址（游标后移实现轮询），若连不上/超时则依次切换下一条，
@@ -113,33 +113,18 @@ function applyMenuVisibility(user, isAdmin) {
     if (configTab) configTab.hidden = !isAdmin;
     const sessionsTab = document.querySelector('.patch-tab[data-tab="sessions"]');
     if (sessionsTab) sessionsTab.hidden = !isAdmin;
-    patchSyncSidenavVisibility();
+    // 侧边栏不再跟着页签走：/sidenav.js 直接按同一份菜单权限渲染（四个页面共用一份定义）
+    // 登录后自动查一次新版本（只查一次；有 token 才查，失败静默不打扰）
+    if (authenticated && !patchUpdateState.checked) {
+        patchUpdateState.checked = true;
+        patchUpdateCheck(false).catch(() => {});
+    }
     return keys;
 }
 
-/* ── 左侧固定导航（与顶部菜单一致） ── */
-function patchSyncSidenavVisibility() {
-    const nav = document.getElementById('patchSidenav');
-    if (!nav) return;
-    nav.querySelectorAll('.patch-sidenav-item').forEach(item => {
-        const tabButton = item.dataset.sidenavTab && document.querySelector(`.patch-tab[data-tab="${item.dataset.sidenavTab}"]`);
-        if (tabButton) item.hidden = tabButton.hidden;
-    });
-}
-function patchSidenavSyncToggle() {
-    const toggle = document.getElementById('patchSidenavToggle');
-    if (!toggle) return;
-    const collapsed = document.documentElement.classList.contains('sidenav-collapsed');
-    toggle.textContent = collapsed ? '›' : '‹';
-    toggle.title = collapsed ? '展开菜单' : '收起菜单';
-    toggle.setAttribute('aria-label', toggle.title);
-    toggle.setAttribute('aria-expanded', String(!collapsed));
-}
-function patchToggleSidenav() {
-    const collapsed = document.documentElement.classList.toggle('sidenav-collapsed');
-    try { localStorage.setItem('cc-web-patch-sidenav', collapsed ? '0' : '1'); } catch {}
-    patchSidenavSyncToggle();
-}
+// 左侧导航的折叠/展开、菜单显隐、当前页高亮统一由 /sidenav.js 负责（四个页面共用一份菜单定义），
+// 本文件不再维护侧边栏——这里以前还有 patchSyncSidenavVisibility（镜像页签显隐）、
+// patchSidenavSyncToggle / patchToggleSidenav（折叠），都随这次统一改造删掉了。
 function patchSetSidenavActive(tab) {
     const nav = document.getElementById('patchSidenav');
     if (!nav) return;
@@ -148,9 +133,6 @@ function patchSetSidenavActive(tab) {
     });
 }
 function patchInitSidenav() {
-    const toggle = document.getElementById('patchSidenavToggle');
-    if (toggle) toggle.addEventListener('click', patchToggleSidenav);
-    patchSidenavSyncToggle();
     const nav = document.getElementById('patchSidenav');
     if (nav) nav.addEventListener('click', (event) => {
         const item = event.target.closest('.patch-sidenav-item');
@@ -204,8 +186,8 @@ function patchPagerLoadSize(key, def = 10) {
 function patchPagerSaveSize(key, size) {
     try { localStorage.setItem(`cc-web-pager-size-${key}`, String(size)); } catch {}
 }
-function patchRegisterPager(key, state, reload) {
-    patchPagers[key] = { state, reload };
+function patchRegisterPager(key, state, reload, maxSize = 100) {
+    patchPagers[key] = { state, reload, maxSize };
 }
 function patchRenderPager(key) {
     const entry = patchPagers[key];
@@ -266,7 +248,7 @@ function patchBindPagerEvents() {
         if (!host) return;
         const entry = patchPagers[host.dataset.pager];
         if (!entry) return;
-        const size = Math.max(1, Math.min(100, parseInt(event.target.value, 10) || 10));
+        const size = Math.max(1, Math.min(entry.maxSize || 100, parseInt(event.target.value, 10) || 10));
         entry.state.size = size;
         entry.state.page = 1;
         patchPagerSaveSize(host.dataset.pager, size);
@@ -274,13 +256,10 @@ function patchBindPagerEvents() {
     });
 }
 // 分页条内部控件（宿主 div 由 HTML 提供：<div class="patch-pager" data-pager="key"></div>）
-function patchPagerControlsHTML() {
+function patchPagerControlsHTML(sizes = [10, 20, 50, 100]) {
     return `<span class="patch-pager-info" data-pager-info>共 0 条</span>
         <select class="patch-pager-select" data-pager-size aria-label="每页条数">
-            <option value="10">10 条/页</option>
-            <option value="20">20 条/页</option>
-            <option value="50">50 条/页</option>
-            <option value="100">100 条/页</option>
+            ${sizes.map(size => `<option value="${size}">${size} 条/页</option>`).join('\n            ')}
         </select>
         <button type="button" class="patch-link-btn" data-pager-prev>上一页</button>
         <button type="button" class="patch-link-btn" data-pager-next>下一页</button>
@@ -288,10 +267,29 @@ function patchPagerControlsHTML() {
         <button type="button" class="patch-link-btn" data-pager-go>跳转</button>`;
 }
 // 给所有分页条宿主填充控件（进页时调一次；已填充的跳过）
+// 给所有分页条宿主填充控件（进页时调一次；已填充的跳过）。
+// 待分析补丁的大档位（1000/2000/3000/5000/20万）仅管理员可选，登录前不知道角色，
+// 所以这里统一给默认档位，认证后由 patchSetAnalysisPagerSizes 按角色刷新。
 function patchInitPagers() {
     document.querySelectorAll('.patch-pager[data-pager]').forEach(host => {
         if (!host.querySelector('[data-pager-info]')) host.innerHTML = patchPagerControlsHTML();
     });
+}
+
+// 待分析补丁分页条按角色刷新每页条数档位与上限：管理员多 1000/2000/3000/5000/200000 五档。
+// 非管理员如果沿用上了超大档位（同一浏览器换账号），压回 100 并落盘。
+function patchSetAnalysisPagerSizes(isAdmin) {
+    const select = document.querySelector('[data-pager="analysis"] [data-pager-size]');
+    if (!select) return;
+    const sizes = isAdmin ? [10, 20, 50, 100, 1000, 2000, 3000, 5000, 200000] : [10, 20, 50, 100];
+    const current = String(patchState.admin.analysisPager.size);
+    select.innerHTML = sizes.map(size => `<option value="${size}"${String(size) === current ? ' selected' : ''}>${size} 条/页</option>`).join('');
+    const entry = patchPagers['analysis'];
+    if (entry) entry.maxSize = isAdmin ? 200000 : 100;
+    if (!isAdmin && patchState.admin.analysisPager.size > 100) {
+        patchState.admin.analysisPager.size = 100;
+        patchPagerSaveSize('analysis', 100);
+    }
 }
 // 前端分页切片：state={page,size,total}，items 为全量数组；返回当前页切片并回写 total。
 function patchClientSlice(state, items) {
@@ -331,6 +329,7 @@ function patchInitListPagers() {
     patchRegisterPager('directory', patchClientPager('directory', 10), () => renderDirectoryTable());
     patchRegisterPager('menuRole', patchClientPager('menuRole', 10), () => renderMenuRoleTable());
     patchRegisterPager('menuUser', patchClientPager('menuUser', 10), () => renderMenuUserTable());
+    patchRegisterPager('adaptRuns', patchClientPager('adaptRuns', 10), () => loadAdaptRuns());
 }
 
 function patchConfirm(message, title = '确认操作') {
@@ -363,17 +362,21 @@ function patchSetAuthenticated(user) {
     const logout = document.getElementById('patchLogout');
     const authenticated = Boolean(user);
     const isAdmin = authenticated && user.role === 'admin';
-    // 普通检索表：操作列宽度按角色定——普通用户只有 详情/下载（2 个按钮 ≈ 104px），
-    // 管理员多 编辑/删除（4 个按钮 ≈ 172px）。名称列（col0）留 auto 吸收富余宽度，
-    // 操作列就停在自己配置的宽度上（fixed 布局下 auto 列吃掉「表格宽度 − 其它列之和」）。
+    // 普通检索表：操作列宽度按角色定——普通用户 详情/下载/适配（3 个按钮 ≈ 102px），
+    // 管理员多 编辑/删除（5 个按钮 ≈ 170px）。**宽度要含单元格左右内边距（各 18px）**，
+    // 否则 fixed 布局 + td{overflow:hidden} 会把末尾的按钮裁掉。
+    // 名称列（col0）留 auto 吸收富余宽度，操作列就停在自己配置的宽度上。
     // 角色不同用不同 storage key，避免同一浏览器切账号时列宽互相串。
+    // key 从 v3 升到 v4：加了「适配」按钮后，旧存档会把操作列按旧宽度（180/110）锁死。
     initPatchColumnResize(
         '.patch-search-table',
-        `cc-web-patch-col-widths-v3-${isAdmin ? 'admin' : 'user'}`,
-        [280, 170, 96, 70, 90, 96, 160, isAdmin ? 180 : 110],
-        isAdmin ? 180 : 110,
+        `cc-web-patch-col-widths-v4-${isAdmin ? 'admin' : 'user'}`,
+        [280, 170, 96, 70, 90, 96, 160, isAdmin ? 216 : 150],
+        isAdmin ? 216 : 150,
         0,
     );
+    // 待分析补丁分页条：大档位仅管理员可选（登录后才知道角色，选项在这里刷新）
+    patchSetAnalysisPagerSizes(isAdmin);
     // 左侧固定菜单仅在登录态展示（聊天页/未登录登录卡不展示）
     document.documentElement.classList.toggle('patch-auth', authenticated);
     document.documentElement.classList.remove('patch-auth-pending');
@@ -386,10 +389,10 @@ function patchSetAuthenticated(user) {
     if (layout) layout.hidden = !authenticated;
     applyMenuVisibility(user, isAdmin);
     // 安全网：已登录但一个菜单都不可见时强制显示第一个菜单（智能开发），避免登录后只剩空白界面
+    // （侧边栏同款兜底在 /sidenav.js 里）
     if (authenticated && !PATCH_MENU_KEYS.some(isTabVisible)) {
         const searchTab = document.querySelector(`.patch-tab[data-tab="${PATCH_MENU_KEYS[0]}"]`);
         if (searchTab) searchTab.hidden = false;
-        patchSyncSidenavVisibility();
     }
     const activeTab = document.querySelector('.patch-tab.active')?.dataset.tab;
     // 默认落在第一个可见菜单（智能开发）；菜单被隐藏时顺延到下一个可见项
@@ -527,8 +530,6 @@ async function patchLogin() {
         patchState.authInvalidated = false;
         patchSetAuthenticated(data.user);
         message.textContent = '';
-        setPatchHelpPanel(true); // 登录后默认展开
-        patchHelpSave(true);
         await Promise.all([loadPatches(), loadWorkflowTemplates()]);
     } catch (error) {
         message.textContent = '';
@@ -559,23 +560,121 @@ function patchShowAuthRetry(message) {
     if (retry) retry.hidden = false;
 }
 
-// 使用说明面板：登录时默认展开；刷新页面保留当前状态（同步应用，避免刷新时闪一下）
-function setPatchHelpPanel(open) {
-    document.documentElement.classList.toggle('help-panel-closed', !open);
-    const panel = document.getElementById('patchHelpPanel');
-    panel.classList.toggle('closed', !open);
-    panel.setAttribute('aria-hidden', String(!open));
-    document.getElementById('patchHelpToggle').setAttribute('aria-expanded', String(open));
-    document.getElementById('patchHelpCollapse').setAttribute('aria-expanded', String(open));
-    document.getElementById('patchHelpReopen').hidden = open;
+/* ── 获取新版本（cc-web 的 api/update.rs + patch_search 的 routes/ccweb_update.py）──
+   - 判据是 **sha256 不同**：版本号长期停在 1.0.0 比不出来，文件时间戳跨机器时钟不可靠
+   - 由后端代劳是因为 **cc-web 自己没有登录态**（token 只在浏览器里），前端带 token 调过去
+   - 替换 exe 必须靠后端生成的 .bat：Windows 下运行中的 exe 被锁，自己覆盖不了自己 */
+const patchUpdateState = { checked: false, local: null, remote: null, available: false, dismissed: false, running: false };
+
+async function patchUpdateCheck(manual = false) {
+    if (!patchToken() || patchState.authInvalidated) {
+        if (manual) patchShowError('请先登录后再检查更新', '检查更新');
+        return;
+    }
+    try {
+        const payload = await patchNodeCcWeb('/api/update/check', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ server_url: patchServerBase(), auth_token: patchToken() }),
+        });
+        const data = payload.data || {};
+        patchUpdateState.local = data.local || null;
+        patchUpdateState.remote = data.remote || null;
+        patchUpdateState.available = Boolean(data.update_available);
+        patchUpdateRender(manual);
+    } catch (error) {
+        if (manual) patchShowError(error.message, '检查更新失败');
+    }
 }
-function patchHelpSave(open) {
-    try { localStorage.setItem('cc-web-help-panel', open ? 'open' : 'closed'); } catch {}
+
+function patchUpdateRender(manual) {
+    const banner = document.getElementById('patchUpdateBanner');
+    if (!banner) return;
+    const remote = patchUpdateState.remote;
+    if (!patchUpdateState.available || patchUpdateState.dismissed) {
+        banner.hidden = true;
+        if (manual) {
+            patchShowError(
+                remote ? '本机与服务器上的程序一致，已是最新版本。' : '补丁中心还没有发布 cc-web 新版本。',
+                '检查更新',
+            );
+        }
+        return;
+    }
+    const when = remote && remote.build_unix ? patchFormatDateTime(new Date(Number(remote.build_unix) * 1000)) : '';
+    document.getElementById('patchUpdateText').textContent =
+        `发现新版本 ${remote.version || ''}${when ? `（构建 ${when}）` : ''}，本机当前 ${(patchUpdateState.local && patchUpdateState.local.version) || ''}。`;
+    banner.hidden = false;
 }
-function patchHelpApplyStored() {
-    let stored = '';
-    try { stored = localStorage.getItem('cc-web-help-panel') || ''; } catch {}
-    setPatchHelpPanel(stored !== 'closed');
+
+// 下载新版本并自替换：读后端流式响应（progress/ok/error），完成后本进程会退出、脚本接手重启
+async function patchUpdateApply() {
+    if (patchUpdateState.running) return;
+    patchUpdateState.running = true;
+    const modal = document.getElementById('patchUpdateModal');
+    const message = document.getElementById('patchUpdateMessage');
+    const progress = document.getElementById('patchUpdateProgress');
+    const bar = progress.querySelector('span');
+    const label = progress.querySelector('em');
+    const okBtn = document.getElementById('patchUpdateModalOk');
+    message.textContent = '正在下载新版本…';
+    progress.style.display = 'flex';
+    bar.style.width = '0%';
+    label.textContent = '';
+    okBtn.hidden = true;
+    modal.hidden = false;
+    try {
+        const response = await fetch('/api/update/apply', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ server_url: patchServerBase(), auth_token: patchToken() }),
+        });
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.error || `更新失败（HTTP ${response.status}）`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let failure = '';
+        let done = '';
+        while (true) {
+            const {done: finished, value} = await reader.read();
+            if (finished) break;
+            buffer += decoder.decode(value, {stream: true});
+            let index;
+            while ((index = buffer.indexOf('\n')) >= 0) {
+                const line = buffer.slice(0, index);
+                buffer = buffer.slice(index + 1);
+                if (line.startsWith('progress ')) {
+                    const [, downloaded, total] = line.split(' ');
+                    const got = Number(downloaded) || 0;
+                    const all = Number(total) || 0;
+                    const percent = all > 0 ? Math.min(100, Math.round(got / all * 100)) : 0;
+                    bar.style.width = `${percent}%`;
+                    label.textContent = all > 0 ? `${patchFormatSize(got)} / ${patchFormatSize(all)}（${percent}%）` : patchFormatSize(got);
+                } else if (line.startsWith('ok ')) {
+                    try { done = JSON.parse(line.slice(3)); } catch (error) { done = { message: '更新完成' }; }
+                } else if (line.startsWith('error ')) {
+                    failure = line.slice(6);
+                }
+            }
+        }
+        if (failure) throw new Error(failure);
+        bar.style.width = '100%';
+        const result = done && typeof done === 'object' ? done : {};
+        if (result.manual) {
+            // macOS 等平台不自动替换：新程序已下载并加了可执行权限，等使用者手动换
+            message.textContent = `${result.message || '新版本已下载'}。新程序位置：${result.path || '（见 cc-web 目录）'}`;
+        } else {
+            message.textContent = `${result.message || '更新完成'}。稍后请刷新页面（cc-web 正在重启，连接会断开几秒）。`;
+        }
+        document.getElementById('patchUpdateBanner').hidden = true;
+        okBtn.hidden = false;
+    } catch (error) {
+        message.textContent = `更新失败：${error.message}`;
+        okBtn.hidden = false;
+    } finally {
+        patchUpdateState.running = false;
+    }
 }
 
 async function loadPatches() {
@@ -588,6 +687,7 @@ async function loadPatches() {
     body.innerHTML = '<tr><td colspan="8" class="patch-empty">正在加载...</td></tr>';
     try {
         const params = new URLSearchParams({ keyword: patchState.keyword, name: patchState.advanced.name, product_name: patchState.advanced.product, product_version: patchState.advanced.version, user_keyword: patchState.advanced.keyword, description: patchState.advanced.description, page: patchState.search.page, size: patchState.search.size });
+        if (patchState.searchStatus !== '') params.set('status', patchState.searchStatus);
         const data = await patchRequest(`/api/patches?${params}`);
         if (generation !== patchState.searchGeneration) return;
         patchState.searchItems = data.items || [];
@@ -612,6 +712,9 @@ async function loadPatches() {
 
 function patchRow(item) {
     let actions = `<button class="patch-link-btn" data-detail-id="${patchEscape(item.id)}">详情</button><button class="patch-link-btn" data-download-id="${patchEscape(item.id)}" data-download-name="${patchEscape(item.file_name || '')}">下载</button>`;
+    // 「适配」：把库里这个补丁直接适配进客开工程（补丁包由 cc-web 从补丁中心取到本机）。
+    // 与页签可见性一致——用户看不到「补丁适配」页签时，这里也不给入口。
+    if (isTabVisible('adapt')) actions += `<button class="patch-link-btn" data-adapt-id="${patchEscape(item.id)}">适配</button>`;
     // 编辑/删除仅管理员可见
     if (patchState.user && patchState.user.role === 'admin') {
         actions += `<button class="patch-link-btn" data-search-edit="${patchEscape(item.id)}">编辑</button><button class="patch-link-btn danger" data-search-delete="${patchEscape(item.id)}">删除</button>`;
@@ -893,32 +996,154 @@ function closeUploadModal() {
     patchState.files = [];
 }
 
-// ── 补丁适配：多选补丁 + 每个补丁一个问题描述 + 一个客开工程目录（适配逻辑待实现）──
-function showAdaptModal(files) {
-    patchState.adaptFiles = Array.from(files);
-    document.getElementById('patchAdaptItems').innerHTML = patchState.adaptFiles.map((file, index) => `<div class="patch-upload-item" data-adapt-index="${index}">
-        <div class="patch-file-meta"><strong>${patchEscape(file.name)}</strong><span>${patchFormatSize(file.size)}</span></div>
+// 适配弹窗的环境变量下拉（选择后自动带出该环境的客开工程目录）
+// preset（可选）：{product_name, product_version} —— 从普通检索点「适配」时，
+// 按该补丁的产品/版本自动选中对应环境变量，并把客开工程目录一并带出来。
+async function loadProjectEnvsForAdapt(preset) {
+    const select = document.getElementById('patchAdaptEnv');
+    if (!select) return;
+    if (!(patchState.admin.projectEnvs || []).length) {
+        try { patchState.admin.projectEnvs = (await patchRequest('/api/project-envs')) || []; } catch (error) { /* 读不到就留空 */ }
+    }
+    const current = select.value;
+    select.innerHTML = '<option value="">请选择</option>' + (patchState.admin.projectEnvs || []).map(env =>
+        `<option value="${patchEscape(env.id)}">${patchEscape(env.project_name || '')}（${patchEscape(env.product_name || '')} ${patchEscape(env.product_version || '')}）</option>`).join('');
+    select.value = current;
+    if (!preset) return;
+    const match = (patchState.admin.projectEnvs || []).find(env =>
+        String(env.product_name || '') === String(preset.product_name || '')
+        && String(env.product_version || '') === String(preset.product_version || ''));
+    if (!match) return;   // 没有匹配的环境变量就留空，让用户自己选
+    select.value = String(match.id);
+    document.getElementById('patchAdaptProjectDir').value = match.code_directory || '';
+}
+
+// ── 补丁适配：条目来自两个地方，但后续完全一样 ──
+//   {file}                     本地选/拖进来的补丁包 → 走 /api/adapt/upload（multipart）
+//   {patch_id, name, size}     补丁库里已有的补丁（普通检索列表点「适配」）→ 走 /api/adapt/import
+// 卡片只用 {name, size} 渲染，所以两条路径共用同一个弹窗、同一套校验与启动流程。
+function normalizeAdaptEntries(input) {
+    return Array.from(input).map(item => item instanceof File
+        ? {file: item, name: item.name, size: item.size}
+        : {patch_id: item.patch_id, name: item.name || '', size: item.size || 0});
+}
+
+function showAdaptModal(entries, preset) {
+    patchState.adaptEntries = normalizeAdaptEntries(entries);
+    document.getElementById('patchAdaptItems').innerHTML = patchState.adaptEntries.map((entry, index) => `<div class="patch-upload-item" data-adapt-index="${index}">
+        <div class="patch-file-meta"><strong>${patchEscape(entry.name)}</strong><span>${patchFormatSize(entry.size)}</span></div>
         <label class="patch-file-description-label">问题描述<span class="patch-required">*</span><textarea class="patch-adapt-desc" rows="3" placeholder="描述该补丁要解决的问题/需求"></textarea></label>
     </div>`).join('');
     document.getElementById('patchAdaptProjectDir').value = '';
-    document.getElementById('patchAdaptModalMessage').textContent = '';
+    document.getElementById('patchAdaptModalMessage').textContent = patchState.adaptEntries.some(entry => entry.patch_id)
+        ? '补丁包将在开始适配时从补丁中心取到本机。'
+        : '';
+    loadProjectEnvsForAdapt(preset).catch(() => {});
     document.getElementById('patchAdaptModal').hidden = false;
 }
 
 function closeAdaptModal() {
     document.getElementById('patchAdaptModal').hidden = true;
-    patchState.adaptFiles = [];
+    patchState.adaptEntries = [];
     document.getElementById('patchAdaptItems').innerHTML = '';
     document.getElementById('patchAdaptModalMessage').textContent = '';
+}
+
+// 普通检索列表点「适配」：补丁已经在补丁库里，本机没有文件 —— 以「来自补丁中心」的条目打开弹窗，
+// 并按该行的产品/版本预选环境变量（顺带带出客开工程目录）
+function openAdaptFromSearch(patchId) {
+    const item = patchState.searchItems.find(value => String(value.id) === String(patchId));
+    if (!item) { patchShowError('找不到该补丁，请刷新列表后重试', '补丁适配'); return; }
+    showAdaptModal(
+        [{patch_id: item.id, name: item.file_name || item.name || '', size: item.file_size || 0}],
+        {product_name: item.product_name, product_version: item.product_version},
+    );
+}
+
+// 让 cc-web 从补丁中心把补丁包取到本机并解压（下载与解压都在 cc-web 侧，不经过浏览器内存）。
+//
+// cc-web 用**一行一条的流式响应**回报进度（见 adapt.rs 的 import_patch），所以这里读流而不是等 JSON：
+//   progress <已下载> <总字节>   → 更新进度条
+//   extracting                  → 下载完，正在解压
+//   ok <结果 JSON>               → 成功，结果与 /api/adapt/upload 同形
+//   error <原因>                 → 失败（下载/解压的失败只能走这里，HTTP 状态早就是 200）
+async function patchAdaptImport(patchId, patchName, runId, seq) {
+    const progressEl = document.getElementById('patchAdaptProgress');
+    const barEl = progressEl ? progressEl.querySelector('span') : null;
+    const labelEl = progressEl ? progressEl.querySelector('em') : null;
+    const showProgress = (downloaded, total) => {
+        if (!progressEl) return;
+        progressEl.style.display = 'flex';
+        const percent = total > 0 ? Math.min(100, Math.round(downloaded / total * 100)) : 0;
+        barEl.style.width = `${percent}%`;
+        labelEl.textContent = total > 0
+            ? `正在从补丁中心下载补丁包… ${patchFormatSize(downloaded)} / ${patchFormatSize(total)}（${percent}%）`
+            : `正在从补丁中心下载补丁包… ${patchFormatSize(downloaded)}`;
+    };
+    const hideProgress = () => {
+        if (!progressEl) return;
+        progressEl.style.display = 'none';
+        barEl.style.width = '0%';
+        labelEl.textContent = '';
+    };
+
+    try {
+        const response = await fetch('/api/adapt/import', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                run_id: runId, seq, patch_id: patchId, patch_name: patchName || null,
+                server_url: patchServerBase(), auth_token: patchToken(),
+            }),
+        });
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.error || `取补丁包失败（HTTP ${response.status}）`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let result = null;
+        let failure = '';
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, {stream: true});
+            let index;
+            while ((index = buffer.indexOf('\n')) >= 0) {
+                const line = buffer.slice(0, index);
+                buffer = buffer.slice(index + 1);
+                if (line.startsWith('progress ')) {
+                    const [, downloaded, total] = line.split(' ');
+                    showProgress(Number(downloaded) || 0, Number(total) || 0);
+                } else if (line === 'extracting') {
+                    if (progressEl) { progressEl.style.display = 'flex'; barEl.style.width = '100%'; labelEl.textContent = '下载完成，正在解压补丁包…'; }
+                } else if (line.startsWith('ok ')) {
+                    try { result = JSON.parse(line.slice(3)); } catch (error) { failure = '补丁包信息解析失败'; }
+                } else if (line.startsWith('error ')) {
+                    failure = line.slice(6);
+                }
+            }
+        }
+        if (failure) throw new Error(failure);
+        if (!result) throw new Error('取补丁包失败：连接中断');
+        return result;
+    } finally {
+        hideProgress();
+    }
 }
 
 // 收集并校验表单：每个补丁的问题描述 + 客开工程目录都是必填，缺一个就报错并聚焦
 function collectAdaptForm() {
     const items = Array.from(document.querySelectorAll('#patchAdaptItems .patch-upload-item'));
-    const entries = items.map((item, index) => ({
-        file: patchState.adaptFiles[index],
-        problem_desc: String(item.querySelector('.patch-adapt-desc')?.value || '').trim(),
-    }));
+    const entries = items.map((item, index) => {
+        const entry = patchState.adaptEntries[index] || {};
+        return {
+            file: entry.file || null,
+            patch_id: entry.patch_id || null,
+            patch_name: entry.name || '',
+            problem_desc: String(item.querySelector('.patch-adapt-desc')?.value || '').trim(),
+        };
+    });
     const missingIndex = entries.findIndex(entry => !entry.problem_desc);
     if (missingIndex >= 0) {
         patchShowError(`第 ${missingIndex + 1} 个补丁的问题描述为必填项`, '补丁适配');
@@ -931,7 +1156,8 @@ function collectAdaptForm() {
         document.getElementById('patchAdaptProjectDir').focus();
         return null;
     }
-    return { entries, project_dir: projectDir };
+    const envId = String(document.getElementById('patchAdaptEnv')?.value || '');
+    return { entries, project_dir: projectDir, env_id: envId };
 }
 
 function startAdapt() {
@@ -940,11 +1166,138 @@ function startAdapt() {
     adaptPatches(payload);
 }
 
-// 适配逻辑（待实现）：payload = { entries: [{ file: File, problem_desc: string }], project_dir: string }
-// TODO: 后端接口确定后，在这里发起真正的适配请求。
-function adaptPatches(payload) {
-    console.log('[adapt] 适配请求（逻辑待实现）', payload);
-    document.getElementById('patchAdaptModalMessage').textContent = '适配逻辑尚未实现：表单已通过校验，待接入后端接口。';
+// ── 补丁适配：执行（在用户端 cc-web 跑 claude，把补丁合并进客开工程）──
+// 把补丁包上传到 cc-web（存 temp\adapt\<runId>\<seq>\ 并解压），返回 {success, dir, entries}
+async function patchAdaptUpload(file, runId, seq) {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const response = await fetch(`/api/adapt/upload?run_id=${encodeURIComponent(runId)}&seq=${seq}`, {method: 'POST', body: form});
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `上传失败（HTTP ${response.status}）`);
+    return payload;
+}
+
+// 给共用会话发一条消息，等本轮结束（result/error），返回 {ok, text|error}
+async function adaptPatches(payload) {
+    const message = document.getElementById('patchAdaptModalMessage');
+    const startBtn = document.getElementById('patchAdaptStart');
+    message.textContent = '';
+    // 1) git 检查：适配是「直接改工程、无法自动恢复」，据结果给不同确认文案
+    let git = { is_git: false, has_changes: false };
+    try { git = await patchNodeCcWeb(`/api/adapt/git-status?path=${encodeURIComponent(payload.project_dir)}`); } catch (error) { git = { is_git: false, has_changes: false, reason: error.message }; }
+    const confirmText = git.is_git
+        ? `适配将【直接修改】客开工程目录：\n${payload.project_dir}\n\n该工程已使用 git 版本控制${git.has_changes ? '，且当前有未提交的改动（建议先提交一次再适配）' : ''}。\n\n适配后无法自动恢复，确认开始？`
+        : `⚠ 该目录下未检测到 .git（无版本控制）：\n${payload.project_dir}\n\n适配会直接修改源码且【无法自动恢复】。强烈建议先初始化并提交 git 再适配。\n\n仍要继续吗？`;
+    if (!(await patchConfirm(confirmText, '开始适配'))) return;
+    startBtn.disabled = true;
+    try {
+        // 2) 逐个把补丁包弄到本机（存 temp\adapt\<runId>\<seq>\ 并解压）：
+        //    本地文件走上传，来自补丁库的走 /api/adapt/import（cc-web 直连补丁中心下载）
+        const runId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+        const items = [];
+        for (let index = 0; index < payload.entries.length; index++) {
+            const entry = payload.entries[index];
+            const progress = `${index + 1}/${payload.entries.length}`;
+            message.textContent = entry.file
+                ? `正在上传补丁 ${progress}：${entry.file.name}`
+                : `正在从补丁中心取补丁包 ${progress}：${entry.patch_name}`;
+            const got = entry.file
+                ? await patchAdaptUpload(entry.file, runId, index + 1)
+                : await patchAdaptImport(entry.patch_id, entry.patch_name, runId, index + 1);
+            items.push({ seq: index + 1, patch_name: got.name || entry.patch_name || (entry.file ? entry.file.name : ''), problem_desc: entry.problem_desc, dir: got.dir || '' });
+        }
+        // 3) 一次 POST 交给后台执行 → 立即返回，可关窗口
+        const env = (patchState.admin.projectEnvs || []).find(item => String(item.id) === String(payload.env_id)) || {};
+        message.textContent = '正在启动后台适配…';
+        const started = await patchNodeCcWeb('/api/adapt/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+            project_dir: payload.project_dir,
+            product_name: env.product_name || null,
+            product_version: env.product_version || null,
+            server_url: (patchState.patchSearchServers[0] || '').replace(/\/+$/, ''),
+            auth_token: patchToken(),
+            items,
+        })});
+        message.textContent = started.message || '适配已在后台执行，可关闭页面。';
+        closeAdaptModal();
+        // 从普通检索点「适配」进来的：启动成功就直接进这次适配的详情页看进度。
+        // （拖拽本地补丁那条路径保持原样：停在适配记录列表。）
+        if (payload.entries.some(entry => entry.patch_id)) {
+            location.href = `/adapt_run.html?run_id=${encodeURIComponent(started.run_id || runId)}`;
+            return;
+        }
+        // 后台线程首次上报有延迟（第一个补丁开始跑时才报），等 1 秒再拉
+        setTimeout(() => loadAdaptRuns().catch(() => {}), 1000);
+    } catch (error) {
+        message.textContent = `启动适配失败：${error.message}`;
+    } finally {
+        startBtn.disabled = false;
+    }
+}
+
+// ── 补丁适配：记录列表与详情（读服务器账本，跨机器可查）──
+// 刷新时机只有两处：① 点「开始适配」成功后等 1 秒 ② 关闭详情浮层时。不做定时轮询。
+// 任务级状态：多补丁任务跑完一个补丁会停在「待确认」，等用户到详情页点「继续下一步」。
+const PATCH_ADAPT_STATUS_LABEL = { running: '适配中', awaiting_confirmation: '待确认', done: '已完成', failed: '失败', aborted: '已中止' };
+
+// 本机清单与服务器账本是否已经对不上（状态 / 补丁数 / 四类计数）。
+// 对不上说明服务器那份停在旧状态——多半是适配跑久了 JWT 过期、cc-web 后台上报一直 401。
+// 服务器上**根本没有**这条时不算对不上：那说明用户把库清了/删过记录，不复活它
+// （要清就真清得掉；本机记录用「删除记录」一起删）。
+function patchAdaptNeedsReReport(local, server) {
+    if (!server) return false;
+    const items = local.items || [];
+    const counts = { done: 0, conflict: 0, nosource: 0, failed: 0 };
+    items.forEach(item => { if (counts[item.status] !== undefined) counts[item.status] += 1; });
+    return String(server.status || '') !== String(local.status || '')
+        || Number(server.patch_count || 0) !== items.length
+        || Number(server.succeeded_count || 0) !== counts.done
+        || Number(server.conflict_count || 0) !== counts.conflict
+        || Number(server.nosource_count || 0) !== counts.nosource
+        || Number(server.failed_count || 0) !== counts.failed;
+}
+
+// 发现服务器账本落后时，用当前 token 让 cc-web 把本机这份重推一遍（顺带刷新它手里的旧 token），
+// 然后重拉一次列表。每次进页只补一轮；补不动（比如服务器还是不通）就按现有数据渲染。
+async function patchAdaptRepair(rows) {
+    let locals = [];
+    try { locals = (await patchNodeCcWeb('/api/adapt/runs')).data || []; } catch (error) { return rows; }
+    const stale = locals
+        .filter(local => patchAdaptNeedsReReport(local, rows.find(row => String(row.local_run_id) === String(local.id))))
+        .slice(0, 10);
+    if (!stale.length) return rows;
+    await Promise.all(stale.map(local => patchNodeCcWeb(`/api/adapt/runs/${encodeURIComponent(local.id)}/re-report`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ server_url: patchServerBase(), auth_token: patchToken() }),
+    }).catch(() => null)));
+    try { return (await patchRequest('/api/patch-adapt/runs')) || rows; } catch (error) { return rows; }
+}
+
+async function loadAdaptRuns() {
+    const body = document.getElementById('patchAdaptRunsBody');
+    if (!body) return;
+    body.innerHTML = '<tr><td colspan="8" class="patch-empty">正在加载...</td></tr>';
+    try {
+        let rows = (await patchRequest('/api/patch-adapt/runs')) || [];
+        rows = await patchAdaptRepair(rows);
+        if (!rows.length) { body.innerHTML = '<tr><td colspan="8" class="patch-empty">暂无适配记录</td></tr>'; patchRenderPager('adaptRuns'); return; }
+        // 前端分页：服务器一次最多给 200 条，这里按统一分页条切片
+        const pageRows = patchClientSlice(patchClientPager('adaptRuns'), rows);
+        body.innerHTML = pageRows.map(row => `<tr>
+            <td>${patchEscape(patchFormatDateTime(row.created_at))}</td>
+            <td>${patchEscape(`${row.product_name || '—'} ${row.product_version || ''}`.trim())}</td>
+            <td><span class="patch-truncated-name" title="${patchEscape(row.code_directory || '')}">${patchEscape(patchNodeInline(row.code_directory || '—', 40))}</span></td>
+            <td>${patchEscape(PATCH_ADAPT_STATUS_LABEL[row.status] || row.status || '—')}</td>
+            <td>${Number(row.patch_count) || 0}</td>
+            <td>${Number(row.succeeded_count) || 0} / ${Number(row.conflict_count) || 0} / ${Number(row.nosource_count) || 0} / ${Number(row.failed_count) || 0}</td>
+            <td>${patchEscape(row.client_host || '—')}</td>
+            <td><button class="patch-link-btn" data-adapt-view="${patchEscape(row.local_run_id)}">详情</button>
+                <button class="patch-link-btn danger" data-adapt-delete="${patchEscape(row.local_run_id)}">删除记录</button></td>
+        </tr>`).join('');
+        patchRenderPager('adaptRuns');
+    } catch (error) {
+        body.innerHTML = `<tr><td colspan="8" class="patch-empty">加载失败：${patchEscape(error.message)}</td></tr>`;
+        patchRenderPager('adaptRuns');
+    }
 }
 
 function uploadOne(index, item, formData) {
@@ -1060,10 +1413,9 @@ async function showPatchDetail(id) {
             <dt>用户关键词</dt><dd>${tags(patch.user_keyword)}</dd><dt>相关类</dt><dd>${tags(patch.class_name)}</dd>
             <dt>分析关键词</dt><dd>${tags(patch.keyword)}</dd>
         </dl><div class="patch-detail-analysis"><h4>分析结果</h4></div>
-        <div class="patch-detail-output"><button id="patchAnalysisCopy" type="button" class="patch-secondary-btn patch-copy-btn">复制</button><pre id="patchAnalysisContent" class="patch-code-block">${patchEscape(patchDecodeResultText(patch.analysis_result || {}))}</pre></div>
+        <div class="patch-detail-output"><pre id="patchAnalysisContent" class="patch-code-block">${patchEscape(patchDecodeResultText(patch.analysis_result || {}))}</pre></div>
         <div class="patch-detail-actions"><button class="patch-primary-btn" data-download-id="${patchEscape(patch.id)}" data-download-name="${patchEscape(patch.file_name || '')}">下载补丁包</button></div>`;
-        const analysisCopy = document.getElementById('patchAnalysisCopy');
-        if (analysisCopy) analysisCopy.onclick = () => copyWorkflowOutput(analysisCopy, document.getElementById('patchAnalysisContent'));
+        // 复制按钮不在这里手工挂了：/copybox.js 会给这块内容统一挂右上角的复制图标（全站同一套）
     } catch (error) { document.getElementById('patchDetailModal').hidden = true; patchShowError(error.message, '补丁详情加载失败'); }
 }
 
@@ -1145,25 +1497,9 @@ function patchDecodeResultText(value) {
     });
 }
 
-function copyTextToClipboard(text) {
-    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
-    return new Promise((resolve, reject) => {
-        const ta = document.createElement('textarea');
-        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy') ? resolve() : reject(new Error('复制失败')); }
-        catch (err) { reject(err); }
-        finally { document.body.removeChild(ta); }
-    });
-}
-
-function copyWorkflowOutput(btn, source) {
-    const text = typeof source === 'string' ? source : (source && source.textContent) || '';
-    if (!text) return;
-    const original = btn.textContent;
-    copyTextToClipboard(text).then(() => { btn.textContent = '已复制'; btn.classList.add('copied'); }).catch(() => { btn.textContent = '复制失败'; });
-    setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 1500);
-}
+// 复制按钮统一由 /copybox.js 提供（图标挂在只读内容框的右上角）。
+// 这里原来的 copyTextToClipboard / copyWorkflowOutput 只服务于补丁详情弹窗那个手工按钮，
+// 已随统一改造删掉；同款实现现在在 copybox.js 里。
 
 function closeWorkflowStream() { if (patchState.workflow.source) { patchState.workflow.source.abort(); patchState.workflow.source = null; } }
 
@@ -1210,12 +1546,12 @@ function renderWorkflowDirRows(container, templateId, requirements) {
         const savedPath = saved.startsWith('path:') ? saved.slice(5) : '';
         const legend = `<legend>步骤 ${step.step_order} · ${patchEscape(step.flow_name)}</legend>`;
         if (!hasOptions) {
-            return `<fieldset class="template-step-card" data-dir-step="${step.step_order}">${legend}<label>手动填写本机路径<input data-dir-path value="${patchEscape(savedPath)}" placeholder="例如：D:\\project\\my-app"></label></fieldset>`;
+            return `<fieldset class="template-step-card" data-dir-step="${step.step_order}">${legend}<label>手动填写本机路径<button type="button" class="patch-folder-pick" data-folder-pick title="从本机选择目录">📁</button><input data-dir-path value="${patchEscape(savedPath)}" placeholder="例如：D:\\project\\my-app"></label></fieldset>`;
         }
         const manual = Boolean(savedPath);
         const defaultId = savedId || (step.default_directory_id != null ? String(step.default_directory_id) : '');
         const dirOptions = options.map(item => `<option value="${patchEscape(item.id)}" ${String(item.id) === defaultId ? 'selected' : ''}>${patchEscape(item.name)} (${patchEscape(item.code)})</option>`).join('');
-        return `<fieldset class="template-step-card" data-dir-step="${step.step_order}">${legend}<label>已有目录<select data-dir-existing ${manual ? 'disabled' : ''}>${dirOptions}</select></label><label>手动填写本机路径<input data-dir-path value="${patchEscape(savedPath)}" ${manual ? '' : 'disabled'} placeholder="例如：D:\\project\\my-app"></label><label class="template-context-option"><input type="checkbox" data-dir-manual ${manual ? 'checked' : ''}> 改用手动填写的路径</label></fieldset>`;
+        return `<fieldset class="template-step-card" data-dir-step="${step.step_order}">${legend}<label>已有目录<select data-dir-existing ${manual ? 'disabled' : ''}>${dirOptions}</select></label><label>手动填写本机路径<button type="button" class="patch-folder-pick" data-folder-pick title="从本机选择目录">📁</button><input data-dir-path value="${patchEscape(savedPath)}" ${manual ? '' : 'disabled'} placeholder="例如：D:\\project\\my-app"></label><label class="template-context-option"><input type="checkbox" data-dir-manual ${manual ? 'checked' : ''}> 改用手动填写的路径</label></fieldset>`;
     }).join('');
 }
 
@@ -1410,6 +1746,8 @@ function patchSwitchTab(tab) {
     if (tab === 'project_env' && patchToken() && !patchState.authInvalidated) loadProjectEnvs();
     // 智能开发：每次进页签都重拉（本机清单 + 服务器账本，两边都可能在别处被改过）
     if (tab === 'node' && patchToken() && !patchState.authInvalidated) loadProblemRuns();
+    // 补丁适配：进页签拉一次适配记录（服务器账本，跨机器可查）
+    if (tab === 'adapt' && patchToken() && !patchState.authInvalidated) { loadAdaptRuns(); loadProjectEnvsForAdapt(); }
     if (tab === 'menus' && patchToken() && !patchState.authInvalidated && patchState.user?.role === 'admin') { loadMenuRoleConfig(); loadMenuUsers(); }
     // 会话存档（管理员专属）
     if (tab === 'sessions' && patchToken() && !patchState.authInvalidated && patchState.user?.role === 'admin') loadRunSessions();
@@ -1702,7 +2040,8 @@ async function loadAnalysisPatches() {
     if (body) body.innerHTML = '<tr><td colspan="7" class="patch-empty">正在加载...</td></tr>';
     if (refresh) refresh.disabled = true;
     try {
-        const data = await patchRequest(`/api/patches/pending-analysis?page=${patchState.admin.analysisPager.page}&size=${patchState.admin.analysisPager.size}`);
+        const statusQuery = patchState.admin.analysisStatus === '' ? '' : `&status=${patchState.admin.analysisStatus}`;
+        const data = await patchRequest(`/api/patches/pending-analysis?page=${patchState.admin.analysisPager.page}&size=${patchState.admin.analysisPager.size}${statusQuery}`);
         if (generation !== patchState.admin.analysisGeneration) return;
         patchState.admin.analysisPager.total = data.total;
         patchState.admin.analysisPager.page = data.page;
@@ -3615,8 +3954,6 @@ function patchBindEvents() {
     document.getElementById('patchLogout').onclick = async () => {
         const logoutToken = patchToken();
         patchHandleUnauthorized();
-        setPatchHelpPanel(true); // 切换账号前也复位为展开
-        patchHelpSave(true);
         if (!logoutToken) return;
         try {
             await fetch(patchApiUrl('/api/auth/logout'), {method: 'POST', headers: {Authorization: `Bearer ${logoutToken}`}});
@@ -3692,6 +4029,7 @@ function patchBindEvents() {
     document.getElementById('patchProductVersionDone').onclick = () => { document.getElementById('patchProductVersionModal').hidden = true; };
     document.getElementById('patchProductVersionModal').onclick = event => { if (event.target.id === 'patchProductVersionModal') event.currentTarget.hidden = true; };
     document.getElementById('patchAnalysisRefresh').onclick = () => loadAnalysisPatches();
+    document.getElementById('patchAnalysisStatus').onchange = event => { patchState.admin.analysisStatus = event.target.value; patchState.admin.analysisPager.page = 1; loadAnalysisPatches(); };
     document.getElementById('patchAnalysisStart').onclick = () => startPatchAnalysis().catch(error => patchShowError(error.message, '补丁分析失败'));
     const toggleAnalysisSelection = (checked) => {
         patchState.admin.analysisPatches.forEach(item => { if (checked) patchState.admin.selectedAnalysisIds.add(String(item.id)); else patchState.admin.selectedAnalysisIds.delete(String(item.id)); });
@@ -3750,6 +4088,7 @@ function patchBindEvents() {
         }
     });
     document.getElementById('patchSearchBtn').onclick = () => { patchState.keyword = document.getElementById('patchKeyword').value.trim(); patchState.search.page = 1; loadPatches(); };
+    document.getElementById('patchSearchStatus').onchange = event => { patchState.searchStatus = event.target.value; patchState.search.page = 1; loadPatches(); };
     document.getElementById('patchKeyword').onkeydown = (event) => { if (event.key === 'Enter') document.getElementById('patchSearchBtn').click(); };
     document.getElementById('patchAdvancedToggle').onclick = openAdvancedSearch;
     document.getElementById('patchAdvSearch').onclick = applyAdvancedSearch;
@@ -3775,6 +4114,35 @@ function patchBindEvents() {
     adaptZone.ondragleave = () => adaptZone.classList.remove('dragging');
     adaptZone.ondrop = (event) => { event.preventDefault(); adaptZone.classList.remove('dragging'); if (event.dataTransfer.files.length) showAdaptModal(event.dataTransfer.files); };
     document.getElementById('patchAdaptStart').onclick = startAdapt;
+    document.getElementById('patchAdaptRefresh').onclick = () => loadAdaptRuns();
+    document.getElementById('patchAdaptEnv').onchange = event => {
+        const env = (patchState.admin.projectEnvs || []).find(item => String(item.id) === String(event.target.value));
+        if (env && env.code_directory) document.getElementById('patchAdaptProjectDir').value = env.code_directory;
+    };
+    document.getElementById('patchAdaptRunsBody').addEventListener('click', async event => {
+        const view = event.target.closest('button[data-adapt-view]');
+        if (view) { location.href = `/adapt_run.html?run_id=${encodeURIComponent(view.dataset.adaptView)}`; return; }
+        const del = event.target.closest('button[data-adapt-delete]');
+        if (!del) return;
+        const runId = del.dataset.adaptDelete;
+        const ok = await patchConfirm(
+            '删除后这条适配记录就没了（本机清单 + 服务器账本一起删）。\n\n不会删除补丁解压目录（<cc-web目录>\\temp\\adapt\\' + runId + '）和 cc-web 会话。',
+            '删除适配记录'
+        );
+        if (!ok) return;
+        del.disabled = true;
+        try {
+            // 带上当前 token：cc-web 用它把服务器那份也删掉（跑久了的 run 手里可能是过期 token）
+            await patchNodeCcWeb(`/api/adapt/runs/${encodeURIComponent(runId)}/delete`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ server_url: patchServerBase(), auth_token: patchToken() }),
+            });
+            await loadAdaptRuns();
+        } catch (error) {
+            del.disabled = false;
+            patchShowError(error.message, '删除失败');
+        }
+    });
     document.getElementById('patchAdaptClose').onclick = closeAdaptModal;
     document.getElementById('patchAdaptCancel').onclick = closeAdaptModal;
     document.getElementById('patchUploadItems').addEventListener('change', (event) => {
@@ -3825,6 +4193,8 @@ function patchBindEvents() {
         if (detail) showPatchDetail(detail.dataset.detailId);
         const download = event.target.closest('[data-download-id]');
         if (download) downloadPatch(download.dataset.downloadId, download.dataset.downloadName);
+        const adaptFromList = event.target.closest('[data-adapt-id]');
+        if (adaptFromList) { openAdaptFromSearch(adaptFromList.dataset.adaptId); return; }
         const mineEdit = event.target.closest('[data-mine-edit]');
         if (mineEdit) { openPatchEdit(mineEdit.dataset.mineEdit); return; }
         const mineDelete = event.target.closest('[data-mine-delete]');
@@ -3915,13 +4285,22 @@ function patchBindEvents() {
         }
     });
 
-    // 使用说明面板：登录时默认展开；刷新时同步恢复收起状态，避免闪一下
-    document.getElementById('patchHelpToggle').onclick = () => { setPatchHelpPanel(true); patchHelpSave(true); };
-    document.getElementById('patchHelpReopen').onclick = () => { setPatchHelpPanel(true); patchHelpSave(true); };
     // 登录态校验失败（网络故障）时的重试入口：直接重新加载页面重新走一遍启动流程
     document.getElementById('patchAuthRetry').onclick = () => location.reload();
-    document.getElementById('patchHelpCollapse').onclick = () => { setPatchHelpPanel(false); patchHelpSave(false); };
-    patchHelpApplyStored();
+
+    // 获取新版本：手动按钮 + 横幅上的动作
+    document.getElementById('patchUpdateCheck').onclick = () => patchUpdateCheck(true);
+    document.getElementById('patchUpdateApply').onclick = () => patchUpdateApply();
+    document.getElementById('patchUpdateDismiss').onclick = () => {
+        patchUpdateState.dismissed = true;   // 只记本次会话：刷新后还会再提示
+        document.getElementById('patchUpdateBanner').hidden = true;
+    };
+    document.getElementById('patchUpdateNotes').onclick = () => {
+        const remote = patchUpdateState.remote || {};
+        patchShowError(remote.notes || '（本次更新没有写说明）', `更新说明${remote.version ? ' · ' + remote.version : ''}`);
+    };
+    document.getElementById('patchUpdateModalClose').onclick = () => { document.getElementById('patchUpdateModal').hidden = true; };
+    document.getElementById('patchUpdateModalOk').onclick = () => { document.getElementById('patchUpdateModal').hidden = true; };
 
     // 「我的补丁」表列宽（与角色无关）：操作列 190px 容纳 详情/下载/编辑/删除 四个按钮
     initPatchColumnResize('.patch-mine-table', 'cc-web-patch-mine-col-widths-v2', [280, 170, 96, 70, 90, 96, 190], 190);

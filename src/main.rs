@@ -54,6 +54,8 @@ pub struct AppState {
     /// 智能开发节点的本机运行清单（`~/.cc-web/node_runs.json`）。
     /// 存的是前端定义的 run 对象，cc-web 不解释其字段（见 api/node_runs.rs）。
     pub node_runs: RwLock<serde_json::Map<String, serde_json::Value>>,
+    /// 补丁适配的后台执行状态（`~/.cc-web/adapt_runs.json`，见 api/adapt_bg.rs）。
+    pub adapt_runs: RwLock<std::collections::HashMap<String, api::adapt_bg::AdaptRun>>,
 }
 
 /// `~/.cc-web` 数据目录（不存在则创建）。
@@ -275,7 +277,11 @@ async fn main() -> std::io::Result<()> {
         streaming_state: RwLock::new(std::collections::HashMap::new()),
         local_executions: Mutex::new(std::collections::HashMap::new()),
         node_runs: RwLock::new(saved_node_runs),
+        adapt_runs: RwLock::new(std::collections::HashMap::new()),
     });
+
+    // 恢复补丁适配记录（重启后"执行中"的会标为失败——后台线程随进程消亡）
+    api::adapt_bg::load_adapt_runs(&data);
 
     let patch_servers = api::patch_config::patch_search_servers();
     if patch_servers.is_empty() {
@@ -300,6 +306,8 @@ async fn main() -> std::io::Result<()> {
             // 详细日志已通过 logging 系统写入文件
             // .wrap(middleware::Logger::default())
             .app_data(data.clone())
+            // 补丁包上传走 multipart：放宽请求体上限（默认偏小）
+            .app_data(web::PayloadConfig::new(500 * 1024 * 1024))
             // API routes
             .route("/api/models", web::get().to(api::models::get_models))
             .route("/api/assistants", web::get().to(api::models::list_assistants))
@@ -319,6 +327,21 @@ async fn main() -> std::io::Result<()> {
             // 原始字节/定位文件：必须在 /api/files/{path:.*} 之前注册（raw/reveal 是更具体的前缀）
             .route("/api/files/raw/{path:.*}", web::get().to(api::files::read_file_raw))
             .route("/api/files/reveal", web::post().to(api::files::reveal_file))
+            // 在本机弹系统原生「选择文件夹」对话框，选中路径回填输入框（见 folderpick.js）
+            .route("/api/pick-folder", web::get().to(api::files::pick_folder))
+            // 补丁适配（用户端）：上传补丁包并解压、检查客开工程 git 状态
+            .route("/api/adapt/upload", web::post().to(api::adapt::upload))
+            .route("/api/adapt/import", web::post().to(api::adapt::import_patch))
+            .route("/api/adapt/git-status", web::get().to(api::adapt::git_status))
+            .route("/api/adapt/start", web::post().to(api::adapt::start))
+            .route("/api/adapt/runs", web::get().to(api::adapt::list_runs))
+            .route("/api/adapt/runs/{id}", web::get().to(api::adapt::get_run))
+            .route("/api/adapt/runs/{id}/abort", web::post().to(api::adapt::abort_run))
+            .route("/api/adapt/runs/{id}/next", web::post().to(api::adapt::next_run))
+            .route("/api/adapt/runs/{id}/next-all", web::post().to(api::adapt::next_all_run))
+            .route("/api/adapt/runs/{id}/re-report", web::post().to(api::adapt::re_report))
+            .route("/api/adapt/runs/{id}/retry-failed", web::post().to(api::adapt::retry_failed))
+            .route("/api/adapt/runs/{id}/delete", web::post().to(api::adapt::delete_run))
             .route("/api/files/{path:.*}", web::get().to(api::files::read_file))
             .route("/api/local-claude/execute", web::post().to(api::local_claude::execute))
             .route("/api/local-claude/{execution_id}/cancel", web::post().to(api::local_claude::cancel))
@@ -330,6 +353,10 @@ async fn main() -> std::io::Result<()> {
             .route("/api/debug/state", web::get().to(debug_state))
             // 补丁中心配置：向前端下发 patch_search 后端地址（代码内写死，无需 patch_config.json）
             .route("/api/patch-config", web::get().to(api::patch_config::get_patch_config))
+            // 获取新版本：本机版本 + 比对补丁中心的最新版本 + 下载自替换（见 api/update.rs）
+            .route("/api/version", web::get().to(api::update::version))
+            .route("/api/update/check", web::post().to(api::update::check))
+            .route("/api/update/apply", web::post().to(api::update::apply))
             // Static files (fallback)
             .default_service(web::route().to(static_files::serve))
     });

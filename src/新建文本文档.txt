@@ -1,6 +1,3 @@
-{
-  "patch_search_servers": [
     "http://fast9.shenzhuo.vip:22664",
 	"http://fast9.shenzhuo.vip:64097"
-  ]
-}
+	"http://127.0.0.1:13587"

@@ -22,6 +22,11 @@ async-trait = "0.1"
 libc = "0.2"
 log = "0.4"
 env_logger = "0.11"
+actix-multipart = "0.8.5"
+zip = "8.6.0"
+reqwest = { version = "0.13.5", features = ["json", "blocking"] }
+rfd = "0.17"
+sha2 = "0.10"
 
 [build-dependencies]
 embed-resource = "2"

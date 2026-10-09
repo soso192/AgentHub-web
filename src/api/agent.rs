@@ -13,7 +13,7 @@ fn save_async(data: &AppState) {
 /// Save streaming event progress to session (called by the event saver task)
 /// This updates both the in-memory cache and the session file.
 fn save_event_progress(
-    data: &web::Data<AppState>,
+    data: &AppState,
     session_id: &str,
     content_blocks: &[ContentBlock],
     final_result: &str,
@@ -96,6 +96,151 @@ fn bind_claude_session_id(data: &AppState, session_id: &str, agent_session_id: &
         log::info!("[saver] session={} bound to claude session {} at start", session_id, agent_session_id);
         save_async(data);
     }
+}
+
+/// 事件落盘器：订阅会话的广播通道，把流式过程边收边写进会话。
+///
+/// 这是「跑到一半打开 / 刷新页面还能看到已产出内容」的唯一来源：它把
+/// thinking / tool_call / tool_result / chunk 折叠成 cc-web 的 content_blocks，
+/// 通过 save_event_progress 同时更新 session.messages（落盘）与 streaming_state
+/// 缓存（get_session 读它注入占位内容）；收到 `start` 事件时把 claude 的原生
+/// 会话 id 绑到会话上（--resume 靠它）；`result`/`error` 终态落盘后退出。
+///
+/// 调用方：
+/// - `start_prompt`：聊天页每发一条消息起一个（fire-and-forget，忽略返回值）。
+/// - `adapt_bg`：补丁适配后台每一轮起一个；**必须 await 返回的句柄**——适配线程用的是
+///   单线程 runtime，`block_on` 返回后 runtime 就被 drop，没跑完的任务会被直接取消，
+///   末轮的终态落盘会丢。
+pub(crate) fn spawn_event_saver(
+    data: std::sync::Arc<AppState>,
+    session_id: String,
+    assistant_name: String,
+) -> tokio::task::JoinHandle<()> {
+    // 通道不存在就没得订阅（正常流程里调用方刚建好；这里只是兜底，不 panic）
+    let Some(tx) = data.events_tx.read().unwrap().get(&session_id).cloned() else {
+        log::warn!("[saver] session={} 没有事件通道，跳过落盘", session_id);
+        return tokio::spawn(async {});
+    };
+    let mut rx = tx.subscribe();
+    log::debug!("[saver] spawning event saver task for session={}", session_id);
+
+    tokio::spawn(async move {
+        let mut content_blocks: Vec<ContentBlock> = Vec::new();
+        let mut final_result = String::new();
+        let mut last_save = std::time::Instant::now();
+        let mut event_count = 0;
+
+        loop {
+            match rx.recv().await {
+                Ok(msg) => {
+                    event_count += 1;
+                    let event: serde_json::Value = match serde_json::from_str(&msg) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    log::trace!("[saver] received event #{} for session={}, type={}", event_count, session_id, event_type);
+
+                    let mut needs_save = false;
+
+                    match event_type {
+                        "start" => {
+                            if let Some(sid) = event.get("agentSessionId").and_then(|v| v.as_str()) {
+                                bind_claude_session_id(&data, &session_id, sid);
+                            }
+                        }
+                        "thinking" => {
+                            if let Some(thinking) = event.get("thinking").and_then(|t| t.as_str()) {
+                                // Insert thinking block before any text blocks
+                                // This ensures thinking always appears at the top
+                                let insert_pos = content_blocks.iter().position(|b| matches!(b, ContentBlock::Text { .. }));
+                                if let Some(pos) = insert_pos {
+                                    content_blocks.insert(pos, ContentBlock::Thinking { thinking: thinking.to_string() });
+                                } else {
+                                    content_blocks.push(ContentBlock::Thinking { thinking: thinking.to_string() });
+                                }
+                                needs_save = true;
+                            }
+                        }
+                        "tool_call" => {
+                            let id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                            let input = event.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                            // Check if we already have a tool_use with this id (avoid duplicates from Pi Agent)
+                            let existing = content_blocks.iter_mut().find(|b| {
+                                matches!(b, ContentBlock::ToolUse { id: ref existing_id, .. } if *existing_id == id && !id.is_empty())
+                            });
+                            if let Some(ContentBlock::ToolUse { name: ref mut existing_name, input: ref mut existing_input, .. }) = existing {
+                                // Update existing block only if new input is not empty
+                                *existing_name = name;
+                                if input != serde_json::Value::Null && input != serde_json::json!({}) {
+                                    *existing_input = input;
+                                    needs_save = true;
+                                }
+                            } else if !id.is_empty() {
+                                content_blocks.push(ContentBlock::ToolUse { id, name, input });
+                                needs_save = true;
+                            }
+                        }
+                        "tool_result" => {
+                            let tool_use_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let content = event.get("output").map(|o| {
+                                if let Some(s) = o.as_str() { s.to_string() }
+                                else { o.to_string() }
+                            }).unwrap_or_default();
+                            if !tool_use_id.is_empty() {
+                                content_blocks.push(ContentBlock::ToolResult { tool_use_id, content });
+                                needs_save = true;
+                            }
+                        }
+                        "chunk" => {
+                            if let Some(new_text) = event.get("content").and_then(|c| c.as_str()) {
+                                final_result.push_str(new_text);
+                                // Update or add text block
+                                match content_blocks.last_mut() {
+                                    Some(ContentBlock::Text { text: ref mut existing }) => {
+                                        existing.push_str(new_text);
+                                    }
+                                    _ => {
+                                        content_blocks.push(ContentBlock::Text { text: new_text.to_string() });
+                                    }
+                                }
+                                // Save chunks less frequently (every 1 second)
+                                if last_save.elapsed().as_secs() >= 1 {
+                                    needs_save = true;
+                                }
+                            }
+                        }
+                        "result" => {
+                            if let Some(text) = event.get("content").and_then(|c| c.as_str()) {
+                                final_result = text.to_string();
+                            }
+                            // Final save and exit
+                            save_event_progress(&data, &session_id, &content_blocks, &final_result, &assistant_name);
+                            break;
+                        }
+                        "error" => {
+                            // Save what we have and exit
+                            save_event_progress(&data, &session_id, &content_blocks, &final_result, &assistant_name);
+                            break;
+                        }
+                        _ => {}
+                    }
+
+                    // Save if needed (thinking/tool events save immediately, chunks every 1s)
+                    if needs_save {
+                        save_event_progress(&data, &session_id, &content_blocks, &final_result, &assistant_name);
+                        last_save = std::time::Instant::now();
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    log::warn!("[saver] lagged: dropped {} events for session={}", n, session_id);
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
 }
 
 /// 只读：按 claude 的会话 id 读本机 `~/.claude/projects/*/<sid>.jsonl`，解析成 cc-web 的 Message。
@@ -290,134 +435,10 @@ pub async fn start_prompt(
 
     log::debug!("[start_prompt] tx is_some={}", tx.is_some());
 
-    // ── Spawn event saver: subscribe to broadcast channel and save events to session ──
-    // This runs in the background and captures all streaming events (thinking, tool_call,
-    // tool_result, chunk) so that if the user refreshes the page, progress is preserved.
-    if let Some(ref tx_clone) = tx {
-        let saver_rx = tx_clone.subscribe();
-        let saver_data = data.clone();
-        let saver_sid = session_id.clone();
-        let saver_assistant = assistant_name.clone();
-        log::debug!("[saver] spawning event saver task for session={}", session_id);
-        tokio::spawn(async move {
-            let mut rx = saver_rx;
-            let mut content_blocks: Vec<ContentBlock> = Vec::new();
-            let mut final_result = String::new();
-            let mut last_save = std::time::Instant::now();
-            let mut event_count = 0;
-            
-            loop {
-                match rx.recv().await {
-                    Ok(msg) => {
-                        event_count += 1;
-                        let event: serde_json::Value = match serde_json::from_str(&msg) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-                        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        log::trace!("[saver] received event #{} for session={}, type={}", event_count, saver_sid, event_type);
-                        
-                        let mut needs_save = false;
-                        
-                        match event_type {
-                            "start" => {
-                                if let Some(sid) = event.get("agentSessionId").and_then(|v| v.as_str()) {
-                                    bind_claude_session_id(&saver_data, &saver_sid, sid);
-                                }
-                            }
-                            "thinking" => {
-                                if let Some(thinking) = event.get("thinking").and_then(|t| t.as_str()) {
-                                    // Insert thinking block before any text blocks
-                                    // This ensures thinking always appears at the top
-                                    let insert_pos = content_blocks.iter().position(|b| matches!(b, ContentBlock::Text { .. }));
-                                    if let Some(pos) = insert_pos {
-                                        content_blocks.insert(pos, ContentBlock::Thinking { thinking: thinking.to_string() });
-                                    } else {
-                                        content_blocks.push(ContentBlock::Thinking { thinking: thinking.to_string() });
-                                    }
-                                    needs_save = true;
-                                }
-                            }
-                            "tool_call" => {
-                                let id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                                let input = event.get("input").cloned().unwrap_or(serde_json::Value::Null);
-                                // Check if we already have a tool_use with this id (avoid duplicates from Pi Agent)
-                                let existing = content_blocks.iter_mut().find(|b| {
-                                    matches!(b, ContentBlock::ToolUse { id: ref existing_id, .. } if *existing_id == id && !id.is_empty())
-                                });
-                                if let Some(ContentBlock::ToolUse { name: ref mut existing_name, input: ref mut existing_input, .. }) = existing {
-                                    // Update existing block only if new input is not empty
-                                    *existing_name = name;
-                                    if input != serde_json::Value::Null && input != serde_json::json!({}) {
-                                        *existing_input = input;
-                                        needs_save = true;
-                                    }
-                                } else if !id.is_empty() {
-                                    content_blocks.push(ContentBlock::ToolUse { id, name, input });
-                                    needs_save = true;
-                                }
-                            }
-                            "tool_result" => {
-                                let tool_use_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let content = event.get("output").map(|o| {
-                                    if let Some(s) = o.as_str() { s.to_string() }
-                                    else { o.to_string() }
-                                }).unwrap_or_default();
-                                if !tool_use_id.is_empty() {
-                                    content_blocks.push(ContentBlock::ToolResult { tool_use_id, content });
-                                    needs_save = true;
-                                }
-                            }
-                            "chunk" => {
-                                if let Some(new_text) = event.get("content").and_then(|c| c.as_str()) {
-                                    final_result.push_str(new_text);
-                                    // Update or add text block
-                                    match content_blocks.last_mut() {
-                                        Some(ContentBlock::Text { text: ref mut existing }) => {
-                                            existing.push_str(new_text);
-                                        }
-                                        _ => {
-                                            content_blocks.push(ContentBlock::Text { text: new_text.to_string() });
-                                        }
-                                    }
-                                    // Save chunks less frequently (every 1 second)
-                                    if last_save.elapsed().as_secs() >= 1 {
-                                        needs_save = true;
-                                    }
-                                }
-                            }
-                            "result" => {
-                                if let Some(text) = event.get("content").and_then(|c| c.as_str()) {
-                                    final_result = text.to_string();
-                                }
-                                // Final save and exit
-                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
-                                break;
-                            }
-                            "error" => {
-                                // Save what we have and exit
-                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
-                                break;
-                            }
-                            _ => {}
-                        }
-                        
-                        // Save if needed (thinking/tool events save immediately, chunks every 1s)
-                        if needs_save {
-                            save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
-                            last_save = std::time::Instant::now();
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        log::warn!("[saver] lagged: dropped {} events for session={}", n, saver_sid);
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-    }
+    // ── 事件落盘器 ──
+    // 订阅广播通道，把流式过程（thinking / tool_call / tool_result / chunk）写进会话，
+    // 这样用户刷新页面、或跑到一半打开会话，都能看到已经产出的内容。
+    spawn_event_saver(data.clone().into_inner(), session_id.clone(), assistant_name.clone());
 
     // Read and clear history context (set by switch_assistant)
     let (history_context, history_already_sent) = {

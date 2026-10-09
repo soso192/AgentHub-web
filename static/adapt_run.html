@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CC-Web 补丁适配运行详情：逐补丁展示结论与摘要。">
+    <title>适配详情 · CC-Web</title>
+    <script>try{if(localStorage.getItem('cc-web-patch-sidenav')==='0'){document.documentElement.classList.add('sidenav-collapsed');}}catch(e){}</script>
+    <script>try{document.documentElement.classList.add('patch-auth');}catch(e){}</script>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <nav class="patch-sidenav" id="patchSidenav" aria-label="主导航">
+        <button id="patchSidenavToggle" class="patch-sidenav-toggle" type="button" title="收起菜单" aria-expanded="true" aria-label="收起菜单">‹</button>
+        <!-- 菜单项由 /sidenav.js 按登录时下发的菜单权限统一渲染（四个页面共用一份定义） -->
+        <div class="patch-sidenav-items"></div>
+    </nav>
+    <div class="patch-page">
+        <header class="patch-topbar">
+            <div class="patch-brand">⚡ CC-Web</div>
+            <div class="patch-topbar-actions">
+                <span id="patchCurrentUser" class="patch-api-status"></span>
+                <button id="patchBackBtn" type="button" class="patch-secondary-btn">返回</button>
+                <button id="patchThemeToggle" class="theme-btn" type="button" title="切换主题" aria-label="切换主题">🌙</button>
+            </div>
+        </header>
+
+        <main class="patch-main node-run-main">
+            <div class="patch-card node-run-page">
+                <div class="workflow-run-header">
+                    <div><h2>适配详情</h2><span id="adaptRunSubtitle" class="workflow-result-subtitle"></span></div>
+                    <div class="workflow-run-actions">
+                        <button id="adaptRunNext" type="button" class="patch-primary-btn" hidden>继续下一步</button>
+                        <button id="adaptRunRunAll" type="button" class="patch-secondary-btn" hidden>一键跑完剩余</button>
+                        <button id="adaptRunRetryFailed" type="button" class="patch-secondary-btn" hidden>重试失败的补丁</button>
+                        <button id="adaptRunSession" type="button" class="patch-secondary-btn" hidden>查看会话</button>
+                        <button id="adaptRunAbort" type="button" class="patch-secondary-btn" hidden>中止适配</button>
+                    </div>
+                </div>
+                <div id="adaptRunMeta" class="workflow-result-meta"></div>
+
+                <section class="node-run-section">
+                    <h3>补丁列表</h3>
+                    <div id="adaptRunList"><p class="patch-muted">正在加载…</p></div>
+                </section>
+
+                <section class="node-run-section">
+                    <h3 id="adaptRunDetailTitle">补丁详情</h3>
+                    <div id="adaptRunDetail"><p class="patch-muted">请在上方选择一个补丁。</p></div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <div id="patchErrorModal" class="modal-overlay patch-notice-overlay" role="alertdialog" aria-modal="true" hidden>
+        <div class="modal patch-notice-modal">
+            <button id="patchErrorClose" class="patch-notice-close" type="button" aria-label="关闭">×</button>
+            <div class="patch-notice-icon" aria-hidden="true">!</div>
+            <div class="patch-notice-content"><h3 id="patchErrorTitle">操作失败</h3><p id="patchErrorMessage"></p></div>
+            <div class="patch-notice-footer"><button id="patchErrorConfirm" type="button" class="patch-primary-btn">我知道了</button></div>
+        </div>
+    </div>
+
+    <script src="/sidenav.js"></script>
+    <script src="/copybox.js"></script>
+    <script>
+        const PATCH_TOKEN_KEY = 'patch-search-access-token';
+        const ADAPT_ITEM_STATUS_LABEL = { pending: '待适配', running: '适配中', done: '完成', conflict: '冲突', nosource: '无源码', failed: '失败', skipped: '已跳过' };
+        // 任务级状态：多补丁任务跑完一个补丁会停在「待确认」，等用户在详情页点「继续下一步」
+        const ADAPT_RUN_STATUS_LABEL = { running: '适配中', awaiting_confirmation: '待确认', done: '已完成', failed: '失败', aborted: '已中止' };
+
+        function patchToken() { return localStorage.getItem(PATCH_TOKEN_KEY) || ''; }
+        function patchEscape(value) {
+            const div = document.createElement('div');
+            div.textContent = value == null ? '' : String(value);
+            return div.innerHTML;
+        }
+        function patchFormatDateTime(value) {
+            if (value == null || value === '') return '-';
+            const date = value instanceof Date ? value : new Date(value);
+            if (Number.isNaN(date.getTime())) return String(value);
+            const pad = n => String(n).padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+        }
+        function renderMarkdown(text) {
+            if (!text) return '';
+            let html = patchEscape(text);
+            const codeBlocks = []; const inlineCodes = [];
+            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+                const placeholder = `__CODE_BLOCK_${codeBlocks.length}__`;
+                codeBlocks.push(`<pre><code>${code}</code></pre>`);
+                return placeholder;
+            });
+            html = html.replace(/`([^`\n]+)`/g, (_, code) => {
+                const placeholder = `__INLINE_CODE_${inlineCodes.length}__`;
+                inlineCodes.push(`<code>${code}</code>`);
+                return placeholder;
+            });
+            html = html.replace(/\*\*((?:[^*]|\*(?!\*))*)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+            html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+            html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+            html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+            html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+            html = html.replace(/^---$/gm, '<hr>');
+            html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+            html = html.replace(/\n\n/g, '</p><p>');
+            html = html.replace(/\n/g, '<br>');
+            for (let i = 0; i < codeBlocks.length; i++) html = html.replace(`__CODE_BLOCK_${i}__`, codeBlocks[i]);
+            for (let i = 0; i < inlineCodes.length; i++) html = html.replace(`__INLINE_CODE_${i}__`, inlineCodes[i]);
+            if (!html.startsWith('<')) html = '<p>' + html + '</p>';
+            return html;
+        }
+        function patchShowError(message, title = '操作失败') {
+            document.getElementById('patchErrorTitle').textContent = title;
+            document.getElementById('patchErrorMessage').textContent = message || '发生未知错误。';
+            document.getElementById('patchErrorModal').hidden = false;
+        }
+        // 同源（cc-web）接口
+        async function ccWeb(path, options = {}) {
+            const response = await fetch(path, options);
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload.success === false) throw new Error(payload.error || `请求失败（HTTP ${response.status}）`);
+            return payload;
+        }
+        // 补丁中心（patch_search）接口：地址来自 /api/patch-config，token 来自 localStorage
+        let adaptServerBase = '';   // serverFetch 最近一次成功的地址；补报/继续时连当前 token 一起交给 cc-web 刷新凭据
+        async function serverFetch(path, options = {}) {
+            const token = patchToken();
+            const cfg = await ccWeb('/api/patch-config');
+            const servers = (cfg.patch_search_servers || []).map(v => String(v).trim().replace(/\/+$/, '')).filter(Boolean);
+            for (const base of servers) {
+                try {
+                    const response = await fetch(`${base}${path}`, {
+                        ...options,
+                        headers: { ...(options.headers || {}), 'Authorization': `Bearer ${token}` },
+                    });
+                    if (response.status === 401) continue;
+                    if (!response.ok) continue;
+                    const payload = await response.json().catch(() => ({}));
+                    if (payload && payload.code === 0) { adaptServerBase = base; return payload.data; }
+                } catch (error) { /* 换下一条地址 */ }
+            }
+            throw new Error('无法读取适配记录（补丁中心不可达）');
+        }
+        function kvRow(label, value) {
+            const text = value == null || value === '' ? '—' : String(value);
+            return `<div class="node-run-kv-row"><span class="node-run-kv-key">${patchEscape(label)}</span><span class="node-run-kv-value">${patchEscape(text)}</span></div>`;
+        }
+
+        let adaptRunId = '';
+        let adaptLocalSessionId = '';
+        let adaptLocalAgentSid = '';
+        let adaptLocalStatus = '';
+        let adaptReReportedFor = '';   // 本次进页已为哪条 run 补报过（失败也不重试，防循环）
+
+        // 本机清单与服务器账本是否已经对不上（状态 / 补丁数 / 四类计数）。
+        // 对不上说明服务器那份停在旧状态——多半是适配跑久了 JWT 过期、后台上报一直 401。
+        function adaptNeedsReReport(local, server) {
+            const items = local.items || [];
+            const counts = { done: 0, conflict: 0, nosource: 0, failed: 0 };
+            items.forEach(item => { if (counts[item.status] !== undefined) counts[item.status] += 1; });
+            return String(server.status || '') !== String(local.status || '')
+                || Number(server.patch_count || 0) !== items.length
+                || Number(server.succeeded_count || 0) !== counts.done
+                || Number(server.conflict_count || 0) !== counts.conflict
+                || Number(server.nosource_count || 0) !== counts.nosource
+                || Number(server.failed_count || 0) !== counts.failed;
+        }
+
+        // 用当前 token 让 cc-web 把本机这份 run 重推给补丁中心（顺带刷新它手里的旧 token）。
+        async function adaptReReport(runId) {
+            let base = adaptServerBase;
+            if (!base) {
+                const cfg = await ccWeb('/api/patch-config');
+                base = (cfg.patch_search_servers || [])[0] || '';
+            }
+            await ccWeb(`/api/adapt/runs/${encodeURIComponent(runId)}/re-report`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ server_url: base, auth_token: patchToken() }),
+            });
+        }
+
+        async function loadRun() {
+            const runId = new URLSearchParams(location.search).get('run_id');
+            const meta = document.getElementById('adaptRunMeta');
+            if (!runId) { meta.innerHTML = '<span class="patch-muted">缺少 run_id 参数。</span>'; return; }
+            adaptRunId = runId;
+            document.getElementById('adaptRunSubtitle').textContent = `运行 ID：${runId}`;
+            let data;
+            try {
+                data = await serverFetch(`/api/patch-adapt/runs/${encodeURIComponent(runId)}`);
+            } catch (error) {
+                meta.innerHTML = `<span class="patch-muted">读取适配记录失败：${patchEscape(error.message)}</span>`;
+                return;
+            }
+            const run = (data && data.run) || {};
+            const items = (data && data.items) || [];
+            // 本机 cc-web 里可能有实时状态与会话 id（跨机器时取不到）
+            let local = null;
+            try { local = (await ccWeb(`/api/adapt/runs/${encodeURIComponent(runId)}`)).data; } catch (error) { /* 不在本机 */ }
+            if (local && local.session_id) adaptLocalSessionId = local.session_id;
+            if (local && local.agent_session_id) adaptLocalAgentSid = local.agent_session_id;
+            adaptLocalStatus = (local && local.status) || '';
+
+            // 本机清单与服务器账本不一致 → 先用当前 token 补报，再重拉服务器数据渲染。
+            // 适配可能跑很久（暂停、隔天继续），登录 JWT 过期后后台拿旧 token 上报会一直 401，
+            // 服务器就停在旧状态（补丁明明完成了、这里还显示「适配中」）。本机清单才是事实来源。
+            // 只修"服务器上有这条、但对不上"的：服务器上根本没有 = 用户删过/清过库，不复活它。
+            // 每次进页只补一次，失败就按现有数据渲染，不重试（防失败循环）。
+            if (local && run.local_run_id && adaptReReportedFor !== runId && adaptNeedsReReport(local, run)) {
+                adaptReReportedFor = runId;
+                try {
+                    await adaptReReport(runId);
+                    return loadRun();   // 补报成功：重拉一遍服务器数据再渲染
+                } catch (error) { /* 补报失败：按现有数据渲染 */ }
+            }
+
+            const status = ADAPT_RUN_STATUS_LABEL[run.status] || run.status || '';
+            meta.innerHTML =
+                `<span class="workflow-result-status">${patchEscape(status)}</span>` +
+                `<span>产品·版本：${patchEscape(`${run.product_name || ''} ${run.product_version || ''}`.trim() || '—')}</span>` +
+                `<span>补丁数：${patchEscape(String(run.patch_count || 0))}</span>` +
+                `<span>成功/冲突/无源码/失败：${Number(run.succeeded_count) || 0} / ${Number(run.conflict_count) || 0} / ${Number(run.nosource_count) || 0} / ${Number(run.failed_count) || 0}</span>` +
+                `<span>执行机器：${patchEscape(run.client_host || '—')}</span>` +
+                `<span>开始：${patchEscape(patchFormatDateTime(run.started_at))}</span>` +
+                `<span>结束：${patchEscape(patchFormatDateTime(run.finished_at))}</span>`;
+
+            document.getElementById('adaptRunSession').hidden = !adaptLocalSessionId;
+            // 中止：正在跑、或停在待确认都能中止（后者没有线程在跑，由后端就地收尾）
+            document.getElementById('adaptRunAbort').hidden = !((run.status === 'running' || run.status === 'awaiting_confirmation') && adaptLocalSessionId);
+            // 继续下一步 / 一键跑完剩余：只在本机有这条 run、且停在待确认时可用 ——
+            // 要接着跑的那个 claude 会话只在本机，换台机器点了也没意义
+            // （所以判据用本机 run 的 status，不用服务器账本的）。
+            const pendingItems = ((local && local.items) || items).filter(item => item.status === 'pending');
+            const nextItem = pendingItems[0] || {};
+            const paused = !!(local && local.status === 'awaiting_confirmation');
+            const nextBtn = document.getElementById('adaptRunNext');
+            nextBtn.hidden = !(paused && nextItem.seq);
+            if (!nextBtn.hidden) nextBtn.textContent = `继续下一步（补丁 #${Number(nextItem.seq) || ''}）`;
+            // 只剩最后一个补丁时，「一键跑完剩余」和「继续下一步」是同一件事，就不重复给了
+            document.getElementById('adaptRunRunAll').hidden = !(paused && pendingItems.length > 1);
+            // 重试失败的补丁：本机有这条 run、有失败的补丁、且当前没在跑（跑着的时候不给动）
+            const failedCount = ((local && local.items) || items).filter(item => item.status === 'failed').length;
+            document.getElementById('adaptRunRetryFailed').hidden = !(local && failedCount > 0 && local.status !== 'running');
+
+            adaptItems = items;
+            renderAdaptList();
+            // 默认选中第一个补丁
+            selectAdaptItem(items.length ? items[0].seq : null);
+        }
+
+        let adaptItems = [];
+        let adaptSelectedSeq = null;
+
+        // 补丁列表（可点选）
+        function renderAdaptList() {
+            const box = document.getElementById('adaptRunList');
+            if (!adaptItems.length) { box.innerHTML = '<p class="patch-muted">（无补丁明细）</p>'; return; }
+            box.innerHTML = adaptItems.map(item => {
+                const label = ADAPT_ITEM_STATUS_LABEL[item.status] || item.status || '';
+                const active = Number(item.seq) === Number(adaptSelectedSeq);
+                return `<div class="node-run-artifact-item node-artifact-clickable" data-adapt-seq="${Number(item.seq) || ''}"
+                             style="${active ? 'border-color:var(--accent);' : ''}">
+                    <span class="node-run-artifact-label">#${Number(item.seq) || ''}</span>
+                    <span class="node-run-artifact-name">${patchEscape(item.patch_name || '')}</span>
+                    <span class="patch-muted">${patchEscape(label)}</span>
+                </div>`;
+            }).join('');
+        }
+
+        // 选中某个补丁 → 下方展示它的结论/摘要
+        function selectAdaptItem(seq) {
+            adaptSelectedSeq = seq;
+            renderAdaptList();
+            const box = document.getElementById('adaptRunDetail');
+            const item = adaptItems.find(i => Number(i.seq) === Number(seq));
+            if (!item) {
+                document.getElementById('adaptRunDetailTitle').textContent = '补丁详情';
+                box.innerHTML = '<p class="patch-muted">请在上方选择一个补丁。</p>';
+                return;
+            }
+            document.getElementById('adaptRunDetailTitle').textContent = `补丁 #${Number(item.seq) || ''}：${item.patch_name || ''}`;
+            const label = ADAPT_ITEM_STATUS_LABEL[item.status] || item.status || '';
+            // 文本框一律自适应高度（md-box-auto 去掉 260px 下限）：内容一行就一行高、几行就几行高，
+            // 长到 max-height（58vh）才内部滚动——这几个字段短的时候（一条路径 / 一个「无」）很多，
+            // 固定下限会留出大片空白。
+            const block = (title, text, md) => (text == null || text === '') ? ''
+                : `<div style="margin-top:10px"><div class="node-run-kv-key">${patchEscape(title)}</div>` +
+                  (md ? `<div class="md-box md-box-auto text-block">${renderMarkdown(String(text))}</div>`
+                      : `<pre class="session-pre">${patchEscape(String(text))}</pre>`) + `</div>`;
+            // 五块都按 markdown 渲染：claude 写的内容里带 `代码`、**粗体**、列表、标题，
+            // 按纯文本显示会把这些符号原样露出来（摘要顶上的 "# 摘要：" 最明显）。
+            box.innerHTML =
+                `<div class="node-run-kv-row"><span class="node-run-kv-key">状态</span><span class="node-run-kv-value">${patchEscape(label)}</span></div>` +
+                `<div class="node-run-kv-row"><span class="node-run-kv-key">要解决的问题</span><span class="node-run-kv-value">${patchEscape(item.problem_desc || '—')}</span></div>` +
+                block('结论', item.output_conclusion, true) +
+                block('摘要', item.output_summary, true) +
+                block('改动文件', item.changed_files, true) +
+                block('冲突详情', item.conflict_detail, true) +
+                block('说明', item.note, true);
+        }
+        document.getElementById('adaptRunList').addEventListener('click', event => {
+            const row = event.target.closest('[data-adapt-seq]');
+            if (row) selectAdaptItem(row.dataset.adaptSeq);
+        });
+
+        document.getElementById('patchBackBtn').onclick = () => { location.href = '/patches.html?tab=adapt'; };
+        document.getElementById('adaptRunSession').onclick = () => {
+            if (!adaptLocalSessionId) return;
+            // 同时传 session（cc-web 会话）和 history（claude 会话）：
+            // 聊天页优先用 cc-web 会话（能看到后台保存的对话）；cc-web 会话不在了退到 claude jsonl 只读回放。
+            let url = `/chat.html?session=${encodeURIComponent(adaptLocalSessionId)}`;
+            if (adaptLocalAgentSid) url += `&history=${encodeURIComponent(adaptLocalAgentSid)}`;
+            window.open(url, '_blank');
+        };
+        // 「继续下一步」/「一键跑完剩余」：都是让后端接着跑，只是后者之后不再停。
+        // 请求体带上当前可用的地址与 token，让 cc-web 把 run 的上报凭据一并刷新——
+        // 否则暂停隔久了（JWT 过期），之后每一轮的上报都会 401。
+        async function adaptContinue(action, btn) {
+            btn.disabled = true;
+            try {
+                const result = await ccWeb(`/api/adapt/runs/${encodeURIComponent(adaptRunId)}/${action}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ server_url: adaptServerBase, auth_token: patchToken() }),
+                });
+                patchShowError(result.message || '已继续', '补丁适配');
+                await loadRun();
+            } catch (error) {
+                patchShowError(error.message, '操作失败');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+        document.getElementById('adaptRunNext').onclick = () => adaptContinue('next', document.getElementById('adaptRunNext'));
+        document.getElementById('adaptRunRunAll').onclick = () => adaptContinue('next-all', document.getElementById('adaptRunRunAll'));
+        // 重试失败的补丁：只把 failed 放回队列（整轮已结束时顺带退回「待确认」），
+        // 不自动开跑——之后由用户点「继续下一步 / 一键跑完剩余」决定什么时候跑
+        document.getElementById('adaptRunRetryFailed').onclick = async () => {
+            const btn = document.getElementById('adaptRunRetryFailed');
+            btn.disabled = true;
+            try {
+                const result = await ccWeb(`/api/adapt/runs/${encodeURIComponent(adaptRunId)}/retry-failed`, { method: 'POST' });
+                patchShowError(result.message || '已放回队列', '补丁适配');
+                await loadRun();
+            } catch (error) {
+                patchShowError(error.message, '重试失败');
+            } finally {
+                btn.disabled = false;
+            }
+        };
+        document.getElementById('adaptRunAbort').onclick = async () => {
+            const paused = adaptLocalStatus === 'awaiting_confirmation';
+            const tip = paused
+                ? '中止后：剩余未适配的补丁将标记为跳过。\n\n确认中止？'
+                : '中止后：当前正在执行的补丁会先完成，之后剩余补丁将标记为跳过。\n\n确认中止？';
+            if (!confirm(tip)) return;
+            try {
+                const result = await ccWeb(`/api/adapt/runs/${encodeURIComponent(adaptRunId)}/abort`, { method: 'POST' });
+                patchShowError(result.message || '中止请求已提交', '适配');
+                loadRun();
+            } catch (error) { patchShowError(error.message, '中止失败'); }
+        };
+        document.getElementById('patchErrorClose').onclick = () => { document.getElementById('patchErrorModal').hidden = true; };
+        document.getElementById('patchErrorConfirm').onclick = () => { document.getElementById('patchErrorModal').hidden = true; };
+        document.getElementById('patchThemeToggle').onclick = () => {
+            const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+            document.documentElement.dataset.theme = next;
+            try { localStorage.setItem('cc-web-theme', next); } catch (e) {}
+        };
+        try { const saved = localStorage.getItem('cc-web-theme'); if (saved) document.documentElement.dataset.theme = saved; } catch (e) {}
+        document.getElementById('patchSidenavToggle').onclick = () => {
+            const collapsed = document.documentElement.classList.toggle('sidenav-collapsed');
+            try { localStorage.setItem('cc-web-patch-sidenav', collapsed ? '0' : '1'); } catch (e) {}
+        };
+        loadRun();
+    </script>
+</body>
+</html>

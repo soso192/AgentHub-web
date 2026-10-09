@@ -6,7 +6,6 @@
     <meta name="description" content="CC-Web 智能开发运行详情，展示单次智能开发的完整运行数据。">
     <meta name="theme-color" content="#f7f8fa">
     <title>运行详情 · CC-Web</title>
-    <script>try{if(localStorage.getItem('cc-web-help-panel')==='closed'){document.documentElement.classList.add('help-panel-closed');}}catch(e){}</script>
     <script>try{if(localStorage.getItem('cc-web-patch-sidenav')==='0'){document.documentElement.classList.add('sidenav-collapsed');}}catch(e){}</script>
     <script>try{document.documentElement.classList.add('patch-auth');}catch(e){}</script>
     <link rel="stylesheet" href="/style.css">
@@ -14,60 +13,8 @@
 <body>
     <nav class="patch-sidenav" id="patchSidenav" aria-label="主导航">
         <button id="patchSidenavToggle" class="patch-sidenav-toggle" type="button" title="收起菜单" aria-expanded="true" aria-label="收起菜单">‹</button>
-        <div class="patch-sidenav-items">
-            <a class="patch-sidenav-item" data-sidenav-tab="node" href="/patches.html?tab=node" title="智能开发">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-                <span class="patch-sidenav-label">智能开发</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="smart" href="/patches.html?tab=smart" title="智能分析">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                <span class="patch-sidenav-label">智能分析</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="search" href="/patches.html?tab=search" title="普通检索">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                <span class="patch-sidenav-label">普通检索</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="upload" href="/patches.html?tab=upload" title="补丁上传">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-                <span class="patch-sidenav-label">补丁上传</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="mine" href="/patches.html?tab=mine" title="我的补丁">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                <span class="patch-sidenav-label">我的补丁</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="flow" href="/patches.html?tab=flow" title="流程设置">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
-                <span class="patch-sidenav-label">流程设置</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="prompt" href="/patches.html?tab=prompt" title="提示词设置">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-                <span class="patch-sidenav-label">提示词设置</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="template" href="/patches.html?tab=template" title="流程模板设置">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                <span class="patch-sidenav-label">流程模板设置</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="analysis" href="/patches.html?tab=analysis" title="待分析补丁">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
-                <span class="patch-sidenav-label">待分析补丁</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="product" href="/patches.html?tab=product" title="产品版本管理">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
-                <span class="patch-sidenav-label">产品版本管理</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="directory" href="/patches.html?tab=directory" title="工作目录">
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path></svg>
-                <span class="patch-sidenav-label">工作目录</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="project_env" href="/patches.html?tab=project_env" title="产品环境变量" hidden>
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"></path></svg>
-                <span class="patch-sidenav-label">产品环境变量</span>
-            </a>
-            <a class="patch-sidenav-item" data-sidenav-tab="menus" href="/patches.html?tab=menus" title="菜单可见性" hidden>
-                <svg class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
-                <span class="patch-sidenav-label">菜单可见性</span>
-            </a>
-        </div>
+        <!-- 菜单项由 /sidenav.js 按登录时下发的菜单权限统一渲染（四个页面共用一份定义） -->
+        <div class="patch-sidenav-items"></div>
     </nav>
     <div class="patch-page">
         <header class="patch-topbar">
@@ -158,6 +105,8 @@
             </div>
         </div>
     </div>
+    <script src="/sidenav.js"></script>
+    <script src="/copybox.js"></script>
     <script>
     (function () {
         'use strict';
@@ -603,19 +552,6 @@
                 patchShowError(error.message, '读取文件失败');
             }
         }
-        // 侧边栏随菜单权限显隐（与列表页一致）：管理员全量可见；「智能开发」页签在运行详情页始终可见。
-        // 旧后端（无 menus 字段）时只对 analysis/product 按 admin 收敛，flow/prompt/template 保持可见。
-        function applyNodeSidebarVisibility(me) {
-            const isAdmin = me.role === 'admin';
-            const keys = Array.isArray(me.menus) ? me.menus : null;
-            document.querySelectorAll('.patch-sidenav-item[data-sidenav-tab]').forEach(item => {
-                const tab = item.dataset.sidenavTab;
-                if (tab === 'node') return; // 智能开发始终可见
-                if (tab === 'menus') { item.hidden = !isAdmin; return; } // 管理端，硬编码 admin-only
-                if (keys) item.hidden = !keys.includes(tab);
-                else if (tab === 'analysis' || tab === 'product') item.hidden = !isAdmin;
-            });
-        }
         // 当前登录用户：逐条地址试 /api/auth/me（单条 8s 超时），失败返回 null。
         // 右上角用户标签 + 详情归属过滤共用这一次请求。
         async function fetchCurrentUserMe(token) {
@@ -655,12 +591,7 @@
             const mePromise = fetchCurrentUserMe(token);
             mePromise.then(me => {
                 const label = document.getElementById('patchCurrentUser');
-                if (me) {
-                    label.textContent = `${me.display_name || me.username || '—'} (${me.role || '—'})`;
-                    applyNodeSidebarVisibility(me);
-                } else {
-                    label.textContent = '—';
-                }
+                label.textContent = me ? `${me.display_name || me.username || '—'} (${me.role || '—'})` : '—';
             });
             loadRun(runId, mePromise);
 
@@ -705,28 +636,7 @@
                 if (item) nodeRunOpenArtifact(item.dataset.artifactPath).catch(error => patchShowError(error.message, '打开产物失败'));
             });
         }
-        // 左侧固定导航：折叠/展开 + 高亮当前（运行详情归入「智能开发」）
-        (function patchSidenavInit() {
-            const toggle = document.getElementById('patchSidenavToggle');
-            const syncToggle = () => {
-                if (!toggle) return;
-                const collapsed = document.documentElement.classList.contains('sidenav-collapsed');
-                toggle.textContent = collapsed ? '›' : '‹';
-                toggle.title = collapsed ? '展开菜单' : '收起菜单';
-                toggle.setAttribute('aria-label', toggle.title);
-                toggle.setAttribute('aria-expanded', String(!collapsed));
-            };
-            if (toggle) toggle.addEventListener('click', () => {
-                const collapsed = document.documentElement.classList.toggle('sidenav-collapsed');
-                try { localStorage.setItem('cc-web-patch-sidenav', collapsed ? '0' : '1'); } catch {}
-                syncToggle();
-            });
-            syncToggle();
-            const nav = document.getElementById('patchSidenav');
-            if (nav) nav.querySelectorAll('.patch-sidenav-item').forEach(item => {
-                item.classList.toggle('active', item.dataset.sidenavTab === 'node');
-            });
-        })();
+        // 左侧导航（折叠/展开、菜单显隐、当前页高亮）统一由 /sidenav.js 负责，本页不再自己维护
 
         patchInitTheme();
         initPage();

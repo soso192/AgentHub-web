@@ -505,10 +505,12 @@ function renderSessionList() {
 // It syncs the topbar assistant/model selectors, loads messages
 // from the backend (if not already loaded), and shows the session view.
 let selectSessionGeneration = 0; // 竞态条件保护：每次调用递增，丢弃过期调用
-// ── 智能开发会话只读 ──
-// 判定某 cc-web 会话是不是「智能开发节点」创建的：在 node_runs.json（/api/node/runs）里按 session_id 反查。
-// 是的话，聊天页只允许查看：隐藏输入框与发送按钮（sendBtn 在 inputArea 内，藏一个即可），并显示提示条。
-// 判定粒度是「会话属于智能开发」，不区分入口（点「查看会话」或手动从列表点开都一样只读）。
+// ── 后台任务会话只读 ──
+// 判定某 cc-web 会话是不是「后台任务」创建的：智能开发节点（/api/node/runs）或补丁适配
+// （/api/adapt/runs）。两者的会话都由后台线程驱动，用户在聊天页插话会打乱它们的上下文
+// ——适配还是多个补丁共用同一个 --resume 会话，插一句就直接错位。
+// 命中就只读：隐藏输入框与发送/停止按钮（两者都在 inputArea 内），并显示提示条。
+// 判定粒度是「会话属于后台任务」，不区分入口（点「查看会话」或手动从列表点开都一样只读）。
 let nodeRunsCache = null;
 let nodeRunsCacheAt = 0;
 async function isNodeRunSession(sessionId) {
@@ -521,15 +523,35 @@ async function isNodeRunSession(sessionId) {
     }
     return nodeRunsCache.some(run => String(run.session_id) === String(sessionId));
 }
+let adaptRunsCache = null;
+let adaptRunsCacheAt = 0;
+async function isAdaptRunSession(sessionId) {
+    const now = Date.now();
+    if (!adaptRunsCache || now - adaptRunsCacheAt > 30000) {
+        const res = await fetch(`${API_BASE}/api/adapt/runs`);
+        const data = await res.json().catch(() => ({}));
+        adaptRunsCache = Array.isArray(data.data) ? data.data : [];
+        adaptRunsCacheAt = now;
+    }
+    return adaptRunsCache.some(run => String(run.session_id) === String(sessionId));
+}
+// 同步版（读上面同一份缓存）：给事件处理里不能 await 的分支用（补丁适配的"这一轮结束"判定）。
+// 缓存在每次 selectSession 时由 refreshInputReadonlyState 填好，到那时一般已经是热的。
+function isAdaptRunSessionCached(sessionId) {
+    return Array.isArray(adaptRunsCache) && adaptRunsCache.some(run => String(run.session_id) === String(sessionId));
+}
 async function refreshInputReadonlyState() {
     const banner = document.getElementById('nodeReadonlyBanner');
     const sid = currentSessionId;
     if (!sid) { if (banner) banner.style.display = 'none'; return; }
-    let isNode = false;
-    try { isNode = await isNodeRunSession(sid); } catch {}
+    let isBackground = false;
+    try {
+        const [isNode, isAdapt] = await Promise.all([isNodeRunSession(sid), isAdaptRunSession(sid)]);
+        isBackground = isNode || isAdapt;
+    } catch {}
     if (sid !== currentSessionId) return; // 查询期间用户已切到别的会话
-    if (isNode) {
-        inputArea.style.display = 'none'; // 输入框 + 发送按钮一起隐藏
+    if (isBackground) {
+        inputArea.style.display = 'none'; // 输入框 + 发送/停止按钮一起隐藏
         if (banner) banner.style.display = 'block';
     } else if (banner) {
         banner.style.display = 'none';
@@ -604,7 +626,7 @@ async function selectSession(sessionId) {
     welcomeScreen.style.display = 'none';
     chatContainer.style.display = 'flex'; chatContainer.style.flexDirection = 'column';
     inputArea.style.display = 'block';
-    // 智能开发创建的会话 → 聊天页只读（隐藏输入框 + 发送按钮，显示提示条）
+    // 后台任务（智能开发 / 补丁适配）创建的会话 → 聊天页只读（隐藏输入框 + 发送/停止按钮，显示提示条）
     refreshInputReadonlyState();
 
     // If backend says this session is still streaming but frontend has no connection,
@@ -1394,6 +1416,9 @@ function handleStreamEvent(sessionId, event) {
                     if (!st.contentBlocks.some(b => b.type === 'text')) st.contentBlocks.push({ type: 'text', text: event.content });
                 }
             }
+            // 补丁适配是「同一个会话跑多个补丁」：一轮 result 只代表**这个补丁**跑完了，
+            // 整轮是否结束由后端另发 adapt_paused / adapt_finished 明确告知（见 softFinishTurn）。
+            if (isAdaptRunSessionCached(sessionId)) { softFinishTurn(sessionId, st); break; }
             finishStreaming(sessionId);
             break;
         case 'error':
@@ -1401,9 +1426,40 @@ function handleStreamEvent(sessionId, event) {
             const ee = document.createElement('div');
             ee.className = 'error-block'; ee.textContent = `Error: ${event.message}`;
             st.contentDiv.appendChild(ee);
+            // 某一轮出错也一样：这一轮到此为止，整轮由 adapt_* 事件收尾
+            if (isAdaptRunSessionCached(sessionId)) { softFinishTurn(sessionId, st); break; }
+            finishStreaming(sessionId);
+            break;
+        // ── 补丁适配自己的两个边界事件（后端 adapt_bg 的 send_session_event 发的）──
+        // 收到它们才真的收尾关连接。为什么不能只看 result：自动模式（一键跑完剩余）下
+        // 中间那些补丁的 result 之后连接必须保持不断，否则第 2 个补丁起就看不到实时了。
+        case 'adapt_paused':
+        case 'adapt_finished':
             finishStreaming(sessionId);
             break;
     }
+}
+
+/**
+ * 补丁适配的「这一个补丁跑完了」：只收尾本轮渲染，**不关连接**。
+ *
+ * 把本轮最后一段文本定稿、清空累加器，让下一个补丁的事件另起一块继续渲染；
+ * 连接、心跳、超时、promptSent 全部保持——所以补丁之间是连着的，零丢事件。
+ * 真正的收尾（关连接、清 LIVE 标志）等后端的 adapt_paused / adapt_finished 事件。
+ */
+function softFinishTurn(sessionId, st) {
+    if (st.contentDiv) {
+        const lt = st.contentDiv.querySelector('.text-block:last-child');
+        if (lt) lt.dataset.finalized = 'true'; // 下一轮的 chunk 才会另起一块，不会续写本轮
+    }
+    if (st.streamingDiv) st.streamingDiv.classList.remove('streaming');
+    st.streamingDiv = null;
+    st.contentDiv = null;
+    st.hasContent = false;
+    st.finalResult = '';
+    st.contentBlocks = [];
+    st.toolCallMap = {};
+    console.log(`[SSE] 本轮适配补丁结束，等后端告知整轮是否继续 for session ${sessionId}`);
 }
 
 /**
@@ -2095,27 +2151,6 @@ function initFileBrowserResize() {
         localStorage.setItem('cc-web-file-browser-height', fileBrowser.offsetHeight);
     });
 }
-
-// 使用说明面板：登录时默认展开；刷新保留当前状态（同步应用，避免刷新时闪一下）
-function setupHelpPanel() {
-    const helpPanel = document.getElementById('helpPanel');
-    const setHelpPanel = (open) => {
-        document.documentElement.classList.toggle('help-panel-closed', !open);
-        helpPanel.classList.toggle('closed', !open);
-        helpPanel.setAttribute('aria-hidden', String(!open));
-        document.getElementById('helpToggle').setAttribute('aria-expanded', String(open));
-        document.getElementById('helpCollapse').setAttribute('aria-expanded', String(open));
-        document.getElementById('helpReopen').hidden = open;
-    };
-    const saveHelpState = (open) => { try { localStorage.setItem('cc-web-help-panel', open ? 'open' : 'closed'); } catch {} };
-    document.getElementById('helpToggle').onclick = () => { setHelpPanel(true); saveHelpState(true); };
-    document.getElementById('helpReopen').onclick = () => { setHelpPanel(true); saveHelpState(true); };
-    document.getElementById('helpCollapse').onclick = () => { setHelpPanel(false); saveHelpState(false); };
-    let stored = '';
-    try { stored = localStorage.getItem('cc-web-help-panel') || ''; } catch {}
-    setHelpPanel(stored !== 'closed');
-}
-setupHelpPanel();
 
 init();
 
