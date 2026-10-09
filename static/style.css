@@ -1507,6 +1507,8 @@ body.patch-col-resizing * { cursor: col-resize !important; user-select: none !im
 .patch-update-text { line-height: 1.5; }
 .patch-update-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 .patch-update-body { padding: 14px 18px; font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); }
+/* 版本表格里的「最新」标记 */
+.patch-release-latest { display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent); }
 .patch-code-block { background: var(--code-bg); color: var(--code-text); border-radius: var(--radius-sm); padding: 14px; overflow: auto; white-space: pre-wrap; font: 12px/1.5 var(--font-mono); }
 .patch-detail-actions { margin-top: 10px; margin-bottom: 10px; text-align: right; }
 @media (prefers-reduced-motion: reduce) {

@@ -17,7 +17,7 @@
     const TOKEN_KEY = 'patch-search-access-token';
     const COLLAPSE_KEY = 'cc-web-patch-sidenav';
     // 前端专属的管理员项（不在服务器 MENU_KEYS 里，admin 也不会由 /api/auth/me 下发）
-    const ADMIN_ONLY = ['menus', 'sessions'];
+    const ADMIN_ONLY = ['menus', 'sessions', 'release'];
     // 取不到用户时的兜底：等价于服务器 DEFAULT_VISIBLE（analysis / product 默认对普通用户隐藏）
     const DEFAULT_HIDDEN = ['analysis', 'product'];
 
@@ -39,6 +39,7 @@
         {key: 'project_env', label: '产品环境变量', icon: '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"></path>'},
         {key: 'menus', label: '菜单可见性', icon: '<line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line>'},
         {key: 'sessions', label: '会话存档', icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>'},
+        {key: 'release', label: '版本发布', icon: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line>'},
     ];
 
     // 当前页对应哪个菜单项：三个详情页按页面名，主页面按 ?tab=

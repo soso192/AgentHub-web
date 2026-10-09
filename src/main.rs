@@ -230,7 +230,8 @@ async fn main() -> std::io::Result<()> {
     logging::init();
 
     // ── 启动横幅（直接输出到控制台）──
-    println!("🚀 CC-Web server starting...");
+    // 带上版本号：一眼能看出正在跑的是哪一版（版本号来自 Cargo.toml，发版前要改它）
+    println!("🚀 CC-Web server starting... v{}", env!("CARGO_PKG_VERSION"));
     println!("📍 {}", WEB_URL);
 
     // Initialize AI assistant registry

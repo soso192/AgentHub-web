@@ -72,6 +72,11 @@ pub async fn pick_folder(query: web::Query<PickFolderQuery>) -> HttpResponse {
 }
 
 /// 阻塞式弹目录选择框（跑在 spawn_blocking 线程里）：Ok(Some(绝对路径)) / Ok(None)=取消 / Err=失败
+///
+/// 平台差异：Windows 用 rfd 的 IFileDialog；macOS 用系统自带 osascript `choose folder`
+/// （rfd 在 mac 要求主线程+事件循环，服务器线程里用不了）。Linux **不编译 rfd**（它要
+/// wayland/gtk 系统库，CI 与产物都背不动），明确提示手动输入——Linux 的 cc-web 本来
+/// 就是无界面跑的，弹不出对话框也无意义。
 #[cfg(target_os = "macos")]
 fn pick_folder_blocking(start: Option<&str>) -> Result<Option<String>, String> {
     // AppleScript 源码里嵌路径：转义反斜杠和双引号
@@ -105,13 +110,20 @@ fn pick_folder_blocking(start: Option<&str>) -> Result<Option<String>, String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+// Windows 走 rfd（IFileDialog）。Linux 不编译 rfd（见上方平台差异说明），走明确报错分支。
+#[cfg(target_os = "windows")]
 fn pick_folder_blocking(start: Option<&str>) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new().set_title("选择文件夹");
     if let Some(dir) = start {
         dialog = dialog.set_directory(dir);
     }
     Ok(dialog.pick_folder().map(|path| path.to_string_lossy().to_string()))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn pick_folder_blocking(start: Option<&str>) -> Result<Option<String>, String> {
+    let _ = start;
+    Err("该平台不支持图形目录选择，请手动输入路径".to_string())
 }
 
 pub async fn list_files(query: web::Query<ListFilesQuery>) -> HttpResponse {

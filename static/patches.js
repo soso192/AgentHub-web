@@ -113,9 +113,15 @@ function applyMenuVisibility(user, isAdmin) {
     if (configTab) configTab.hidden = !isAdmin;
     const sessionsTab = document.querySelector('.patch-tab[data-tab="sessions"]');
     if (sessionsTab) sessionsTab.hidden = !isAdmin;
+    // 版本发布：前端专属的管理员页签（与 menus / sessions 同款，不进服务器菜单配置表）
+    const releaseTab = document.querySelector('.patch-tab[data-tab="release"]');
+    if (releaseTab) releaseTab.hidden = !isAdmin;
     // 侧边栏不再跟着页签走：/sidenav.js 直接按同一份菜单权限渲染（四个页面共用一份定义）
-    // 登录后自动查一次新版本（只查一次；有 token 才查，失败静默不打扰）
-    if (authenticated && !patchUpdateState.checked) {
+    // 登录后自动查一次新版本（只查一次；失败静默不打扰）。
+    // 注意这里能判断"已登录"的变量是 user（本函数没有 patchSetAuthenticated 里的
+    // authenticated——上一个版本就是把它写错成了 authenticated，登录后在这里抛
+    // ReferenceError，把后面的用户名/退出按钮/列表加载全部截断了）
+    if (user && !patchUpdateState.checked) {
         patchUpdateState.checked = true;
         patchUpdateCheck(false).catch(() => {});
     }
@@ -355,6 +361,19 @@ function patchSetMessage(message, error = false) {
 
 function patchToken() { return localStorage.getItem(PATCH_TOKEN_KEY) || ''; }
 
+// 右上角「与补丁中心是否通」的状态。**由认证结果驱动**，不要只在列表加载时改：
+//   - 登录成功 / /api/auth/me 校验成功 → 已连接（那一刻确实连通了）
+//   - 退出登录 / 登录失效 → 未连接（以前没人改它，退出后还挂着"已连接"）
+//   - /api/auth/me 网络失败 → 连接失败
+// 列表加载（loadPatches）仍会按查询结果覆盖它，作为"数据能不能取到"的补充信号。
+function patchSetApiStatus(state) {
+    const el = document.getElementById('patchApiStatus');
+    if (!el) return;
+    if (state === 'online') { el.textContent = '已连接'; el.className = 'patch-api-status online'; }
+    else if (state === 'error') { el.textContent = '连接失败'; el.className = 'patch-api-status error'; }
+    else { el.textContent = '未连接'; el.className = 'patch-api-status'; }
+}
+
 function patchSetAuthenticated(user) {
     const login = document.getElementById('patchLoginCard');
     const layout = document.getElementById('patchAuthLayout');
@@ -362,6 +381,9 @@ function patchSetAuthenticated(user) {
     const logout = document.getElementById('patchLogout');
     const authenticated = Boolean(user);
     const isAdmin = authenticated && user.role === 'admin';
+    // 认证结果一出就刷新连接状态：登录成功/校验成功=已连接，退出或失效=未连接。
+    // 放在这里是为了不等 loadPatches（首次列表查询可能慢，以前要等它回来才变"已连接"）
+    patchSetApiStatus(authenticated ? 'online' : 'offline');
     // 普通检索表：操作列宽度按角色定——普通用户 详情/下载/适配（3 个按钮 ≈ 102px），
     // 管理员多 编辑/删除（5 个按钮 ≈ 170px）。**宽度要含单元格左右内边距（各 18px）**，
     // 否则 fixed 布局 + td{overflow:hidden} 会把末尾的按钮裁掉。
@@ -452,6 +474,10 @@ function patchSetAuthenticated(user) {
     if (logout) logout.hidden = !authenticated;
     const userSettings = document.getElementById('patchUserSettings');
     if (userSettings) userSettings.hidden = !authenticated;
+    // 检查更新同样只在登录后显示：它要拿浏览器的 token 去问补丁中心，
+    // 未登录时常显只会占着「退出」平时的位置，看起来像退出按钮丢了
+    const updateCheck = document.getElementById('patchUpdateCheck');
+    if (updateCheck) updateCheck.hidden = !authenticated;
 }
 
 function patchHandleUnauthorized() {
@@ -548,6 +574,7 @@ async function patchRestoreAuth() {
         // 只有服务端明确返回 401（patchRequest 已置 authInvalidated 并清掉 token）才算登录失效；
         // 网络不通/超时等临时故障保留 token，停在 pending 提示上让用户重试，避免刷新时被误踢回登录页。
         if (patchState.authInvalidated) { patchHandleUnauthorized(); return false; }
+        patchSetApiStatus('error');   // 连不上：状态别停在"已连接"
         patchShowAuthRetry(error.message);
         return false;
     }
@@ -586,23 +613,49 @@ async function patchUpdateCheck(manual = false) {
     }
 }
 
+// 三个平台槽位：与 patch_search 的发布目录、CI 的三个产物一一对应。
+// 定义在使用点之前 —— 之前吃过"函数里引用了后面才定义的 const"的亏（登录后抛 ReferenceError）
+const RELEASE_PLATFORMS = [
+    {key: 'windows', label: 'Windows', field: 'windows'},
+    {key: 'macos-arm64', label: 'macOS (Apple Silicon)', field: 'macos_arm64'},
+    {key: 'macos-x64', label: 'macOS (Intel)', field: 'macos_x64'},
+];
+
+// 平台键 → 给人看的名字（平台键由 cc-web 在编译期决定，见 api/update.rs）
+function patchPlatformLabel(key) {
+    const found = RELEASE_PLATFORMS.find(item => item.key === key);
+    if (found) return found.label;
+    return key ? key : '未知平台';
+}
+
 function patchUpdateRender(manual) {
     const banner = document.getElementById('patchUpdateBanner');
     if (!banner) return;
     const remote = patchUpdateState.remote;
+    const platform = patchPlatformLabel(patchUpdateState.local && patchUpdateState.local.platform);
     if (!patchUpdateState.available || patchUpdateState.dismissed) {
         banner.hidden = true;
         if (manual) {
             patchShowError(
-                remote ? '本机与服务器上的程序一致，已是最新版本。' : '补丁中心还没有发布 cc-web 新版本。',
+                remote
+                    ? `本机版本 ${(patchUpdateState.local && patchUpdateState.local.version) || ''} 已是最新。`
+                    // 服务器上可能只发布了别的平台：把本机平台说出来，用户不用猜
+                    : `补丁中心还没有发布本机平台（${platform}）的 cc-web 新版本。`,
                 '检查更新',
             );
         }
         return;
     }
     const when = remote && remote.build_unix ? patchFormatDateTime(new Date(Number(remote.build_unix) * 1000)) : '';
-    document.getElementById('patchUpdateText').textContent =
-        `发现新版本 ${remote.version || ''}${when ? `（构建 ${when}）` : ''}，本机当前 ${(patchUpdateState.local && patchUpdateState.local.version) || ''}。`;
+    const mine = (patchUpdateState.local && patchUpdateState.local.version) || '';
+    const text = remote && remote.has_package === false
+        // 最新版本存在但没有本平台的包：这不是"可更新"，得说清楚（否则用户点了会失败）
+        ? `最新版本 ${remote.version || ''} 暂无 ${platform} 的安装包，请联系管理员。`
+        : `发现新版本 ${remote.version || ''}（${platform}${when ? `，构建 ${when}` : ''}），本机当前 ${mine}。`;
+    document.getElementById('patchUpdateText').textContent = text;
+    // 没有本平台安装包时不给「立即更新」按钮，免得点了必然失败
+    const applyBtn = document.getElementById('patchUpdateApply');
+    if (applyBtn) applyBtn.hidden = Boolean(remote && remote.has_package === false);
     banner.hidden = false;
 }
 
@@ -677,6 +730,178 @@ async function patchUpdateApply() {
     }
 }
 
+/* ── 版本发布（管理员）：把各平台的 cc-web 新程序上传到补丁中心 ──
+   见 patch_search 的 routes/ccweb_update.py：**服务器自己写进发布目录**，
+   所以只要"浏览器能打开本页"就能发版，不需要 U 盘 / 共享盘 / 本地工具。
+   只更新选了文件的平台（可以今天只发 Windows，明天补 macOS）。 */
+// 拉全部已发布版本渲染表格（每个版本一行，标出各平台有无与是否最新）
+async function loadReleaseInfo() {
+    const body = document.getElementById('patchReleaseBody');
+    const versionEl = document.getElementById('patchReleaseVersion');
+    if (!body) return;
+    body.innerHTML = '<tr><td colspan="7" class="patch-empty">正在加载...</td></tr>';
+    try {
+        const rows = (await patchRequest('/api/ccweb/versions')) || [];
+        if (versionEl) {
+            const latest = rows.find(item => item.is_latest);
+            versionEl.textContent = latest
+                ? `当前最新版本：${latest.version}（发布于 ${patchFormatDateTime(latest.published_at)}）`
+                : '还没有发布过任何版本，或未设置最新版本。';
+        }
+        if (!rows.length) {
+            body.innerHTML = '<tr><td colspan="7" class="patch-empty">还没有发布过任何版本</td></tr>';
+            return;
+        }
+        body.innerHTML = rows.map(item => {
+            const has = key => Boolean((item.platforms || {})[key]);
+            const mark = key => has(key) ? '✓' : '—';
+            const notes = item.notes
+                ? `<span class="patch-truncated-name" title="${patchEscape(item.notes)}">${patchEscape(patchNodeInline(item.notes, 24))}</span>`
+                : '—';
+            const latestTag = item.is_latest
+                ? '<span class="patch-release-latest">最新</span>'
+                : `<button class="patch-link-btn" data-release-set-latest="${patchEscape(item.version)}">设为最新</button>`;
+            return `<tr><td><b>${patchEscape(item.version)}</b></td>` +
+                `<td>${mark('windows')}</td><td>${mark('macos-arm64')}</td><td>${mark('macos-x64')}</td>` +
+                `<td>${notes}</td><td>${patchEscape(patchFormatDateTime(item.published_at))}</td>` +
+                `<td>${latestTag}</td></tr>`;
+        }).join('');
+    } catch (error) {
+        body.innerHTML = `<tr><td colspan="7" class="patch-empty">加载失败：${patchEscape(error.message)}</td></tr>`;
+        if (versionEl) versionEl.textContent = '';
+    }
+}
+
+// 把某个已发布版本设为最新（提升或回滚都走这里）
+async function setReleaseLatest(version) {
+    const ok = await patchConfirm(
+        `把版本 ${version} 设为最新？\n\n所有版本号不是 ${version} 的开发机都会提示有新版本；缺平台的机器会提示"暂无本平台安装包"。`,
+        '设为最新版本',
+    );
+    if (!ok) return;
+    try {
+        await patchRequest('/api/ccweb/latest', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({version}),
+        });
+        const pageMessage = document.getElementById('patchReleaseMessage');
+        if (pageMessage) {
+            pageMessage.classList.remove('error');
+            pageMessage.textContent = `已把 ${version} 设为最新版本。`;
+        }
+        loadReleaseInfo();
+    } catch (error) {
+        patchShowError(error.message, '设置失败');
+    }
+}
+
+// 打开/关闭发布弹窗（表单在弹窗里，见 patches.html 的 #patchReleaseModal）
+function openReleaseModal() {
+    const modal = document.getElementById('patchReleaseModal');
+    const form = document.getElementById('patchReleaseForm');
+    if (!modal || !form) return;
+    form.reset();
+    RELEASE_PLATFORMS.forEach(item => {
+        const note = document.querySelector(`[data-release-note="${item.field}"]`);
+        if (note) note.textContent = '未选择';
+    });
+    document.getElementById('patchReleaseModalMessage').textContent = '';
+    document.getElementById('patchReleaseProgress').style.display = 'none';
+    modal.hidden = false;
+}
+
+function closeReleaseModal() {
+    const modal = document.getElementById('patchReleaseModal');
+    if (modal) modal.hidden = true;
+}
+
+function submitRelease() {
+    const form = document.getElementById('patchReleaseForm');
+    const message = document.getElementById('patchReleaseModalMessage');
+    const progress = document.getElementById('patchReleaseProgress');
+    const submit = document.getElementById('patchReleaseSubmit');
+    if (!form || !message || !progress || !submit) return;
+    const bar = progress.querySelector('span');
+    const label = progress.querySelector('em');
+
+    // 版本号可以留空：服务器会沿用该平台上次的版本号（都没有才按时间生成）
+    const version = String(form.elements.version.value || '').trim();
+    const picked = RELEASE_PLATFORMS
+        .map(item => ({...item, file: (form.elements[item.field].files || [])[0]}))
+        .filter(item => item.file);
+    if (!picked.length) { patchShowError('至少要选一个平台的可执行文件', '版本发布'); return; }
+
+    const servers = patchState.patchSearchServers;
+    const token = patchToken();
+    if (!servers.length || !token) { patchShowError('补丁中心地址或登录凭据缺失，请刷新页面重试', '版本发布'); return; }
+
+    const formData = new FormData();
+    formData.append('version', version);
+    formData.append('notes', String(form.elements.notes.value || '').trim());
+    formData.append('set_latest', form.elements.set_latest && form.elements.set_latest.checked ? '1' : '0');
+    picked.forEach(item => {
+        formData.append(item.field, item.file, item.file.name);
+        // 浏览器知道文件的修改时间（≈构建时间），比服务器收到的时间更准
+        formData.append(`${item.field}_build_unix`, String(Math.floor((item.file.lastModified || Date.now()) / 1000)));
+    });
+
+    const start = patchState.patchServerCursor % servers.length;
+    patchState.patchServerCursor = start + 1;
+    submit.disabled = true;
+    message.classList.remove('error');
+    message.textContent = `正在上传 ${picked.length} 个文件…`;
+    progress.style.display = 'flex';
+    bar.style.width = '0%';
+    label.textContent = '';
+
+    const finish = (text, failed) => {
+        message.textContent = text;
+        message.classList.toggle('error', Boolean(failed));
+        progress.style.display = 'none';
+        submit.disabled = false;
+    };
+    // 多地址回退：连不上/超时才换下一条；拿到 HTTP 响应就以它为准（与补丁上传同口径）
+    const attempt = (at) => {
+        if (at >= servers.length) { finish('发布失败：所有服务地址都无法连接', true); return; }
+        const base = servers[(start + at) % servers.length].replace(/\/+$/, '');
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${base}/api/ccweb/publish`);
+        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.timeout = 1800000;
+        xhr.upload.onprogress = (event) => {
+            if (!event.lengthComputable) return;
+            const percent = Math.round(event.loaded / event.total * 100);
+            bar.style.width = `${percent}%`;
+            label.textContent = `上传中 ${percent}%`;
+        };
+        xhr.onload = () => {
+            let payload = {};
+            try { payload = JSON.parse(xhr.responseText); } catch (error) { payload = {}; }
+            if (xhr.status === 401) { patchHandleUnauthorized(); finish('登录已失效，请重新登录', true); return; }
+            if (xhr.status >= 200 && xhr.status < 300 && payload.code === 0) {
+                const data = payload.data || {};
+                const labels = picked.map(item => item.label).join('、');
+                closeReleaseModal();
+                const pageMessage = document.getElementById('patchReleaseMessage');
+                if (pageMessage) {
+                    const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+                    pageMessage.classList.toggle('error', warnings.length > 0);
+                    pageMessage.textContent = warnings.length
+                        ? `已发布 ${version}（${labels}），但有需要注意的地方： ${warnings.join(' ')}`
+                        : `发布完成：版本 ${data.version || version}（${labels}）${data.is_latest ? '，已设为最新版本' : ''}。开发机下次「检查更新」即可看到。`;
+                }
+                loadReleaseInfo();
+                return;
+            }
+            finish(`发布失败：${payload.detail || payload.message || `HTTP ${xhr.status}`}`, true);
+        };
+        xhr.onerror = () => attempt(at + 1);
+        xhr.ontimeout = () => attempt(at + 1);
+        xhr.send(formData);
+    };
+    attempt(0);
+}
+
 async function loadPatches() {
     if (!patchToken() || patchState.authInvalidated) return;
     const generation = ++patchState.searchGeneration;
@@ -697,14 +922,12 @@ async function loadPatches() {
         document.getElementById('patchTotal').textContent = `共 ${data.total} 个`;
         patchRenderPager('search');
         body.innerHTML = data.items.length ? data.items.map(patchRow).join('') : '<tr><td colspan="8" class="patch-empty">暂无补丁</td></tr>';
-        document.getElementById('patchApiStatus').textContent = '已连接';
-        document.getElementById('patchApiStatus').className = 'patch-api-status online';
+        patchSetApiStatus('online');
     } catch (error) {
         if (generation !== patchState.searchGeneration) return;
         body.innerHTML = '<tr><td colspan="8" class="patch-empty">加载失败，请重试</td></tr>';
         if (!patchState.authInvalidated) patchShowError(error.message, '补丁列表加载失败');
-        document.getElementById('patchApiStatus').textContent = '连接失败';
-        document.getElementById('patchApiStatus').className = 'patch-api-status error';
+        patchSetApiStatus('error');
     } finally {
         if (generation === patchState.searchGeneration) { body.setAttribute('aria-busy', 'false'); searchButton.disabled = false; }
     }
@@ -1751,6 +1974,8 @@ function patchSwitchTab(tab) {
     if (tab === 'menus' && patchToken() && !patchState.authInvalidated && patchState.user?.role === 'admin') { loadMenuRoleConfig(); loadMenuUsers(); }
     // 会话存档（管理员专属）
     if (tab === 'sessions' && patchToken() && !patchState.authInvalidated && patchState.user?.role === 'admin') loadRunSessions();
+    // 版本发布（管理员专属）：进页签拉一次当前已发布的清单
+    if (tab === 'release' && patchToken() && !patchState.authInvalidated && patchState.user?.role === 'admin') loadReleaseInfo();
     patchSetSidenavActive(tab);
 }
 
@@ -4301,6 +4526,26 @@ function patchBindEvents() {
     };
     document.getElementById('patchUpdateModalClose').onclick = () => { document.getElementById('patchUpdateModal').hidden = true; };
     document.getElementById('patchUpdateModalOk').onclick = () => { document.getElementById('patchUpdateModal').hidden = true; };
+
+    // 版本发布（管理员）：刷新现状 + 提交上传 + 选中文件后显示文件名与大小
+    document.getElementById('patchReleaseRefresh').onclick = () => loadReleaseInfo();
+    document.getElementById('patchReleaseNew').onclick = () => openReleaseModal();
+    document.getElementById('patchReleaseClose').onclick = () => closeReleaseModal();
+    document.getElementById('patchReleaseCancel').onclick = () => closeReleaseModal();
+    document.getElementById('patchReleaseModal').onclick = event => { if (event.target.id === 'patchReleaseModal') closeReleaseModal(); };
+    document.getElementById('patchReleaseSubmit').onclick = () => submitRelease();
+    // 版本表格里的「设为最新」（提升或回滚）
+    document.getElementById('patchReleaseBody').addEventListener('click', event => {
+        const button = event.target.closest('button[data-release-set-latest]');
+        if (button) setReleaseLatest(button.dataset.releaseSetLatest);
+    });
+    document.getElementById('patchReleaseForm').addEventListener('change', event => {
+        const input = event.target.closest('input[type="file"]');
+        if (!input) return;
+        const note = document.querySelector(`[data-release-note="${input.name}"]`);
+        const file = input.files && input.files[0];
+        if (note) note.textContent = file ? `${file.name}（${patchFormatSize(file.size)}）` : '未选择';
+    });
 
     // 「我的补丁」表列宽（与角色无关）：操作列 190px 容纳 详情/下载/编辑/删除 四个按钮
     initPatchColumnResize('.patch-mine-table', 'cc-web-patch-mine-col-widths-v2', [280, 170, 96, 70, 90, 96, 190], 190);

@@ -1,6 +1,6 @@
 //! 「获取新版本」：查最新版本 + 下载并自替换 cc-web.exe。
 //!
-//! 版本源是 patch_search（`GET /api/ccweb/latest` + `/latest/download`），发新版的人
+//! 版本源是 patch_search（`GET /api/ccweb/latest?platform=…` + `/api/ccweb/download/<平台>`），发新版的人
 //! 只需把 exe 放进服务器的发布目录（见 patch_search 的 config.yaml `ccweb_update.dir`）。
 //!
 //! **token 为什么由前端带**：cc-web 自己没有登录态（token 存在浏览器 localStorage 里），
@@ -14,8 +14,11 @@
 //!   由使用者手动替换后重启——mac 上一般从终端启动 cc-web，自动 nohup 重启会把进程
 //!   从终端剥离（以后 Ctrl+C 停不掉），不如把这两步交回使用者。
 //!
-//! **「是不是新版」按 sha256 不同判断**：版本号字符串长期停在 1.0.0 比不出来，
-//! 文件时间戳跨机器时钟不可靠；摘要不同就是不同的二进制，最实在。
+//! **「是不是新版」按版本号判断**：本机版本号（编译期 `Cargo.toml` 的 version）≠ 服务器上的
+//! 「最新版本号」→ 提示更新。所以**发版前必须先改 Cargo.toml 的 version 再编译**，
+//! 否则那批客户端会一直提示更新（服务器端发布时会扫二进制里有没有这个版本号来提醒）。
+//! sha256 只用于下载完整性校验，不参与"要不要更新"的判断。
+//! 最新版本里没有本平台的包时，服务器回 `has_package=false`，这里明确报"暂无本平台的安装包"。
 
 use actix_web::{web, HttpResponse};
 use serde::Deserialize;
@@ -28,6 +31,26 @@ pub struct UpdateRequest {
     pub server_url: String,
     pub auth_token: String,
 }
+
+/// 本机平台键，与 patch_search 的发布槽位一一对应（见 app/routes/ccweb_update.py）：
+/// windows / macos-arm64 / macos-x64，分别对应 CI 的三个产物。
+/// 其它平台（Linux 等）没有发布槽位 —— 检查更新时明确说"不提供自动更新"，
+/// 免得报一个看不懂的 HTTP 400。
+#[cfg(target_os = "windows")]
+const PLATFORM: &str = "windows";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const PLATFORM: &str = "macos-arm64";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const PLATFORM: &str = "macos-x64";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const PLATFORM: &str = "";
+
+/// 版本号哨兵：`CCWEB-VERSION:<版本>`。
+///
+/// 发布时服务器靠它确认"这个二进制确实是用这个版本号编译出来的"——直接去二进制里找裸版本号
+/// 会误判（exe 里本来就有别的依赖的版本串，比如某个 crate 的 `1.0.1`），必须用这个唯一前缀。
+/// 它随 `/api/version` 返回，保证不会被优化掉、确实留在二进制里。
+pub const VERSION_MARKER: &str = concat!("CCWEB-VERSION:", env!("CARGO_PKG_VERSION"));
 
 /// 本机 exe 路径（自更新的目标就是它）
 fn current_exe() -> Result<PathBuf, String> {
@@ -59,7 +82,13 @@ fn exe_meta() -> Result<serde_json::Value, String> {
         .unwrap_or(0);
     Ok(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
+        // 版本号哨兵：发布端拿它核对"这包是不是用这个版本号编译的"（见 patch_search 的 ccweb_update.py）。
+        // 放在返回里同时保证它不会被编译器优化掉（确实留在二进制中）。
+        "marker": VERSION_MARKER,
         "build_unix": env!("CCWEB_BUILD_UNIX"),
+        // 本机平台键（windows / macos-arm64 / macos-x64；其它平台为空串）：
+        // 前端拿它给"没有发布本平台版本"之类的提示带上平台名，用户不用猜
+        "platform": PLATFORM,
         "exe_path": path.to_string_lossy(),
         "exe_mtime": mtime,
         "size": meta.len(),
@@ -75,9 +104,19 @@ pub async fn version() -> HttpResponse {
     }
 }
 
-/// 拉补丁中心的最新版本信息（blocking reqwest，调用方负责放进 spawn_blocking）
+/// 拉补丁中心上**本平台**的最新版本信息（blocking reqwest，调用方负责放进 spawn_blocking）。
+///
+/// `?platform=windows|macos-arm64|macos-x64` 只回该平台的扁平条目；
+/// 老版本 patch_search 没有这个参数、回的是顶层扁平字段，字段名一致，所以照样能读。
 fn fetch_remote(server_url: &str, auth_token: &str) -> Result<Option<serde_json::Value>, String> {
-    let url = format!("{}/api/ccweb/latest", server_url.trim_end_matches('/'));
+    if PLATFORM.is_empty() {
+        return Err("该平台暂不提供 cc-web 自动更新，请手动替换程序".to_string());
+    }
+    let url = format!(
+        "{}/api/ccweb/latest?platform={}",
+        server_url.trim_end_matches('/'),
+        PLATFORM
+    );
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -114,10 +153,19 @@ pub async fn check(body: web::Json<UpdateRequest>) -> HttpResponse {
 
     match result {
         Ok(Ok((local, remote))) => {
-            let available = match remote.as_ref().and_then(|value| value.get("sha256")).and_then(|v| v.as_str()) {
-                // 摘要不同 = 服务器上是另一份二进制 → 提示可更新
-                Some(remote_sha) => local.get("sha256").and_then(|v| v.as_str()) != Some(remote_sha),
-                None => false,   // 服务器还没发布过版本
+            // 判断口径：**本机版本号 ≠ 最新版本号 → 有新版本**。
+            // 本机版本号来自编译期（Cargo.toml 的 version），所以发版前必须改版本号再编译。
+            // 两种情况不算"可更新"：
+            //   - 服务器还没发布过（remote = null）
+            //   - 最新版本里没有本平台的包（has_package=false）→ 前端提示"暂无本平台安装包"，
+            //     而不是给一个点下去 404 的"可更新"
+            let available = match remote.as_ref() {
+                None => false,
+                Some(value) if value.get("has_package").and_then(|v| v.as_bool()) == Some(false) => false,
+                Some(value) => {
+                    value.get("version").and_then(|v| v.as_str()).unwrap_or("")
+                        != local.get("version").and_then(|v| v.as_str()).unwrap_or("")
+                }
             };
             HttpResponse::Ok().json(serde_json::json!({
                 "success": true,
@@ -269,19 +317,24 @@ fn apply_blocking(
 ) -> Result<serde_json::Value, String> {
     use std::io::{Read, Write};
 
-    // 1) 先问清楚服务器上是哪一份（拿 sha256 校验用）
+    // 1) 先问清楚最新版本是什么（版本号用于判断 + 拼下载地址，sha256 用于下载完整性校验）
     let remote = fetch_remote(server_url, auth_token)?
         .ok_or_else(|| "补丁中心还没有发布 cc-web 新版本".to_string())?;
+    if remote.get("has_package").and_then(|v| v.as_bool()) == Some(false) {
+        let version = remote.get("version").and_then(|v| v.as_str()).unwrap_or("");
+        return Err(format!("最新版本 {version} 暂无本平台的安装包，请联系管理员"));
+    }
+    let remote_version = remote.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let remote_sha = remote.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let remote_size = remote.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-    if remote_sha.is_empty() {
-        return Err("服务器返回的版本信息不完整（缺 sha256）".to_string());
+    if remote_version.is_empty() || remote_sha.is_empty() {
+        return Err("服务器返回的版本信息不完整".to_string());
     }
     let local = exe_meta()?;
-    if local.get("sha256").and_then(|v| v.as_str()) == Some(remote_sha.as_str()) {
+    if local.get("version").and_then(|v| v.as_str()) == Some(remote_version.as_str()) {
         return Ok(serde_json::json!({
             "success": true,
-            "message": "本机已经是最新版本，无需更新",
+            "message": format!("本机已经是最新版本（{remote_version}），无需更新"),
         }));
     }
 
@@ -299,7 +352,13 @@ fn apply_blocking(
         .timeout(std::time::Duration::from_secs(900))
         .build()
         .map_err(|error| format!("创建下载客户端失败：{error}"))?;
-    let url = format!("{}/api/ccweb/latest/download", server_url.trim_end_matches('/'));
+    // 地址里带上版本号：下载期间管理员即使把"最新版本"改了，也拿的是刚检查到的那个版本
+    let url = format!(
+        "{}/api/ccweb/download/{}/{}",
+        server_url.trim_end_matches('/'),
+        remote_version,
+        PLATFORM
+    );
     let mut response = client
         .get(&url)
         .header("Authorization", format!("Bearer {auth_token}"))

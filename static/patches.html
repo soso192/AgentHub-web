@@ -27,7 +27,7 @@
                 <span id="patchApiStatus" class="patch-api-status">未连接</span>
                 <span id="patchCurrentUser" class="patch-api-status"></span>
                 <button id="patchUserSettings" class="patch-secondary-btn" hidden>用户设置</button>
-                <button id="patchUpdateCheck" class="patch-secondary-btn" type="button" title="检查 cc-web 是否有新版本">检查更新</button>
+                <button id="patchUpdateCheck" class="patch-secondary-btn" type="button" title="检查 cc-web 是否有新版本" hidden>检查更新</button>
                 <button id="patchLogout" class="patch-secondary-btn" hidden>退出</button>
                 <button id="patchThemeToggle" class="theme-btn" type="button" title="切换主题" aria-label="切换主题">🌙</button>
             </div>
@@ -75,6 +75,7 @@
                 <button class="patch-tab" data-tab="project_env" hidden>产品环境变量</button>
                 <button class="patch-tab" data-tab="menus" hidden>菜单可见性</button>
                 <button class="patch-tab" data-tab="sessions" hidden>会话存档</button>
+                <button id="patchReleaseTab" class="patch-tab" data-tab="release" hidden>版本发布</button>
             </div>
 
             <section id="patchTabSearch" class="patch-tab-panel">
@@ -285,6 +286,18 @@
                     <div class="patch-pager" data-pager="sessions"></div>
                 </div>
             </section>
+
+            <section id="patchTabRelease" class="patch-tab-panel">
+                <div class="patch-card admin-panel">
+                    <div class="admin-section-header">
+                        <div><h2>版本发布</h2><p>上传各平台的 cc-web 新程序，开发机在顶栏「检查更新」里就能一键更新。<b>只更新选了文件的平台</b>，其余平台保持原样；<b>版本号与更新说明按平台各存一份</b>（补发 mac 填新版本号不会影响 Windows 的显示）；发布本身不影响任何正在运行的任务。</p></div>
+                        <div class="patch-release-actions"><button id="patchReleaseRefresh" class="patch-secondary-btn" type="button">刷新</button><button id="patchReleaseNew" class="patch-primary-btn" type="button">发布</button></div>
+                    </div>
+                    <div id="patchReleaseMessage" class="patch-message"></div>
+                    <p id="patchReleaseVersion" class="patch-muted"></p>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>版本号</th><th>Windows</th><th>macOS ARM</th><th>macOS Intel</th><th>更新说明</th><th>发布时间</th><th>最新</th></tr></thead><tbody id="patchReleaseBody"><tr><td colspan="7" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                </div>
+            </section>
                 </div>
             </div>
         </main>
@@ -299,6 +312,25 @@
                 <div id="patchUpdateProgress" class="patch-progress" style="display:none; margin:10px 0 18px;"><span></span><em></em></div>
             </div>
             <div class="modal-footer"><button id="patchUpdateModalOk" class="btn-primary" type="button" hidden>知道了</button></div>
+        </div>
+    </div>
+
+    <!-- 版本发布：上传各平台 cc-web 新程序（服务器自己写进发布目录） -->
+    <div id="patchReleaseModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3>发布 cc-web 新版本</h3><button id="patchReleaseClose" class="modal-close" type="button">×</button></div>
+            <form id="patchReleaseForm" class="patch-admin-form">
+                <label>版本号<span class="patch-required">*</span><input name="version" maxlength="64" required placeholder="如：1.0.1"><small class="patch-muted">必须与编译时 Cargo.toml 里的 version 一致</small></label>
+                <label>更新说明<textarea name="notes" rows="3" placeholder="显示在开发机的更新提示里（可留空）"></textarea></label>
+                <label>Windows 程序<input type="file" name="windows" accept=".exe"><small class="patch-muted" data-release-note="windows">未选择</small></label>
+                <label>macOS · Apple Silicon<input type="file" name="macos_arm64"><small class="patch-muted" data-release-note="macos_arm64">未选择</small></label>
+                <label>macOS · Intel<input type="file" name="macos_x64"><small class="patch-muted" data-release-note="macos_x64">未选择</small></label>
+                <label class="template-context-option"><input type="checkbox" name="set_latest" checked> 发布后设为最新版本</label>
+                <p class="patch-muted">程序会存到 <code>发布目录/&lt;版本号&gt;/&lt;平台&gt;/</code>。判断更新的口径是<b>版本号</b>：本机版本号不等于"最新版本号"就提示。补发某个平台时用同一个版本号再发一次即可（其余平台不受影响）。</p>
+            </form>
+            <div id="patchReleaseProgress" class="patch-progress" style="display:none; margin:10px 0 18px;"><span></span><em></em></div>
+            <div id="patchReleaseModalMessage" class="patch-message"></div>
+            <div class="modal-footer"><button id="patchReleaseCancel" type="button" class="btn-cancel">取消</button><button id="patchReleaseSubmit" type="button" class="btn-primary">上传发布</button></div>
         </div>
     </div>
 

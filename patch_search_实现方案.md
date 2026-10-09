@@ -250,17 +250,40 @@ python -m PyInstaller --noconfirm patch_search.spec
 新库按序执行 `schema/001_workflow.sql → 002_auth.sql → 005_workflow_directory.sql`；
 已有库按需执行 `schema/migration_*.sql`（执行前核对线上表名/索引名）。当前全量表结构见 `schema/current_schema.sql`。
 
-### 7.6 发布 cc-web 新版本（更新机制）
+### 7.6 发布 cc-web 新版本（管理员网页发版，按版本号 + 平台）
 
-```powershell
-:: 服务器 A 上：把新 exe 放进发布目录（或用脚本一并生成 version.json）
-python scripts\make_ccweb_release.py D:\path\to\cc-web.exe -v 2026-10-09.1 -n "更新说明"
+**在网页上发**：管理员登录补丁中心 → 左侧「版本发布」页签（仅管理员可见）→ 点「发布」→
+填版本号 + 更新说明 + 选文件 → 「上传发布」。**服务器自己写进发布目录**，不需要 U 盘 / 共享盘 / 本地工具。
+
+发布目录布局：
 ```
-- 客户端「检查更新」按 **sha256 不同**判断有新版；「立即更新」= cc-web 直连下载 → 校验 →
-  `update-cc-web.bat` 在进程退出后替换并重启（自动设 `CC_WEB_MCP_CONFIG`，留 `.bak` 备份）
-- **只替换 cc-web.exe**，不动 mcp-servers.json / java_compiler_mcp / start.bat
-- macOS：下载+校验后**不自动替换**，提示手动替换（新文件已加执行权限，落 `<原名>.new`）
-- 前提：**服务器上的 patch_search 必须是含 `/api/ccweb/*` 路由的版本**（旧版返回 404）
+<发布目录>/                     (= patch_search config.yaml 的 ccweb_update.dir)
+├── latest.json                 {"latest":"1.0.2"}  ← 管理员维护的「最新版本号」
+├── 1.0.0/{meta.json, windows/cc-web.exe, macos-arm64/…, macos-x64/…}
+└── 1.0.2/{meta.json, macos-arm64/cc-web-macos-arm64}
+```
+
+**判断更新的口径：版本号**（本机版本号 ≠ 最新版本号 → 提示有新版）。
+所以 **发版前必须先改 `Cargo.toml` 的 `version` 再编译** —— 客户端在编译期把自己"是谁"写进程序里
+（另有哨兵串 `CCWEB-VERSION:<版本>` 供服务器核对）。发布时服务器会扫这个哨兵：
+
+- 找不到 → 回一条醒目警告：「可能忘了把 Cargo.toml 的 version 改成 X 就编译了，那批客户端会一直提示更新」
+- 该版本缺平台 → 回警告：这些平台的客户端会提示「最新版本 X 暂无本平台安装包」
+- 警告**不拦提交**（有时就是要先发一个平台），但页面会红字显示
+
+**补发某个平台**：点「发布」→ 填**同一个版本号** → 只选那个平台的文件 → 提交，其余平台不受影响。
+
+**设为最新 / 回滚**：版本表格里每个非最新版本都有「设为最新」按钮（`POST /api/ccweb/latest`）。
+回滚就是把旧版本重新设为最新 —— 版本号回到旧值，各机器会提示"有新版本"（其实是在降到旧版）。
+
+**客户端**：登录后自动查一次 + 顶栏「检查更新」。有新版 → 横幅 + 「立即更新」：
+- Windows：下载 → 校验 sha256 → `update-cc-web.bat` 在进程退出后替换并重启（自动设 `CC_WEB_MCP_CONFIG`，留 `.bak`）
+- macOS：下载校验后**不自动替换**，提示手动替换（新文件已加执行权限，落 `<原名>.new`）
+- 最新版本没有本平台的包 → 提示「暂无本平台安装包，请联系管理员」，不给「立即更新」按钮
+- **只替换 cc-web 程序**，不动 mcp-servers.json / java_compiler_mcp / start.bat
+- **发布本身不打断任何人**；只有某台机器点了「立即更新」才会重启那台 cc-web
+  （正在跑的智能开发/适配会中断，停在「待确认」的不受影响）
+- 前提：服务器上的 patch_search 必须是含 `/api/ccweb/*` 路由的版本（旧版返回 404）
 
 ---
 

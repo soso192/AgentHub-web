@@ -1,6 +1,6 @@
 [package]
 name = "cc-web"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Claude Code Web Interface - A web-based UI for Claude Code CLI"
 
@@ -25,8 +25,14 @@ env_logger = "0.11"
 actix-multipart = "0.8.5"
 zip = "8.6.0"
 reqwest = { version = "0.13.5", features = ["json", "blocking"] }
-rfd = "0.17"
 sha2 = "0.10"
+
+# 目录选择对话框：只在 Windows/macOS 编译。rfd 在 Linux 上要 wayland/gtk 系统库
+# （CI 报 wayland-sys 找不到 wayland-client 就是它），而 Linux 的 cc-web 本来就是
+# 无界面跑的——弹不出对话框也无意义，pick_folder_blocking 在 Linux 走"手动输入"分支。
+# 见 src/api/files.rs。
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+rfd = "0.17"
 
 [build-dependencies]
 embed-resource = "2"
