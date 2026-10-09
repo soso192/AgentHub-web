@@ -230,8 +230,13 @@ async fn main() -> std::io::Result<()> {
     logging::init();
 
     // ── 启动横幅（直接输出到控制台）──
-    // 带上版本号：一眼能看出正在跑的是哪一版（版本号来自 Cargo.toml，发版前要改它）
-    println!("🚀 CC-Web server starting... v{}", env!("CARGO_PKG_VERSION"));
+    // 带上版本号与构建时间：一眼看出正在跑的是哪一版、哪次编译出来的
+    // （版本号来自 Cargo.toml，发版前要改它；构建时间是 build.rs 注入的）
+    let build_unix: i64 = env!("CCWEB_BUILD_UNIX").parse().unwrap_or(0);
+    let built = chrono::DateTime::from_timestamp(build_unix, 0)
+        .map(|time| time.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| "-".to_string());
+    println!("🚀 CC-Web server starting... v{}（构建 {}）", env!("CARGO_PKG_VERSION"), built);
     println!("📍 {}", WEB_URL);
 
     // Initialize AI assistant registry

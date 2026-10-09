@@ -607,6 +607,10 @@ async function patchUpdateCheck(manual = false) {
         patchUpdateState.local = data.local || null;
         patchUpdateState.remote = data.remote || null;
         patchUpdateState.available = Boolean(data.update_available);
+        // 手动点「检查更新」= 用户主动要结果，先清掉"忽略"：
+        // 忽略只该管"本次会话里别自动弹横幅"，不该让手动检查也报"已是最新"
+        // （之前就是这里没清，点过忽略之后再查会误报"本机版本 x 已是最新"）
+        if (manual) patchUpdateState.dismissed = false;
         patchUpdateRender(manual);
     } catch (error) {
         if (manual) patchShowError(error.message, '检查更新失败');
@@ -632,31 +636,39 @@ function patchUpdateRender(manual) {
     const banner = document.getElementById('patchUpdateBanner');
     if (!banner) return;
     const remote = patchUpdateState.remote;
-    const platform = patchPlatformLabel(patchUpdateState.local && patchUpdateState.local.platform);
-    if (!patchUpdateState.available || patchUpdateState.dismissed) {
+    const local = patchUpdateState.local || {};
+    const mine = local.version || '';
+    const platform = patchPlatformLabel(local.platform);
+    const when = remote && remote.build_unix ? patchFormatDateTime(new Date(Number(remote.build_unix) * 1000)) : '';
+    const applyBtn = document.getElementById('patchUpdateApply');
+
+    // 没有可更新版本：横幅收起；只有"手动检查"才给一条明确答复
+    if (!patchUpdateState.available) {
         banner.hidden = true;
-        if (manual) {
-            patchShowError(
-                remote
-                    ? `本机版本 ${(patchUpdateState.local && patchUpdateState.local.version) || ''} 已是最新。`
-                    // 服务器上可能只发布了别的平台：把本机平台说出来，用户不用猜
-                    : `补丁中心还没有发布本机平台（${platform}）的 cc-web 新版本。`,
-                '检查更新',
-            );
+        if (applyBtn) applyBtn.hidden = true;
+        if (!manual) return;
+        if (!remote) {
+            patchShowError('补丁中心还没有发布 cc-web 新版本。', '检查更新');
+        } else if (remote.has_package === false) {
+            // 服务器上可能只发布了别的平台：把本机平台说出来，用户不用猜
+            patchShowError(`最新版本 ${remote.version} 暂无 ${platform} 的安装包，请联系管理员。`, '检查更新');
+        } else {
+            patchShowError(`本机版本 ${mine} 与服务器上的 ${remote.version} 一致，已是最新。`, '检查更新');
         }
         return;
     }
-    const when = remote && remote.build_unix ? patchFormatDateTime(new Date(Number(remote.build_unix) * 1000)) : '';
-    const mine = (patchUpdateState.local && patchUpdateState.local.version) || '';
-    const text = remote && remote.has_package === false
-        // 最新版本存在但没有本平台的包：这不是"可更新"，得说清楚（否则用户点了会失败）
-        ? `最新版本 ${remote.version || ''} 暂无 ${platform} 的安装包，请联系管理员。`
-        : `发现新版本 ${remote.version || ''}（${platform}${when ? `，构建 ${when}` : ''}），本机当前 ${mine}。`;
+
+    // 有新版：横幅只在"没被忽略"或"手动检查"时显示
+    // （忽略只针对本次会话的自动提示；手动点检查 = 主动要结果，必须显示）
+    if (patchUpdateState.dismissed && !manual) {
+        banner.hidden = true;
+        return;
+    }
+    const text = `发现新版本 ${remote.version || ''}（${platform}${when ? `，构建 ${when}` : ''}），本机当前 ${mine}。`;
     document.getElementById('patchUpdateText').textContent = text;
-    // 没有本平台安装包时不给「立即更新」按钮，免得点了必然失败
-    const applyBtn = document.getElementById('patchUpdateApply');
-    if (applyBtn) applyBtn.hidden = Boolean(remote && remote.has_package === false);
+    if (applyBtn) applyBtn.hidden = false;
     banner.hidden = false;
+    if (manual) patchShowError(`${text} 点横幅上的「立即更新」即可。`, '检查更新');
 }
 
 // 下载新版本并自替换：读后端流式响应（progress/ok/error），完成后本进程会退出、脚本接手重启
@@ -718,7 +730,8 @@ async function patchUpdateApply() {
             // macOS 等平台不自动替换：新程序已下载并加了可执行权限，等使用者手动换
             message.textContent = `${result.message || '新版本已下载'}。新程序位置：${result.path || '（见 cc-web 目录）'}`;
         } else {
-            message.textContent = `${result.message || '更新完成'}。稍后请刷新页面（cc-web 正在重启，连接会断开几秒）。`;
+            message.textContent = `${result.message || '更新完成'}。稍后请刷新页面（cc-web 正在重启，连接会断开几秒）。`
+                + ' 若 10 秒后仍打不开，看 cc-web 所在目录里的 update-cc-web.log（记着脚本走到哪一步了）。';
         }
         document.getElementById('patchUpdateBanner').hidden = true;
         okBtn.hidden = false;
