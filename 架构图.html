@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>补丁中心 · 系统架构图</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --border:#d8dce3; --text:#1f2430; --muted:#6b7280;
+    --accent:#2563eb; --accent-soft:#e8efff; --ok:#059669; --warn:#b45309; --code:#f0f2f6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#14171c; --panel:#1b1f26; --border:#2c333d; --text:#e6e9ef; --muted:#98a2b3;
+           --accent:#7aa2ff; --accent-soft:#1e2740; --ok:#34d399; --warn:#fbbf24; --code:#12161b; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--text);
+       font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px}
+  h2{font-size:16px;margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:22px}
+  .zone{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .zone-title{font-weight:700;font-size:15px;margin-bottom:4px}
+  .zone-note{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .card{flex:1 1 260px;min-width:240px;background:var(--code);border:1px solid var(--border);
+        border-radius:10px;padding:12px 14px}
+  .card h3{margin:0 0 8px;font-size:13.5px}
+  .card ul{margin:0;padding-left:18px;font-size:12.8px;color:var(--text)}
+  .card li{margin:3px 0}
+  .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:700;
+       background:var(--accent-soft);color:var(--accent);margin-left:6px}
+  .tag.ok{background:rgba(5,150,105,.12);color:var(--ok)}
+  .tag.warn{background:rgba(180,83,9,.12);color:var(--warn)}
+  .arrow{display:flex;flex-direction:column;align-items:center;margin:10px 0;color:var(--muted);font-size:12px}
+  .arrow .line{width:2px;height:16px;background:var(--border)}
+  .arrow .label{background:var(--panel);border:1px dashed var(--border);border-radius:999px;
+                padding:2px 10px;margin:2px 0}
+  table{width:100%;border-collapse:collapse;font-size:12.8px;background:var(--panel);
+        border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  th,td{text-align:left;padding:8px 12px;border-top:1px solid var(--border)}
+  thead th{background:var(--code);border-top:none;font-size:12px;color:var(--muted)}
+  code{background:var(--code);border:1px solid var(--border);border-radius:5px;padding:1px 5px;
+       font:12px/1.5 ui-monospace,Consolas,"Courier New",monospace}
+  .flow{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin:12px 0}
+  .flow h3{margin:0 0 8px;font-size:13.5px}
+  .flow ol{margin:0;padding-left:20px;font-size:12.8px}
+  .flow li{margin:4px 0}
+  .legend{color:var(--muted);font-size:12px;margin-top:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>补丁中心 · 系统架构图</h1>
+  <div class="sub">
+    cc-web（每台开发机一份，Rust） + patch_search（服务器 A，FastAPI + MySQL） ·
+    文档日期 2026-10-09
+  </div>
+
+  <h2>一、部署拓扑</h2>
+
+  <div class="zone">
+    <div class="zone-title">① 每台开发机（N 台，每台各装一份；客开代码与 JDK 都在本机）</div>
+    <div class="zone-note">浏览器访问 <code>http://localhost:3030</code>；局域网内其他设备也能访问（注意安全）</div>
+    <div class="row">
+      <div class="card">
+        <h3>cc-web.exe <span class="tag">:3030</span></h3>
+        <ul>
+          <li>Rust + Actix-Web，单文件 exe；前端资源编译期内嵌</li>
+          <li>聊天页（多助手/分屏/队列）+ 补丁中心 15 个页签 + 3 个详情页</li>
+          <li>每条消息起一个 <code>claude</code> 子进程（<code>--resume</code> 延续上下文、<code>bypassPermissions</code>）</li>
+          <li>本机 HTTP 接口：<code>/api/agent/*</code>、<code>/api/files/*</code>、<code>/api/adapt/*</code>、<code>/api/node/runs</code>、<code>/api/version</code>、<code>/api/update/*</code></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>本机状态与工具</h3>
+        <ul>
+          <li><code>~/.cc-web/</code>：<code>sessions.json</code>（会话）、<code>node_runs.json</code>（智能开发清单）、<code>adapt_runs.json</code>（适配记录）、<code>logs/</code></li>
+          <li><code>~/.claude/settings.json</code>：模型网关凭证（模型下拉的来源）</li>
+          <li><code>~/.claude/skills/</code>：<code>java-compiler-mcp</code>、<code>diff-report</code></li>
+          <li>分发包里的 <code>mcp-servers.json</code>：java_compiler_mcp（stdio）+ patch_source（http）</li>
+          <li><code>&lt;cc-web目录&gt;\temp\adapt\&lt;runId&gt;\&lt;seq&gt;\</code>：适配补丁解压目录</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">
+    <div class="line"></div>
+    <div class="label">HTTP（JWT Bearer）：补丁检索 / 上传 / 分析 / 流程 / 账本上报 / 检查更新</div>
+    <div class="line"></div>
+  </div>
+
+  <div class="zone">
+    <div class="zone-title">② 服务器 A（管理员维护；标品源码只有这一份）</div>
+    <div class="row">
+      <div class="card">
+        <h3>patch_search <span class="tag">:13587</span></h3>
+        <ul>
+          <li>FastAPI + aiomysql；全部接口 JWT 鉴权</li>
+          <li>补丁库（上传/检索/详情/下载）、管理员批量分析（claude 子进程，可配并发）</li>
+          <li>流程引擎：流程/提示词/模板 → 运行（本地步骤靠 execution_token 认领）</li>
+          <li>三类只写账本：<code>problem_run</code>、<code>problem_run_session</code>、<code>patch_adapt_run/item</code></li>
+          <li>产品/版本字典（逻辑删除）、产品环境变量（按人隔离）</li>
+          <li>发版：<code>data/ccweb-update/&lt;版本号&gt;/&lt;平台&gt;/</code> + <code>latest.json</code></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>patch_source MCP <span class="tag">:13589</span></h3>
+        <ul>
+          <li>标品源码<b>只读</b>检索（grep / read_file / glob / stat_path / list_roots）</li>
+          <li>roots 按 <code>&lt;产品&gt;/&lt;版本&gt;</code> 挂（CFR 反编译产物）</li>
+          <li>检索口径：<b>path 必须写包级路径</b>（全树扫 20s+，包级 &lt;0.5s）</li>
+          <li>独立审计日志 <code>mcp_audit.log</code>：记"读了/搜了哪些文件"</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>MySQL <span class="tag">10.4.122.21/patch</span></h3>
+        <ul>
+          <li>18 张表（<b>无外键约束</b>，引用关系由应用层维护）：补丁库 / 用户与菜单权限 / 产品版本字典 / 流程引擎（6 张） / 产品环境变量 / 三类账本</li>
+          <li>本机开发机上没有 mysql 客户端；迁移用 patch 环境的 python + pymysql 跑</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    注：开发机之间的会话/清单互不共享（<b>本机清单是事实来源</b>）；服务器只保存摘要账本，供跨机器查询。
+  </div>
+
+  <h2>二、主要数据流</h2>
+
+  <div class="flow">
+    <h3>① 补丁入库 → 可检索</h3>
+    <ol>
+      <li>开发机在「补丁上传」拖入 zip/rar → 浏览器直传 patch_search（multipart）</li>
+      <li>patch_search 存进补丁库目录、写 <code>patch_info</code>（status=0 待分析）</li>
+      <li>管理员在「待分析补丁」勾选 → 服务器 A 的 claude 逐个分析（并发可配）→ 写 <code>analysis_result / class_name / keyword</code>、status=2</li>
+      <li>开发机在「普通检索」按名称/描述/类名/关键词检索（status=2 才进结果）</li>
+    </ol>
+  </div>
+
+  <div class="flow">
+    <h3>② 智能开发（问题解决节点）—— 两阶段同一 claude 会话</h3>
+    <ol>
+      <li>新建：填问题描述 / 触发 URL / 选产品环境变量 / 补丁输出路径 → cc-web 建会话（cwd = 客开工程根）</li>
+      <li><b>阶段一</b>：claude 只读分析客开工程 + 用 patch_source 查标品 → 改动只写 <code>&lt;输出目录&gt;\step01\work</code>；走 java-compiler-mcp 打补丁 zip、生成 diff-report 对比报告</li>
+      <li>用户在详情页判定「已解决 / 未解决」；未解决可补日志重跑（step02、step03…）</li>
+      <li><b>阶段二</b>：把暂存目录同步回客开工程、打<b>去日志的干净补丁</b>（成败以 <code>合并说明.md</code> 首行判定）</li>
+      <li>全程状态只写本机 <code>node_runs.json</code>；摘要上报 <code>problem_run</code>；已解决时完整会话存档 <code>problem_run_session</code></li>
+    </ol>
+  </div>
+
+  <div class="flow">
+    <h3>③ 补丁适配 —— 逐个补丁合并进客开工程</h3>
+    <ol>
+      <li>入口：适配页签拖入多个补丁；或「普通检索」列表点「适配」（cc-web 直连补丁中心下载，带进度条）</li>
+      <li>填每个补丁的问题描述 + 选产品环境变量（自动带出客开工程目录）→ 检查 git 状态并强确认</li>
+      <li>cc-web 后台线程串行跑：每轮 = 一条提示词 → claude 合并（对照物只有"补丁源码 vs 客开工程源码"）</li>
+      <li>每个补丁跑完停在「待确认」→ 详情页点「继续下一步 / 一键跑完剩余 / 重试失败 / 中止」</li>
+      <li>记录在本机 <code>adapt_runs.json</code> + 服务器 <code>patch_adapt_run/item</code>；「查看会话」可在聊天页实时围观（只读）</li>
+    </ol>
+  </div>
+
+  <div class="flow">
+    <h3>④ 智能分析（可配置流程）</h3>
+    <ol>
+      <li>选流程模板 + 填业务需求 → patch_search 引擎建运行（<code>workflow_run</code> / <code>workflow_run_step</code>）</li>
+      <li>服务器步骤：服务器 A 的 claude 执行；本地步骤：生成 execution_token，客户端 claim-local 认领后由本机 cc-web 跑（<code>/api/local-claude/execute</code>）</li>
+      <li>每步产出 <code>结论.md / 摘要.md</code> 入库；每步完成需点「确认下一步」</li>
+      <li>步骤用 <code>{{flow:x.result}}</code> / <code>{{step.N.context}}</code> 引用前序结果</li>
+    </ol>
+  </div>
+
+  <div class="flow">
+    <h3>⑤ 客户端自更新</h3>
+    <ol>
+      <li>管理员在「版本发布」上传各平台程序 → 服务器写 <code>&lt;版本号&gt;/&lt;平台&gt;/</code>，可「设为最新」</li>
+      <li>开发机登录后自动查一次 + 顶栏「检查更新」手动查：<b>本机版本号 ≠ 最新版本号 → 提示更新</b>（sha256 只做下载校验）</li>
+      <li>点「立即更新」→ cc-web 下载到 <code>&lt;原名&gt;.new</code> → 校验 → 写 <code>update-cc-web.bat</code> → 本进程退出</li>
+      <li>脚本反复尝试替换（最多 60 次）+ 备份 <code>.bak</code> + 设 <code>CC_WEB_MCP_CONFIG</code> + 重启；每步写 <code>update-cc-web.log</code></li>
+      <li>macOS 不自动替换：下载校验后加 0755 留在原地，提示手动替换后重启</li>
+    </ol>
+  </div>
+
+  <h2>三、地址 / 端口 / 文件速查</h2>
+  <table>
+    <thead><tr><th>东西</th><th>值 / 位置</th><th>怎么改</th></tr></thead>
+    <tbody>
+      <tr><td>cc-web 监听</td><td><code>0.0.0.0:3030</code></td><td>编译期写死（main.rs）</td></tr>
+      <tr><td>patch_search 地址（前端直连）</td><td><code>src/patch_servers.json</code>（多条隧道）</td><td><b>改完必须重新编译</b></td></tr>
+      <tr><td>MCP 配置（java_compiler_mcp / patch_source）</td><td>分发包 <code>mcp-servers.json</code></td><td>改文件 + 重启（start.bat 设 <code>CC_WEB_MCP_CONFIG</code> 指向它）</td></tr>
+      <tr><td>patch_search 配置</td><td>服务器上 <code>config.yaml</code>（端口/库路径/MCP roots/发布目录）</td><td>改文件 + 重启服务</td></tr>
+      <tr><td>JWT 密钥</td><td>环境变量 <code>PATCH_SEARCH_JWT_SECRET</code>（≥32 字符）</td><td>服务器环境变量</td></tr>
+      <tr><td>本机清单</td><td><code>~/.cc-web/{sessions,node_runs,adapt_runs}.json</code></td><td>cc-web 自己维护</td></tr>
+      <tr><td>cc-web 日志</td><td><code>~/.cc-web/logs/cc-web-&lt;日期&gt;.log</code></td><td>—</td></tr>
+      <tr><td>适配补丁解压目录</td><td><code>&lt;cc-web目录&gt;\temp\adapt\&lt;runId&gt;\&lt;seq&gt;\</code></td><td>—</td></tr>
+    </tbody>
+  </table>
+
+</div>
+</body>
+</html>

@@ -164,7 +164,18 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 
 ---
 
-## 六、数据库表（MySQL `patch` @ 10.4.122.21，共 17 张）
+## 六、数据库表（MySQL `patch` @ 10.4.122.21，共 18 张）
+
+> **无外键约束**（2026-10-09 已全部删除，19 个）。删除原因：外键在跨表清理时会把"应用层该做的事"变成
+> 数据库报错，且 `ON DELETE SET NULL` 的隐式行为在代码里看不见。**行为改为应用层显式维护**：
+> - `workflow_template_step` 被删/被重排时，先 `UPDATE workflow_run_step SET template_step_id=NULL` 再删（`save_template` / `delete_template`）
+> - `workflow_directory` 被删时，先 `UPDATE workflow_run_step SET directory_id=NULL` 再删（`purge_directory`）
+>
+> 其余原本 `NO ACTION` 的引用（用户、流程、提示词、产品字典…）本来就靠应用层校验拦截，无删除入口，行为不变。
+> 回滚：`schema/foreign_keys_backup_20261009.sql`；本次迁移：`schema/migration_drop_foreign_keys.sql`；
+> 现网结构快照：`schema/current_schema.sql`。
+> 回归脚本：`tools/fk_regression_check.py`（起一个临时 patch_search 后跑，验证"删模板步骤/删目录"两处置空与
+> 409 守卫；用临时对象，跑完自动清理）。
 
 ### 用户与权限
 | 表 | 用途 | 要点 |
@@ -189,6 +200,7 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 | workflow_flow | 流程（调用位置 local/server + 建议目录） | 被 template_step 引用不可删 |
 | workflow_prompt | 提示词 | 同上；被引用的提示词改完即生效（无快照） |
 | workflow_template / workflow_template_step | 模板与步骤 | 就地更新按 step_order 复用行 ID；被 run 引用不可删，可克隆 |
+| workflow_directory | 工作目录（用户自建 + 管理员内置） | 流程配置存 `code`；内置目录 `is_builtin=1` 且 `created_by_user_id` 为 NULL；被步骤引用时应用层拦截删除 |
 | workflow_run / workflow_run_step | 运行与步骤 | run.id 是 uuid；步骤存 execution_token（本地步骤认领）、local_session_id（--resume 用）、output_conclusion/summary（结论摘要入库） |
 
 ### 环境与账本（三类账本同口径：按人隔离、幂等上报、服务器不驱动）
@@ -278,9 +290,12 @@ python -m PyInstaller --noconfirm patch_search.spec
 
 **客户端**：登录后自动查一次 + 顶栏「检查更新」。有新版 → 横幅 + 「立即更新」：
 - Windows：下载 → 校验 sha256 → `update-cc-web.bat` 在进程退出后替换并重启（自动设 `CC_WEB_MCP_CONFIG`，留 `.bak`）
-- macOS：下载校验后**不自动替换**，提示手动替换（新文件已加执行权限，落 `<原名>.new`）
+- macOS：下载 → 校验 → **原地替换**（Unix 下运行中的二进制可以直接 rename 覆盖，没有 Windows 那种文件锁）
+  → 由 `start.sh` 的 `while` 循环重启（cc-web 以退出码 42 退出表示"换了新版本，重启我"；
+  终端不变、Ctrl+C 照旧）。**不是从 `start.sh` 启动的就不退出**，只把文件换掉并提示手动重启
+  （主动 nohup/setsid 重启会把进程从终端剥离，以后 Ctrl+C 停不掉）。旧程序留在 `<原名>.bak` 供回滚
 - 最新版本没有本平台的包 → 提示「暂无本平台安装包，请联系管理员」，不给「立即更新」按钮
-- **只替换 cc-web 程序**，不动 mcp-servers.json / java_compiler_mcp / start.bat
+- **只替换 cc-web 程序**，不动 mcp-servers.json / java_compiler_mcp / start.bat / start.sh
 - **发布本身不打断任何人**；只有某台机器点了「立即更新」才会重启那台 cc-web
   （正在跑的智能开发/适配会中断，停在「待确认」的不受影响）
 - 前提：服务器上的 patch_search 必须是含 `/api/ccweb/*` 路由的版本（旧版返回 404）
@@ -297,7 +312,7 @@ python -m PyInstaller --noconfirm patch_search.spec
 | 自动补报 | JWT 过期后后台上报会 401；页面打开时发现本机与服务器不一致就用当前 token 补报（服务器没有的行**不复活**） |
 | 事件落盘 | event saver 把流式过程边收边写进会话（含 thinking/工具调用），跑到一半打开「查看会话」也能看到已产出内容 |
 | 适配实时 | 适配 run 期间会话标记 streaming → 聊天页自动挂 SSE；补丁间连播靠后端 `adapt_paused/adapt_finished` 事件收尾 |
-| 更新判据 | sha256 不同（版本号长期 1.0.0、时间戳跨机不可靠） |
+| 更新判据 | 本机版本号 ≠ 服务器「最新版本号」（版本号来自编译期 `Cargo.toml`；sha256 只做下载校验，不参与判断） |
 | MCP 检索性能 | path 写包级相对路径；全树 grep 20s+ 是目录项 I/O 的天花板，不是 MCP 的问题 |
 | 列宽记忆 | 检索表列宽存 localStorage（v4，按角色分 key）；改按钮数量要同步 actionMin 并升版本号 |
 

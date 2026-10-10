@@ -1,6 +1,6 @@
 [package]
 name = "cc-web"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Claude Code Web Interface - A web-based UI for Claude Code CLI"
 

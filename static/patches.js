@@ -588,9 +588,11 @@ function patchShowAuthRetry(message) {
 }
 
 /* ── 获取新版本（cc-web 的 api/update.rs + patch_search 的 routes/ccweb_update.py）──
-   - 判据是 **sha256 不同**：版本号长期停在 1.0.0 比不出来，文件时间戳跨机器时钟不可靠
+   - 判据是 **版本号**（本机 ≠ 服务器上的「最新版本号」）：本机版本号来自编译期 Cargo.toml，
+     sha256 只用于下载完整性校验，不参与"要不要更新"的判断
    - 由后端代劳是因为 **cc-web 自己没有登录态**（token 只在浏览器里），前端带 token 调过去
-   - 替换 exe 必须靠后端生成的 .bat：Windows 下运行中的 exe 被锁，自己覆盖不了自己 */
+   - 替换程序：Windows 靠后端生成的 .bat（运行中的 exe 被锁，自己覆盖不了自己）；
+     macOS 由后端原地 rename 覆盖（Unix 没这个锁），再由 start.sh 的循环重启 */
 const patchUpdateState = { checked: false, local: null, remote: null, available: false, dismissed: false, running: false };
 
 async function patchUpdateCheck(manual = false) {
@@ -726,10 +728,17 @@ async function patchUpdateApply() {
         if (failure) throw new Error(failure);
         bar.style.width = '100%';
         const result = done && typeof done === 'object' ? done : {};
-        if (result.manual) {
-            // macOS 等平台不自动替换：新程序已下载并加了可执行权限，等使用者手动换
-            message.textContent = `${result.message || '新版本已下载'}。新程序位置：${result.path || '（见 cc-web 目录）'}`;
+        if (result.replaced && !result.restarted) {
+            // macOS 且不是 start.sh 拉起的：程序已经换成新版，但**不自动重启**
+            // （主动重启会把进程从终端剥离，以后 Ctrl+C 停不掉，见 api/update.rs）。
+            // 文件已经是新的了，用户重启一下就生效。
+            message.textContent = `${result.message || '新版本已就位'}。`
+                + ' 在运行 cc-web 的那个终端里按 Ctrl+C 停掉，再执行 ./start.sh 就是新版本了。';
+        } else if (result.replaced) {
+            // macOS + start.sh：后端换完文件就退出，start.sh 的 while 循环立刻用新程序重启
+            message.textContent = `${result.message || '更新完成'}。稍后请刷新页面（cc-web 正在重启，连接会断开几秒）。`;
         } else {
+            // Windows：后端退出后由 update-cc-web.bat 替换并重启
             message.textContent = `${result.message || '更新完成'}。稍后请刷新页面（cc-web 正在重启，连接会断开几秒）。`
                 + ' 若 10 秒后仍打不开，看 cc-web 所在目录里的 update-cc-web.log（记着脚本走到哪一步了）。';
         }

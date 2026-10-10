@@ -395,8 +395,8 @@
                 const value = (conclusion != null && conclusion !== '') ? conclusion : (result.output_result ?? result.output_context);
                 content.textContent = value == null || value === '' ? '当前步骤尚未产生输出。' : patchDecodeResultText(value);
                 const empty = content.textContent === '当前步骤尚未产生输出。';
-                copyBtn.hidden = empty; if (fsBtn) fsBtn.hidden = empty;
-            } catch (err) { content.textContent = ''; error.hidden = false; error.textContent = err.message; copyBtn.hidden = true; if (fsBtn) fsBtn.hidden = true; }
+                if (fsBtn) fsBtn.hidden = empty;
+            } catch (err) { content.textContent = ''; error.hidden = false; error.textContent = err.message; if (fsBtn) fsBtn.hidden = true; }
         }
         // 从步骤输出里取「进度摘要」。真实输出形态很杂，逐层放宽：
         //   1) 字符串可能带 markdown 围栏、前后有说明文字、或多层转义；
@@ -472,7 +472,7 @@
                     : (extractProgressSummary(result.output_result) ?? extractProgressSummary(result.output_context));
                 content.textContent = summary == null ? '当前步骤无摘要' : summary;
                 const usable = summary != null;
-                if (copyBtn) copyBtn.hidden = !usable; if (fsBtn) fsBtn.hidden = !usable;
+                if (fsBtn) fsBtn.hidden = !usable;
             } catch (err) { content.textContent = err.message; }
         }
         async function nextWorkflowStep() {
