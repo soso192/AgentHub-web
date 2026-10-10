@@ -478,6 +478,9 @@ function patchSetAuthenticated(user) {
     // 未登录时常显只会占着「退出」平时的位置，看起来像退出按钮丢了
     const updateCheck = document.getElementById('patchUpdateCheck');
     if (updateCheck) updateCheck.hidden = !authenticated;
+    // 帮助文档同理：文档在补丁中心上，未登录拿不到
+    const helpManual = document.getElementById('patchHelpManual');
+    if (helpManual) helpManual.hidden = !authenticated;
 }
 
 function patchHandleUnauthorized() {
@@ -749,6 +752,62 @@ async function patchUpdateApply() {
         okBtn.hidden = false;
     } finally {
         patchUpdateState.running = false;
+    }
+}
+
+/* ── 帮助文档：下载补丁中心上的 userManual.docx（见 patch_search 的 routes/ccweb_update.py）──
+   为什么走 fetch + blob 而不是直接 <a href>：要带 Bearer token，而且要多地址回退
+   （与补丁下载同一套：每个请求取一个起始地址，连不上/超时就换下一条）。 */
+async function patchHelpDownload() {
+    const button = document.getElementById('patchHelpManual');
+    const servers = patchState.patchSearchServers;
+    if (!patchToken()) { patchShowError('请先登录后再下载帮助文档', '帮助文档'); return; }
+    if (!servers.length) { patchShowError('补丁服务地址尚未加载，请稍候重试。', '帮助文档'); return; }
+    if (button) button.disabled = true;
+    try {
+        const start = patchState.patchServerCursor % servers.length;
+        patchState.patchServerCursor = start + 1;
+        let response = null;
+        for (let attempt = 0; attempt < servers.length; attempt += 1) {
+            const base = servers[(start + attempt) % servers.length].replace(/\/+$/, '');
+            try {
+                response = await patchFetchTimeout(`${base}/api/ccweb/manual`,
+                    {headers: {Authorization: `Bearer ${patchToken()}`}}, PATCH_REQUEST_TIMEOUT);
+            } catch (error) {
+                response = null;
+                continue;   // 连不上/超时：换下一条地址
+            }
+            break;
+        }
+        if (!response) throw new Error('无法连接补丁中心，请稍后重试或联系管理员');
+        if (response.status === 401) { patchHandleUnauthorized(); throw new Error('请先登录'); }
+        if (response.status === 404) {
+            // 后端 404 的 detail 是写给用户看的一句话（"服务器上还没有帮助文档…"），直接用
+            let detail = '';
+            try { detail = (await response.json()).detail || ''; } catch (error) { detail = ''; }
+            throw new Error(detail || '服务器上还没有帮助文档（userManual.docx），请联系管理员');
+        }
+        if (!response.ok) throw new Error(`下载帮助文档失败（HTTP ${response.status}）`);
+
+        const blob = await response.blob();
+        const disposition = response.headers.get('Content-Disposition') || '';
+        const starMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+        const plainMatch = disposition.match(/filename="?([^";]+)"?/i);
+        const filename = starMatch ? decodeURIComponent(starMatch[1])
+            : (plainMatch ? plainMatch[1] : 'userManual.docx');
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        // 立刻 revoke 会让部分浏览器拿到空文件，留几秒再释放
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (error) {
+        patchShowError(error.message, '帮助文档');
+    } finally {
+        if (button) button.disabled = false;
     }
 }
 
@@ -4537,6 +4596,8 @@ function patchBindEvents() {
 
     // 获取新版本：手动按钮 + 横幅上的动作
     document.getElementById('patchUpdateCheck').onclick = () => patchUpdateCheck(true);
+    // 帮助文档：从补丁中心下载 userManual.docx
+    document.getElementById('patchHelpManual').onclick = () => patchHelpDownload();
     document.getElementById('patchUpdateApply').onclick = () => patchUpdateApply();
     document.getElementById('patchUpdateDismiss').onclick = () => {
         patchUpdateState.dismissed = true;   // 只记本次会话：刷新后还会再提示
