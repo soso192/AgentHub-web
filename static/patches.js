@@ -757,12 +757,37 @@ async function patchUpdateApply() {
 
 /* ── 帮助文档：下载补丁中心上的 userManual.docx（见 patch_search 的 routes/ccweb_update.py）──
    为什么走 fetch + blob 而不是直接 <a href>：要带 Bearer token，而且要多地址回退
-   （与补丁下载同一套：每个请求取一个起始地址，连不上/超时就换下一条）。 */
+   （与补丁下载同一套：每个请求取一个起始地址，连不上/超时就换下一条）。
+   进度弹窗直接复用补丁下载那个 —— 文档有几 MB，不给进度条的话点了像没反应。 */
 async function patchHelpDownload() {
     const button = document.getElementById('patchHelpManual');
     const servers = patchState.patchSearchServers;
     if (!patchToken()) { patchShowError('请先登录后再下载帮助文档', '帮助文档'); return; }
     if (!servers.length) { patchShowError('补丁服务地址尚未加载，请稍候重试。', '帮助文档'); return; }
+
+    const modal = document.getElementById('patchDownloadModal');
+    const closeBtn = document.getElementById('patchDownloadClose');
+    const cancelBtn = document.getElementById('patchDownloadCancel');
+    const urlEl = document.getElementById('patchDownloadUrl');
+    const fileEl = document.getElementById('patchDownloadFile');
+    const bar = document.getElementById('patchDownloadBar');
+    const percentEl = document.getElementById('patchDownloadPercent');
+    const sizeEl = document.getElementById('patchDownloadSize');
+
+    // 先弹进度，再探测地址开始下载（弹窗是共用的，标题按当前任务改）
+    document.getElementById('patchDownloadTitle').textContent = '下载帮助文档';
+    urlEl.textContent = '正在检测可用地址…';
+    fileEl.textContent = 'userManual.docx';
+    bar.style.width = '0%'; percentEl.textContent = '0%'; sizeEl.textContent = '正在连接...';
+    cancelBtn.textContent = '取消';
+    modal.hidden = false;
+
+    const controller = new AbortController();
+    const close = () => { controller.abort(); modal.hidden = true; };
+    cancelBtn.onclick = close;
+    closeBtn.onclick = close;
+    modal.onclick = event => { if (event.target === modal) close(); };
+
     if (button) button.disabled = true;
     try {
         const start = patchState.patchServerCursor % servers.length;
@@ -770,12 +795,14 @@ async function patchHelpDownload() {
         let response = null;
         for (let attempt = 0; attempt < servers.length; attempt += 1) {
             const base = servers[(start + attempt) % servers.length].replace(/\/+$/, '');
+            urlEl.textContent = `${base}/api/ccweb/manual`;
             try {
                 response = await patchFetchTimeout(`${base}/api/ccweb/manual`,
-                    {headers: {Authorization: `Bearer ${patchToken()}`}}, PATCH_REQUEST_TIMEOUT);
+                    {headers: {Authorization: `Bearer ${patchToken()}`}, signal: controller.signal}, PATCH_REQUEST_TIMEOUT);
             } catch (error) {
+                if (controller.signal.aborted) throw error;   // 用户取消，不切换地址
                 response = null;
-                continue;   // 连不上/超时：换下一条地址
+                continue;                                     // 连不上/超时：换下一条
             }
             break;
         }
@@ -789,22 +816,57 @@ async function patchHelpDownload() {
         }
         if (!response.ok) throw new Error(`下载帮助文档失败（HTTP ${response.status}）`);
 
-        const blob = await response.blob();
+        // 边下边报进度：这是本页最容易让人以为"点了没反应"的地方
+        const total = Number(response.headers.get('Content-Length') || 0);
+        sizeEl.textContent = total > 0 ? `${patchFormatSize(total)} · 下载中` : '下载中';
+        const reader = response.body.getReader();
+        const chunks = [];
+        let received = 0;
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            if (value && value.length) { chunks.push(value); received += value.length; }
+            if (total > 0) {
+                const percent = Math.min(100, Math.round(received / total * 100));
+                bar.style.width = `${percent}%`; percentEl.textContent = `${percent}%`;
+                sizeEl.textContent = `${patchFormatSize(received)} / ${patchFormatSize(total)}`;
+            } else {
+                percentEl.textContent = patchFormatSize(received);
+            }
+        }
+
+        // 优先用响应 Content-Disposition 里的文件名；拿不到就退回默认名
+        let filename = '';
         const disposition = response.headers.get('Content-Disposition') || '';
         const starMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-        const plainMatch = disposition.match(/filename="?([^";]+)"?/i);
-        const filename = starMatch ? decodeURIComponent(starMatch[1])
-            : (plainMatch ? plainMatch[1] : 'userManual.docx');
-        const url = URL.createObjectURL(blob);
+        if (starMatch) filename = decodeURIComponent(starMatch[1]);
+        else {
+            const plainMatch = disposition.match(/filename="?([^";]+)"?/i);
+            if (plainMatch) filename = plainMatch[1];
+        }
+        if (!filename) filename = 'userManual.docx';
+
+        // 与补丁下载同款：显式 octet-stream，避免浏览器/扩展按 MIME 做别的处理
+        const blob = new Blob(chunks, {type: 'application/octet-stream'});
         const link = document.createElement('a');
-        link.href = url;
+        link.href = URL.createObjectURL(blob);
         link.download = filename;
         document.body.appendChild(link);
         link.click();
-        document.body.removeChild(link);
-        // 立刻 revoke 会让部分浏览器拿到空文件，留几秒再释放
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        link.remove();
+        // 立刻 revoke 会让部分浏览器拿到空文件，留一秒再释放
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+
+        fileEl.textContent = filename;
+        bar.style.width = '100%'; percentEl.textContent = '100%';
+        sizeEl.textContent = `${patchFormatSize(received)} · 下载完成`;
+        cancelBtn.textContent = '关闭';
+        cancelBtn.onclick = () => { modal.hidden = true; };
+        closeBtn.onclick = () => { modal.hidden = true; };
+        modal.onclick = event => { if (event.target === modal) modal.hidden = true; };
     } catch (error) {
+        if (error.name === 'AbortError') return;
+        modal.hidden = true;
         patchShowError(error.message, '帮助文档');
     } finally {
         if (button) button.disabled = false;
@@ -1942,6 +2004,8 @@ async function downloadPatch(id, fallbackName) {
     const sizeEl = document.getElementById('patchDownloadSize');
 
     // 先弹出下载进度，再探测可用地址并开始下载
+    // （弹窗与「帮助文档」共用，标题按当前任务改回来）
+    document.getElementById('patchDownloadTitle').textContent = '下载补丁包';
     urlEl.textContent = '正在检测可用地址…';
     fileEl.textContent = fallbackName || id;
     bar.style.width = '0%'; percentEl.textContent = '0%'; sizeEl.textContent = '正在连接...';
