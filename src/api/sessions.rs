@@ -2,8 +2,8 @@ use actix_web::{web, HttpResponse};
 use crate::AppState;
 
 pub async fn list_sessions(data: web::Data<AppState>) -> HttpResponse {
-    let sessions = data.sessions.read().unwrap();
-    let streaming = data.streaming_sessions.read().unwrap();
+    let sessions = data.sessions.read().unwrap_or_else(|e| e.into_inner());
+    let streaming = data.streaming_sessions.read().unwrap_or_else(|e| e.into_inner());
     let mut session_list: Vec<serde_json::Value> = sessions.iter().map(|(id, session)| {
         serde_json::json!({
             "id": id,

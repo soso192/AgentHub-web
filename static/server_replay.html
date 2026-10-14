@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>服务器会话回放</title>
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        /* 独立只读回放页：无左侧会话栏、无资源管理器，只保留头部 + 会话内容 + 底部固定状态条 */
+        .replay-body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
+        .replay-header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-panel); flex: 0 0 auto; }
+        .replay-header h1 { font-size: 14px; margin: 0; color: var(--text-secondary); white-space: nowrap; }
+        .replay-header .replay-sub { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; min-width: 0; }
+        .replay-close { margin-left: auto; }
+        #replayBody { flex: 1; overflow-y: auto; padding: 16px 20px; }
+        #replayBody .patch-muted { color: var(--text-muted); font-size: 13px; }
+        /* 底部固定状态条：执行中脉冲 / 已结束定格（样式复用 .server-replay-banner） */
+        #replayBanner { flex: 0 0 auto; border-radius: 0; border-top: 1px solid var(--border); }
+    </style>
+</head>
+<body class="replay-body" data-theme="light">
+    <header class="replay-header">
+        <button id="replayClose" type="button" class="patch-secondary-btn">← 返回</button>
+        <h1>服务器会话回放</h1>
+        <span id="replayMeta" class="replay-sub">加载中…</span>
+    </header>
+
+    <main id="replayBody" role="log" aria-live="polite" aria-relevant="additions"></main>
+
+    <div id="replayBanner" class="server-replay-banner" style="display:flex;"></div>
+
+    <script>
+    (function () {
+        'use strict';
+        const PATCH_TOKEN_KEY = 'patch-search-access-token';
+        const params = new URLSearchParams(location.search);
+        const sid = params.get('history') || '';
+        const runId = params.get('run') || '';
+        const step = params.get('step') || '';
+
+        // 主题与补丁中心一致：跟随 localStorage 的 cc-web-theme
+        (function initTheme() {
+            const saved = localStorage.getItem('cc-web-theme');
+            const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+
+        const body = document.getElementById('replayBody');
+        const banner = document.getElementById('replayBanner');
+        const meta = document.getElementById('replayMeta');
+        document.getElementById('replayClose').onclick = () => { if (history.length > 1) history.back(); else location.href = '/workflow_run.html'; };
+
+        // ── 渲染链路（与聊天页 app.js 同口径，保证展示一致）──
+        function escapeHtml(text) { if (typeof text !== 'string') text = String(text || ''); const div = document.createElement('div'); div.textContent = text; return div.innerHTML; }
+        function renderMarkdown(text) {
+            if (!text) return '';
+            let html = escapeHtml(text);
+            const codeBlocks = [], inlineCodes = [];
+            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => { const p = `__CODE_BLOCK_${codeBlocks.length}__`; codeBlocks.push(`<pre><code>${code}</code></pre>`); return p; });
+            html = html.replace(/`([^`\n]+)`/g, (_, code) => { const p = `__INLINE_CODE_${inlineCodes.length}__`; inlineCodes.push(`<code>${code}</code>`); return p; });
+            html = html.replace(/\*\*((?:[^*]|\*(?!\*))*)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/(?<!\*)\*([^*\n]*[a-zA-Z][^*\n]*)\*(?!\*)/g, '<em>$1</em>');
+            html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+            html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+            html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+            html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+            html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+            html = html.replace(/^---$/gm, '<hr>');
+            html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+            html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+            html = html.replace(/\n\n/g, '</p><p>');
+            html = html.replace(/\n/g, '<br>');
+            for (let i = 0; i < codeBlocks.length; i++) html = html.replace(`__CODE_BLOCK_${i}__`, codeBlocks[i]);
+            for (let i = 0; i < inlineCodes.length; i++) html = html.replace(`__INLINE_CODE_${i}__`, inlineCodes[i]);
+            if (!html.startsWith('<')) html = '<p>' + html + '</p>';
+            return html;
+        }
+        function renderThinkingBlock(thinking) {
+            return `<div class="thinking-block"><div class="thinking-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="thinking-icon">💭</span><span class="thinking-label">Thinking</span><span class="thinking-toggle">▶</span></div><div class="thinking-content">${escapeHtml(thinking)}</div></div>`;
+        }
+        function getToolPreview(name, input) {
+            if (!input || typeof input !== 'object') return '';
+            const n = name.toLowerCase();
+            if (n === 'bash') return input.command || '';
+            if (['read', 'write', 'edit'].includes(n)) return input.file_path || input.filePath || input.path || input.filename || '';
+            if (n === 'glob') return input.pattern || input.glob || '';
+            if (n === 'grep') return input.pattern || input.query || input.regex || '';
+            if (n === 'webfetch') return input.url || '';
+            if (n === 'websearch') return input.query || input.search || '';
+            return input.command || input.path || input.file_path || input.filePath || input.pattern || input.query || '';
+        }
+        const TOOL_ICONS = { default: '🔧', Bash: '💻', bash: '💻', Read: '📄', read: '📄', Write: '✍️', write: '✍️', Edit: '✏️', edit: '✏️', Glob: '🔍', glob: '🔍', Grep: '🔎', grep: '🔎', WebFetch: '🌐', webfetch: '🌐', WebSearch: '🌐', websearch: '🌐' };
+        function renderToolCallBlock(id, name, input) {
+            const icon = TOOL_ICONS[name] || TOOL_ICONS.default;
+            let preview = getToolPreview(name, input);
+            if (typeof preview === 'object') preview = JSON.stringify(preview);
+            if (preview.length > 100) preview = preview.slice(0, 100) + '...';
+            const safeInput = input && typeof input === 'object' ? input : {};
+            const inputDisplay = (name === 'Bash' || name === 'bash') ? (safeInput.command ? escapeHtml(safeInput.command) : escapeHtml(JSON.stringify(safeInput, null, 2))) : escapeHtml(JSON.stringify(safeInput, null, 2));
+            return `<div class="tool-call-block" data-tool-id="${id}"><div class="tool-call-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="tool-icon">${icon}</span><span class="tool-name">${escapeHtml(name)}</span><span class="tool-preview">${escapeHtml(preview)}</span><span class="tool-toggle">▶</span></div><div class="tool-call-content"><pre class="tool-input">${inputDisplay}</pre><div class="tool-result-area" data-tool-id="${id}"></div></div></div>`;
+        }
+        function renderMessagesInto(view, messages) {
+            messages.forEach(msg => {
+                const div = document.createElement('div');
+                div.className = `message ${msg.role}`;
+                let html = '';
+                if (msg.role === 'assistant') html += '<div class="assistant-label">' + '🤖 claude</div>';
+                if (msg.content_blocks && msg.content_blocks.length) {
+                    html += '<div class="message-content">';
+                    msg.content_blocks.forEach(b => {
+                        if (b.type === 'thinking') html += renderThinkingBlock(b.thinking);
+                        else if (b.type === 'tool_use') html += renderToolCallBlock(b.id, b.name, b.input);
+                        else if (b.type === 'text') html += `<div class="text-block">${renderMarkdown(b.text)}</div>`;
+                    });
+                    html += '</div>';
+                    div.innerHTML = html;
+                    msg.content_blocks.forEach(b => {
+                        if (b.type === 'tool_result') {
+                            const area = div.querySelector(`.tool-result-area[data-tool-id="${b.tool_use_id}"]`);
+                            if (area) area.innerHTML = `<div class="tool-result-inline"><div class="tool-result-header"><span class="tool-result-icon">📋</span><span class="tool-result-label">Output</span></div><pre class="tool-result-content">${escapeHtml(b.content)}</pre></div>`;
+                        }
+                    });
+                } else {
+                    html += `<div class="message-content">${msg.role === 'assistant' ? renderMarkdown(msg.content) : escapeHtml(msg.content)}</div>`;
+                    div.innerHTML = html;
+                }
+                view.appendChild(div);
+            });
+            view.scrollTop = view.scrollHeight;
+        }
+
+        // ── 远端数据源（与聊天页 remote 模式一致）：拉补丁服务地址 + 令牌，after=size 做未变化短路 ──
+        let serversCache = null;
+        async function patchServers() {
+            if (serversCache && serversCache.length) return serversCache;
+            const res = await fetch('/api/patch-config');
+            if (!res.ok) throw new Error('cc-web 配置接口不可用');
+            const cfg = (await res.json().catch(() => ({}))) || {};
+            let s = Array.isArray(cfg.patch_search_servers) ? cfg.patch_search_servers : (cfg.patch_search_api ? [cfg.patch_search_api] : []);
+            s = s.map(v => String(v).trim()).filter(Boolean);
+            if (!s.length) throw new Error('补丁服务地址未配置');
+            serversCache = s;
+            return s;
+        }
+        let lastSize = null, stepStatus = '';
+        async function load() {
+            const servers = await patchServers();
+            const token = localStorage.getItem(PATCH_TOKEN_KEY) || '';
+            let lastErr = null;
+            for (const base of servers) {
+                const url = `${base.replace(/\/+$/, '')}/api/workflows/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(step)}/session` + (lastSize != null ? `?after=${lastSize}` : '');
+                try {
+                    const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+                    const p = await res.json().catch(() => ({}));
+                    if (res.status === 401) throw new Error('登录已失效，请回补丁中心重新登录后再查看');
+                    if (!res.ok || p.code !== 0) throw new Error(p.message || p.detail || `HTTP ${res.status}`);
+                    const d = p.data || {};
+                    stepStatus = d.step_status || '';
+                    if (d.unchanged) return null;
+                    lastSize = d.size;
+                    return d.messages || [];
+                } catch (e) { lastErr = e; }
+            }
+            throw lastErr || new Error('无法连接补丁中心');
+        }
+
+        const TERMINAL = ['success', 'failed', 'cancelled'];
+        function setBanner() {
+            const running = stepStatus && !TERMINAL.includes(stepStatus);
+            banner.className = 'server-replay-banner' + (running ? ' live' : ' ended');
+            banner.innerHTML = `<span class="srb-dot"></span><span class="srb-text">${running ? '服务器会话执行中 · 实时更新中' : '服务器会话已结束 · 只读查看'}</span>`;
+        }
+
+        async function main() {
+            meta.textContent = `步骤 ${step} · ${sid}`;
+            if (!sid || !runId || !step) { body.innerHTML = '<div class="patch-muted">缺少会话参数，无法回放。</div>'; setBanner(); return; }
+            let messages;
+            try { messages = await load(); }
+            catch (e) { body.innerHTML = `<div class="patch-muted">读取服务器会话失败：${escapeHtml(e.message)}</div>`; return; }
+            if (!messages || !messages.length) { body.innerHTML = '<div class="patch-muted">该会话暂无内容或尚未开始输出。</div>'; setBanner(); return; }
+
+            let rendered = 0;
+            const renderDelta = list => {
+                if (rendered > 0 && list.length >= rendered) {
+                    // 最后一条可能追加了 tool_result → 重画它 + 新来的
+                    const last = body.lastElementChild;
+                    if (last && last.classList.contains('message')) last.remove();
+                    renderMessagesInto(body, list.slice(rendered - 1));
+                } else {
+                    renderMessagesInto(body, list);
+                }
+                const newest = body.lastElementChild;
+                if (newest) { newest.classList.remove('msg-flash'); void newest.offsetWidth; newest.classList.add('msg-flash'); }
+                rendered = list.length;
+            };
+            renderDelta(messages);
+            setBanner();
+            if (!TERMINAL.includes(stepStatus)) {
+                const timer = setInterval(async () => {
+                    try {
+                        const list = await load();
+                        if (list !== null) renderDelta(list);
+                        setBanner();
+                        if (TERMINAL.includes(stepStatus)) clearInterval(timer);
+                    } catch (e) { /* 单次失败忽略，下一轮再试 */ }
+                }, 5000);
+            }
+        }
+        main();
+    })();
+    </script>
+</body>
+</html>

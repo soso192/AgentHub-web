@@ -42,7 +42,7 @@
                 <section class="node-run-section">
                     <h3>问题描述</h3>
                     <div id="nodeRunProblem" class="md-box md-box-compact text-block">正在加载...</div>
-                    <div class="node-run-kv-row" style="margin-top:8px"><span class="node-run-kv-key">触发的url</span><span class="node-run-kv-value" id="nodeRunTriggerUrl">—</span></div>
+                    <div class="node-run-kv-row" style="margin-top:8px"><span class="node-run-kv-key">触发的url/入口类</span><span class="node-run-kv-value" id="nodeRunTriggerUrl">—</span></div>
                 </section>
 
                 <section class="node-run-section">
@@ -86,6 +86,7 @@
                 <div class="node-run-decision" id="nodeRunDecision" hidden>
                     <button id="nodeRunSolved" type="button" class="patch-primary-btn">已解决</button>
                     <button id="nodeRunUnsolved" type="button" class="patch-secondary-btn">未解决</button>
+                    <button id="nodeRunContinue" type="button" class="patch-secondary-btn" title="回列表页在原 claude 会话里发「继续」">继续</button>
                 </div>
             </aside>
             </div>
@@ -186,9 +187,9 @@
         function nodeRunStatusLabel(run) {
             if (run.phase === 'analyzing') return '执行中';
             if (run.phase === 'merging') return '合并中';
-            if (run.phase === 'awaiting_decision') return run.error ? '执行出错' : '待判定';
+            // 执行出错 / 合并中断一律显示「待判定」（与 patches.js 同一口径）
+            if (run.phase === 'awaiting_decision' || run.phase === 'failed') return '待判定';
             if (run.phase === 'done') return run.verdict === 'solved' ? '已解决' : '未解决';
-            if (run.phase === 'failed') return run.failure === 'aborted' ? '已中断' : '合并失败';
             return '未知';
         }
         // 与 patches.js 的 patchNodeCcWeb 同款：同源接口，失败即抛
@@ -215,13 +216,10 @@
             if (![...query].length) return;
             location.href = `/chat.html?${query}`;
         }
-        // 右侧判定区按钮：与列表操作列同一套语义
+        // 右侧判定区按钮：与列表操作列同一套语义——待判定（含执行出错/合并中断）统一给 已解决/未解决/继续
         function nodeRunDecisionActions(run) {
-            if (run.phase === 'awaiting_decision' && !run.error) return { solved: true, unsolved: true, unsolvedLabel: '未解决' };
-            if (run.phase === 'awaiting_decision' && run.error) return { solved: false, unsolved: true, unsolvedLabel: '重新执行' };
-            if (run.phase === 'failed' && run.failure === 'merge') return { solved: false, unsolved: true, unsolvedLabel: '重新合并' };
-            if (run.phase === 'failed' && run.failure === 'aborted') return { solved: false, unsolved: true, unsolvedLabel: run.stage === 2 ? '重新合并' : '重新执行' };
-            return { solved: false, unsolved: false, unsolvedLabel: '未解决' };
+            const pending = run.phase === 'awaiting_decision' || run.phase === 'failed';
+            return { solved: pending, unsolved: pending };
         }
         // 耗时：每轮一条（阶段一/二），显示总耗时、首字延迟(思考)、各工具耗时（编译/打包/差异分析等）
         function renderTiming(run) {
@@ -260,13 +258,12 @@
             ].join('');
             document.getElementById('nodeRunSession').innerHTML = sessionRows || '<span class="patch-muted">无</span>';
             document.getElementById('nodeRunResumeSession').hidden = !(run.session_id || run.agent_session_id);
-            // 右侧判定区：与列表操作列同一套状态语义（待判定→已解决/未解决；执行出错→重新执行；合并失败→重新合并）
+            // 右侧判定区：与列表操作列同一套状态语义（待判定→已解决/未解决/继续，含执行出错与合并中断）
             const na = nodeRunDecisionActions(run);
             document.getElementById('nodeRunDecision').hidden = !(na.solved || na.unsolved);
             document.getElementById('nodeRunSolved').hidden = !na.solved;
-            const uBtn = document.getElementById('nodeRunUnsolved');
-            uBtn.hidden = !na.unsolved;
-            if (na.unsolved) uBtn.textContent = na.unsolvedLabel;
+            document.getElementById('nodeRunUnsolved').hidden = !na.unsolved;
+            document.getElementById('nodeRunContinue').hidden = !na.unsolved;
 
             document.getElementById('nodeRunReport').innerHTML = renderMarkdown(run.report || '（暂无结论）');
             renderTiming(run);
@@ -596,22 +593,20 @@
             loadRun(runId, mePromise);
 
             document.getElementById('patchBackBtn').onclick = () => { location.href = '/patches.html?tab=node'; };
-            // 「已解决/未解决/重新执行/重新合并」回列表页执行：详情页只负责展示，弹框/续跑都在列表页现有逻辑里
+            // 「已解决/未解决/继续」回列表页执行：详情页只负责展示，弹框/续跑都在列表页现有逻辑里
             document.getElementById('nodeRunSolved').onclick = () => {
                 const runId = new URLSearchParams(location.search).get('run_id');
                 location.href = `/patches.html?tab=node&node_action=solved&run=${encodeURIComponent(runId)}`;
             };
             document.getElementById('nodeRunUnsolved').onclick = () => {
                 const runId = new URLSearchParams(location.search).get('run_id');
-                // 待判定（未解决）→ unsolved：回列表页弹「上传日志 → 阶段一提示词+日志」；
-                // 执行出错/合并失败/已中断（重新执行/重新合并）→ rerun：回列表页直接发「继续」
-                ccWeb('/api/node/runs').then(payload => {
-                    const run = (payload.data || []).find(item => String(item.id) === String(runId));
-                    const action = (run && run.phase === 'awaiting_decision' && !run.error) ? 'unsolved' : 'rerun';
-                    location.href = `/patches.html?tab=node&node_action=${action}&run=${encodeURIComponent(runId)}`;
-                }).catch(() => {
-                    location.href = `/patches.html?tab=node&node_action=rerun&run=${encodeURIComponent(runId)}`;
-                });
+                // 未解决：回列表页弹「补信息重跑阶段一」
+                location.href = `/patches.html?tab=node&node_action=unsolved&run=${encodeURIComponent(runId)}`;
+            };
+            document.getElementById('nodeRunContinue').onclick = () => {
+                const runId = new URLSearchParams(location.search).get('run_id');
+                // 继续：回列表页在原 claude 会话里直接发「继续」
+                location.href = `/patches.html?tab=node&node_action=rerun&run=${encodeURIComponent(runId)}`;
             };
             document.getElementById('patchThemeToggle').onclick = () => patchSetTheme(patchState.theme === 'dark' ? 'light' : 'dark');
             document.getElementById('nodeRunExplorerRefresh').onclick = (event) => { event.stopPropagation(); explorerRefresh(); };

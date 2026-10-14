@@ -11,6 +11,7 @@ const FOLDERPICK_JS: &str = include_str!("../static/folderpick.js");
 const WORKFLOW_RUN_HTML: &str = include_str!("../static/workflow_run.html");
 const NODE_RUN_HTML: &str = include_str!("../static/node_run.html");
 const ADAPT_RUN_HTML: &str = include_str!("../static/adapt_run.html");
+const SERVER_REPLAY_HTML: &str = include_str!("../static/server_replay.html");
 
 /// Generate ETag based on content hash for cache validation
 fn generate_etag(content: &str) -> String {
@@ -37,6 +38,7 @@ pub async fn serve(req: HttpRequest) -> HttpResponse {
         "/workflow_run.html" => (WORKFLOW_RUN_HTML, "text/html; charset=utf-8"),
         "/node_run.html" => (NODE_RUN_HTML, "text/html; charset=utf-8"),
         "/adapt_run.html" => (ADAPT_RUN_HTML, "text/html; charset=utf-8"),
+        "/server_replay.html" => (SERVER_REPLAY_HTML, "text/html; charset=utf-8"),
         _ => {
             return HttpResponse::NotFound().body("Not Found");
         }

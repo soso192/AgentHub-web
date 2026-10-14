@@ -14,7 +14,7 @@ pub struct ClaudeAssistant {
     // 外层 handle 只需读锁（可共享），建会话与并发流式互不阻塞。
     sessions: RwLock<HashMap<String, ClaudeSession>>,
     default_model: String,
-    git_bash_path: String,
+    git_bash_path: Option<String>,
     claude_cmd: String,
     /// cc-web 自带的 MCP 配置（解析后的绝对路径），None 表示没配 → 不加 --mcp-config
     mcp_config_path: Option<String>,
@@ -43,19 +43,37 @@ impl ClaudeAssistant {
 
         let claude_cmd = Self::find_claude_cmd();
 
-        let git_bash_path = std::env::var("CLAUDE_CODE_GIT_BASH_PATH")
-            .unwrap_or_else(|_| {
+        // 找到 git-bash 的真实路径则用它（显式设置能覆盖 claude 自己的探测）；
+        // 找不到就**不设置**这个变量（None），让 claude 自己探测。以前找不到会退回
+        // 字面量 "bash"，claude 拿到一个不存在的路径会直接启动失败（退出码 1、
+        // 报 unable to find CLAUDE_CODE_GIT_BASH_PATH path "bash"）——设错值比不设更糟。
+        let git_bash_path: Option<String> = std::env::var("CLAUDE_CODE_GIT_BASH_PATH")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .and_then(|value| {
+                // 显式给的值也必须真实存在：指向不存在路径的值与字面量 "bash" 一样，
+                // 会让 claude 启动即退（stderr 报 unable to find CLAUDE_CODE_GIT_BASH_PATH）。
+                // 忽略坏值、落到下面的候选路径，比把它原样传下去好。
+                if std::path::Path::new(&value).exists() {
+                    Some(value)
+                } else {
+                    log::warn!("[claude] CLAUDE_CODE_GIT_BASH_PATH 指向的 {} 不存在，忽略该值", value);
+                    None
+                }
+            })
+            .or_else(|| {
                 let paths = vec![
                     r"D:\Downloads\Software\Git\bin\bash.exe",
                     r"C:\Program Files\Git\bin\bash.exe",
                     r"C:\Program Files (x86)\Git\bin\bash.exe",
+                    r"C:\Program Files\Git\usr\bin\bash.exe",
+                    r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
                 ];
-                for path in paths {
-                    if std::path::Path::new(path).exists() {
-                        return path.to_string();
-                    }
-                }
-                "bash".to_string()
+                paths
+                    .into_iter()
+                    .find(|path| std::path::Path::new(path).exists())
+                    .map(str::to_string)
             });
 
         let mcp_config_path = super::mcp_config::resolve_mcp_config()
@@ -429,16 +447,34 @@ impl AiAssistant for ClaudeAssistant {
             } else {
                 Command::new(&claude_cmd)
             };
-            cmd.args(args)
-                .current_dir(&cwd)
-                .env("CLAUDE_CODE_GIT_BASH_PATH", git_bash)
-                .stdin(Stdio::piped())
+            cmd.args(args).current_dir(&cwd);
+            // 只有确实找到真实路径才设 CLAUDE_CODE_GIT_BASH_PATH，否则留给 claude 自己探测
+            // （设一个不存在的路径——以前退回字面量 "bash"——会让 claude 启动即失败）
+            if let Some(git_bash) = &git_bash {
+                cmd.env("CLAUDE_CODE_GIT_BASH_PATH", git_bash);
+            }
+            cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             let mut child = cmd.spawn().map_err(|error| format!("failed to start ClaudeCode: {}", error))?;
             if let Some(mut stdin) = child.stdin.take() {
                 stdin.write_all(prompt.as_bytes()).map_err(|error| format!("failed to send prompt: {}", error))?;
             }
+            // stderr 单独线程攒起来：claude 启动即失败时原因都在 stderr，不读就只能看到
+            // "退出码 1、没有输出"（与 stream_session 同一个坑，这里一并修掉）
+            let stderr_holder: std::sync::Arc<std::sync::Mutex<String>> = std::sync::Arc::default();
+            let stderr_thread = {
+                let stderr = child.stderr.take().expect("stderr should be piped");
+                let holder = std::sync::Arc::clone(&stderr_holder);
+                std::thread::spawn(move || {
+                    use std::io::Read;
+                    let mut text = String::new();
+                    let _ = std::io::BufReader::new(stderr).take(64 * 1024).read_to_string(&mut text);
+                    if !text.trim().is_empty() {
+                        *holder.lock().unwrap() = text.trim().to_string();
+                    }
+                })
+            };
             let stdout = child.stdout.take().expect("stdout should be piped");
             let reader = std::io::BufReader::new(stdout);
             use std::io::BufRead;
@@ -479,9 +515,11 @@ impl AiAssistant for ClaudeAssistant {
             }
 
             let _ = child.wait();
+            let _ = stderr_thread.join();
+            let stderr_note = stderr_holder.lock().map(|text| text.trim().to_string()).unwrap_or_default();
 
             if let Some(err) = error_text {
-                return Err(err);
+                return Err(if stderr_note.is_empty() { err } else { format!("{err}（stderr: {stderr_note}）") });
             }
             // result 事件为空时（如中途后台任务通知后的收尾语），退回读取会话 jsonl 的实质结果
             let result = result_text
@@ -490,7 +528,11 @@ impl AiAssistant for ClaudeAssistant {
                 .or_else(|| read_substantive_result(&cwd_str));
             match result {
                 Some(text) => Ok((text, agent_session_id)),
-                None => Err("ClaudeCode produced no output".to_string()),
+                None => Err(if stderr_note.is_empty() {
+                    "ClaudeCode produced no output".to_string()
+                } else {
+                    format!("ClaudeCode produced no output（stderr: {stderr_note}）")
+                }),
             }
         }).await.map_err(|error| format!("task error: {}", error))?
     }
@@ -536,10 +578,12 @@ impl AiAssistant for ClaudeAssistant {
             args.extend(mcp_flags);
 
             let mut cmd = Command::new(&claude_cmd);
-            cmd.args(&args)
-                .current_dir(&cwd)
-                .env("CLAUDE_CODE_GIT_BASH_PATH", &git_bash)
-                .stdin(Stdio::piped())
+            cmd.args(&args).current_dir(&cwd);
+            // 只有确实找到真实路径才设 CLAUDE_CODE_GIT_BASH_PATH，否则留给 claude 自己探测
+            if let Some(git_bash) = &git_bash {
+                cmd.env("CLAUDE_CODE_GIT_BASH_PATH", git_bash);
+            }
+            cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
@@ -617,10 +661,12 @@ impl AiAssistant for ClaudeAssistant {
             args.extend(mcp_flags);
 
             let mut cmd = Command::new(&claude_cmd);
-            cmd.args(&args)
-                .current_dir(&cwd)
-                .env("CLAUDE_CODE_GIT_BASH_PATH", &git_bash)
-                .stdin(Stdio::piped())
+            cmd.args(&args).current_dir(&cwd);
+            // 只有确实找到真实路径才设 CLAUDE_CODE_GIT_BASH_PATH，否则留给 claude 自己探测
+            if let Some(git_bash) = &git_bash {
+                cmd.env("CLAUDE_CODE_GIT_BASH_PATH", git_bash);
+            }
+            cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
@@ -793,7 +839,6 @@ impl AiAssistant for ClaudeAssistant {
         on_result_callback: Option<Box<dyn Fn() + Send>>,
     ) -> StreamResult {
         log::info!("[claude] stream_session: session={}, model={}, resume={:?}", session_id, model, existing_agent_session_id);
-        let git_bash = &self.git_bash_path;
 
         let mut args = vec![
             "--print".to_string(),
@@ -814,10 +859,12 @@ impl AiAssistant for ClaudeAssistant {
         args.extend(self.mcp_flags());
 
         let mut cmd = self.create_claude_command();
-        cmd.args(&args)
-            .current_dir(cwd)
-            .env("CLAUDE_CODE_GIT_BASH_PATH", git_bash)
-            .stdin(Stdio::piped())
+        cmd.args(&args).current_dir(cwd);
+        // 只有确实找到真实路径才设 CLAUDE_CODE_GIT_BASH_PATH，否则留给 claude 自己探测
+        if let Some(git_bash) = &self.git_bash_path {
+            cmd.env("CLAUDE_CODE_GIT_BASH_PATH", git_bash);
+        }
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -845,6 +892,23 @@ impl AiAssistant for ClaudeAssistant {
             let _ = stdin.flush();
         }
 
+        // stderr 单独起一个线程攒起来（最多 64KB）：claude 启动即失败时真正的报错
+        // 都写在 stderr。以前只设了 Stdio::piped() 却从不读——管道没人消费，日志里
+        // 只能看到"退出码 1、0 行输出"，等于把失败原因直接扔了。
+        let stderr_holder: std::sync::Arc<std::sync::Mutex<String>> = std::sync::Arc::default();
+        let stderr_thread = {
+            let stderr = child.stderr.take().expect("stderr should be piped");
+            let holder = std::sync::Arc::clone(&stderr_holder);
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut text = String::new();
+                let _ = std::io::BufReader::new(stderr).take(64 * 1024).read_to_string(&mut text);
+                if !text.trim().is_empty() {
+                    *holder.lock().unwrap() = text.trim().to_string();
+                }
+            })
+        };
+
         let stdout = child.stdout.take().expect("stdout should be piped");
         let reader = std::io::BufReader::new(stdout);
         use std::io::BufRead;
@@ -852,6 +916,11 @@ impl AiAssistant for ClaudeAssistant {
         let mut agent_session_id: Option<String> = None;
         let mut line_count = 0;
         let mut callback_called = false;
+        // claude 的 API 级报错（system/api_error，如供应商被删后的 503）只出现在 stdout 事件流里；
+        // 重试耗尽后它常常**不发 result 终态事件**直接退出——前端就永远收不到终态，
+        // 智能开发这轮会被对账落成普通「待判定」，报错被吞。记下最后一次的报错文本，
+        // 循环结束仍无终态时用它补发 error 事件（见循环后的兜底）。
+        let mut last_api_error: Option<String> = None;
 
         for line in reader.lines() {
             let line = match line {
@@ -874,10 +943,67 @@ impl AiAssistant for ClaudeAssistant {
                     callback();
                 }
             }
+            if !result_sent && line.contains("\"api_error\"") {
+                if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
+                    let err = event.get("error");
+                    let text = err
+                        .and_then(|e| e.get("formatted")).and_then(|v| v.as_str())
+                        .or_else(|| err.and_then(|e| e.get("message")).and_then(|v| v.as_str()))
+                        .map(|s| s.to_string());
+                    if let Some(t) = text {
+                        last_api_error = Some(t);
+                    }
+                }
+            }
         }
 
         let exit_status = child.wait();
+        // 进程退出后 stderr 也到 EOF，攒下来的就是它退出的真正原因（如果有）
+        let _ = stderr_thread.join();
         log::info!("[claude] stream loop ended, {} lines, exit={:?}", line_count, exit_status);
+        if let Ok(stderr_text) = stderr_holder.lock() {
+            if !stderr_text.is_empty() {
+                log::warn!("[claude] stderr: {}", *stderr_text);
+            }
+        }
+
+        // 兜底终态：claude 从未发出终态事件（result/error）就退出时，补发一个 error 事件，
+        // 否则前端收不到任何终态、页面永远停在"执行中"。两类触发：
+        // 1) 流里见过 api_error（如网关 503，重试耗尽后 claude 常常不发 result 直接退）；
+        // 2) 一行 stdout 都没有就退出 = 启动即失败，真实原因在 stderr（典型：
+        //    CLAUDE_CODE_GIT_BASH_PATH 指向不存在的路径、未登录、参数不合法）。
+        //    以前这种情况日志只剩"退出码 1、0 行"，前端则表现为彻底没反应。
+        // 正常完成（result 已发）不受影响；用户中断（taskkill）发生时通常已有输出，也不受影响。
+        if !callback_called {
+            let fallback_message: Option<String> = if let Some(err) = last_api_error {
+                Some(format!("API Error: {}", err))
+            } else if line_count == 0 {
+                let exit_code = exit_status
+                    .as_ref()
+                    .ok()
+                    .and_then(|status| status.code())
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let stderr_text = match stderr_holder.lock() {
+                    Ok(text) if !text.is_empty() => text.clone(),
+                    _ => "(stderr 无输出)".to_string(),
+                };
+                Some(format!("Claude 启动即退出（exit code {}）：{}", exit_code, stderr_text))
+            } else {
+                None
+            };
+
+            if let Some(message) = fallback_message {
+                log::warn!("[claude] exited without terminal event, emitting fallback error event");
+                streaming::send_event(tx, serde_json::json!({
+                    "type": "error",
+                    "message": message
+                }));
+                if let Some(ref callback) = on_result_callback {
+                    callback();
+                }
+            }
+        }
 
         StreamResult { agent_session_id, pid: Some(pid), result_sent: false }
     }

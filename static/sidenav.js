@@ -10,7 +10,11 @@
    改菜单只改这里一处：ITEMS 的顺序与服务器 MENU_CATALOG 一致；
    末尾 menus / sessions 是前端专属、仅管理员可见。
 
-   兜底：未登录或取不到用户时，按服务器 DEFAULT_VISIBLE 的等价规则
+   首帧渲染：登录成功后把 {role, menus} 缓存到 localStorage（cc-web-patch-user-cache），
+   每次进页面先按缓存渲染，首帧就是完整正确的菜单（不闪、不补齐），再异步用
+   /api/auth/me 精调。登出清缓存。
+
+   兜底：从未登录过（无缓存）或取不到用户时，按服务器 DEFAULT_VISIBLE 的等价规则
    （隐藏 analysis / product 与两项管理员项），不把菜单留空。
    ══════════════════════════════════════════════════════════════════ */
 (function () {
@@ -118,7 +122,75 @@
         sync();
     }
 
+    // ── 菜单权限本地缓存：首帧就完整正确显示的关键 ──
+    // 登录成功后把 {role, menus} 存 localStorage；每次进页面首帧直接按缓存渲染，
+    // 不用等 /api/auth/me（那两次网络请求正是「菜单慢慢补齐、看着像登录慢」的来源）：
+    //   - 普通用户首帧就只显示自己的菜单（不再「全部菜单一闪而过」）
+    //   - 管理员首帧就是全集（不再登录后 5 项慢慢冒出来）
+    // 缓存只在成功拉到用户时刷新；登出时清掉，避免下个账号串菜单。
+    const USER_CACHE_KEY = 'cc-web-patch-user-cache';
+
+    function loadCachedUser() {
+        try {
+            const raw = localStorage.getItem(USER_CACHE_KEY);
+            const cached = raw ? JSON.parse(raw) : null;
+            if (cached && typeof cached === 'object' && 'role' in cached) return cached;
+        } catch (error) { /* 坏缓存当没有 */ }
+        return null;
+    }
+    function saveCachedUser(user) {
+        try {
+            localStorage.setItem(USER_CACHE_KEY, JSON.stringify({
+                role: user.role,
+                menus: Array.isArray(user.menus) ? user.menus : null,
+            }));
+        } catch (error) { /* 隐私模式等 */ }
+    }
+    function clearCachedUser() {
+        try { localStorage.removeItem(USER_CACHE_KEY); } catch (error) { /* 隐私模式等 */ }
+    }
+
+    // 取当前用户：优先复用页面脚本挂在 window.__patchAuthPromise 上的共享鉴权链
+    // （patches.js 求值时同步挂上、patchSetAuthenticated 每次切换都刷新它）——
+    // 有它就不自己再发 /api/patch-config + /api/auth/me，此前两份脚本各拉一遍，
+    // 刷新时这两个请求会翻倍。没有共享链的页面（详情页等）维持自己拉取的兜底。
+    // 成功 → 存缓存 + 应用；失败/未登录 → 保持现状（不降级、不毁缓存）
+    function refreshUser() {
+        const shared = window.__patchAuthPromise;
+        if (shared) {
+            shared.then(user => {
+                if (user) { saveCachedUser(user); applyVisibility(user); }
+            }).catch(() => { /* 保持首帧的缓存/兜底状态 */ });
+            return;
+        }
+        fetchUser().then(user => {
+            if (user) { saveCachedUser(user); applyVisibility(user); }
+        }).catch(() => { /* 保持首帧的缓存/兜底状态 */ });
+    }
+
+    // 登录/登出是纯前端切换（patchSetAuthenticated 切 html.patch-auth，不整页刷新），
+    // 侧边栏监听这个 class 变化：登录后立刻按真实用户刷新菜单，避免跨账号串菜单；
+    // 登出时清缓存 + 回到兜底。
+    function bindAuthObserver() {
+        let lastAuth = document.documentElement.classList.contains('patch-auth');
+        new MutationObserver(() => {
+            const now = document.documentElement.classList.contains('patch-auth');
+            if (now === lastAuth) return;
+            lastAuth = now;
+            if (now) refreshUser();
+            else { clearCachedUser(); applyVisibility(null); }
+        }).observe(document.documentElement, {attributes: true, attributeFilter: ['class']});
+    }
+
     render();
+    // 首帧直接用缓存渲染（无缓存则保守兜底：隐藏 admin 专属 + analysis/product）。
+    // 之前两版各有可见副作用：完全不隐藏 → 普通用户「全部菜单一闪而过」；
+    // 一律隐藏等 /api/auth/me → 管理员「菜单慢慢补齐」像登录慢。缓存让两边首帧都对。
+    applyVisibility(loadCachedUser() || null);
     bindToggle();
-    fetchUser().then(applyVisibility).catch(() => applyVisibility(null));
+    // 等 patches.js（在本文件之后加载）把共享鉴权链挂到 window 再取用户：
+    // 有共享链就复用（省掉 patch-config + auth/me 各一次），没有才自己发请求
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => refreshUser(), { once: true });
+    else refreshUser();
+    bindAuthObserver();     // SPA 登录/登出：class 变化时刷新，避免跨账号串菜单
 })();

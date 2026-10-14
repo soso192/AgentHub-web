@@ -414,6 +414,30 @@ button:active:not(:disabled), [role="button"]:active { transform: translateY(1px
     overflow-wrap: anywhere;
 }
 
+/* 服务器会话回放：固定在原输入框位置的实时状态条（执行中脉冲 / 已结束定格） */
+.server-replay-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 12px;
+    border-left: 3px solid var(--text-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.server-replay-banner .srb-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text-muted); flex: 0 0 auto;
+}
+.server-replay-banner.live { border-left-color: var(--accent); background: var(--accent-soft); }
+.server-replay-banner.live .srb-dot { background: var(--accent); animation: srbPulse 1.2s infinite; }
+@keyframes srbPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+/* 执行中新增消息：短暂高亮最强的临场感（终态不触发） */
+.msg-flash { animation: msgFlash 1s ease-out; }
+@keyframes msgFlash { 0% { box-shadow: 0 0 0 3px var(--accent-soft); } 100% { box-shadow: none; } }
+
 .message {
     margin-bottom: 16px;
     display: flex;
@@ -1047,6 +1071,12 @@ textarea {
 .workflow-step-info small { color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .workflow-step-status { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px; font-size: 11px; white-space: nowrap; flex-shrink: 0; }
 .workflow-step-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+/* 步骤产物列表（流程运行详情页）：步骤卡换行显示产物按钮 */
+.workflow-step { flex-wrap: wrap; }
+.workflow-step-artifacts { flex-basis: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding-top: 8px; }
+.workflow-artifacts-label { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.workflow-artifact-btn { border: 1px solid var(--border); background: var(--bg-panel); color: var(--text); font-size: 12px; padding: 3px 10px; border-radius: 999px; cursor: pointer; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-artifact-btn:hover { border-color: var(--accent); color: var(--accent); }
 .workflow-result-btn, .workflow-view-btn, .workflow-rerun-btn, .workflow-delete-btn { padding: 5px 9px; }
 .workflow-view-btn { color: var(--accent); font-weight: 600; }
 .workflow-rerun-btn, .workflow-delete-btn, #workflowHistoryRerun { color: var(--error); }
@@ -1061,6 +1091,9 @@ textarea {
 .workflow-output-toolbar .workflow-copy-btn { position: static; margin: 0 0 8px; }
 .workflow-result-output .workflow-copy-btn:hover { color: var(--accent); }
 .workflow-result-output .workflow-copy-btn.copied { color: var(--success); }
+/* 详情页底部输出框：随摘要内容自适应高度（几行摘要就几行高，不再撑 260px 空框），
+   超过 58vh 上限（沿用 .workflow-result-code 的 max-height）才滚动，全屏时不受限 */
+#workflowHistoryOutput { min-height: 0; }
 #workflowResultOutput:fullscreen, #workflowResultOutput:-webkit-full-screen, #workflowHistoryOutputBox:fullscreen, #workflowHistoryOutputBox:-webkit-full-screen, #workflowSummaryOutput:fullscreen, #workflowSummaryOutput:-webkit-full-screen { display: flex; flex-direction: column; background: var(--code-bg); padding: 14px; }
 #workflowResultOutput:fullscreen #workflowResultContent, #workflowResultOutput:-webkit-full-screen #workflowResultContent, #workflowHistoryOutputBox:fullscreen #workflowHistoryOutput, #workflowHistoryOutputBox:-webkit-full-screen #workflowHistoryOutput, #workflowSummaryOutput:fullscreen #workflowSummaryContent, #workflowSummaryOutput:-webkit-full-screen #workflowSummaryContent { flex: 1; min-height: 0; max-height: none; margin: 0; border: none; }
 .workflow-history-card { margin-top: 16px; overflow: hidden; }

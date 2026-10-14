@@ -267,30 +267,153 @@
             await runLocalStep(claim.pending_local);
         }
         // 触发本机 cc-web 执行本地 ClaudeCode 步骤，并把结果回传 patch_search。
+        // —— 本地步骤对账（与智能开发 reconcile 同构）——
+        // 本地 claude 跑在 cc-web 会话里，收尾原本靠本页 SSE result 事件；页面一旦关闭/刷新/离开，
+        // 收尾事件永远收不到 → 步骤挂在「执行中」。对账：再打开页面时问 cc-web /api/sessions 的
+        // isStreaming，凡本地 running 步骤的 cc-web 会话已不在流式 → 判定本机执行已结束 → 从产物目录
+        // 读结论/摘要 → 调 patch_search reconcile-local 正式收尾（拉回成功/待确认状态）。
+        const wfLocalStart = {};    // executionId -> 建 cc-web 会话时刻（<60s 不参与对账，防误判刚要跑）
+        let wfLastReconcile = 0;    // 对账节流
+        let wfActiveLocal = null;           // {executionId, ccwebSessionId, es} 当前本页正在跑的本机 cc-web 会话
+        let wfCancelledLocalExec = null;    // 已被「结束流程」中止的本机执行 id（不再回传）
+        async function readStepLocalFile(step, name) {
+            try {
+                const base = String(step.local_output_dir || step.resolved_directory || '').replace(/\\/g, '/');
+                if (!base) return null;
+                const r = await fetch(`/api/files/${encodeURIComponent(`${base}/${name}`)}`);
+                const p = await r.json().catch(() => ({}));
+                const v = p.content;
+                return (v != null && String(v).trim()) ? String(v) : null;
+            } catch (e) { return null; }
+        }
+        async function reconcileLocalSteps() {
+            const now = Date.now();
+            if (now - wfLastReconcile < 30000) return;   // 最多 30s 首账一次
+            wfLastReconcile = now;
+            const runId = patchState.workflow.runId;
+            if (!runId) return;
+            const steps = (patchState.workflow.steps || []).filter(s => s.claude_target === 'local' && s.status === 'running' && s.local_ccweb_session_id);
+            if (!steps.length) return;
+            let live;
+            try {
+                const res = await fetch('/api/sessions');
+                const d = await res.json().catch(() => ({}));
+                live = new Set((d.sessions || []).filter(x => x.isStreaming).map(x => x.id));
+            } catch (e) { return; }   // 问不到后端就什么都不做，宁可先显示执行中
+            for (const step of steps) {
+                if (live.has(step.local_ccweb_session_id)) continue;   // 还在跑
+                const executionId = `${runId}-${step.step_order}`;
+                if (wfLocalStart[executionId] && (now - wfLocalStart[executionId]) < 60000) continue;   // 刚建会话不碰
+                console.warn('[workflow] reconcile local step', step.step_order, '已不在流式，按产物收尾');
+                const [conclusion, summary] = await Promise.all([readStepLocalFile(step, '结论.md'), readStepLocalFile(step, '摘要.md')]);
+                const snap = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${step.step_order}/reconcile-local`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '', error: null, session_id: step.local_session_id || null, ccweb_session_id: step.local_ccweb_session_id, conclusion, summary }) }).catch(() => null);
+                if (snap) applyWorkflowSnapshot(snap);
+            }
+        }
+
         async function runLocalStep(data) {
             const runId = patchState.workflow.runId;
             if (!runId || !data || !data.execution_token) return;
-            const executionId = `${runId}-${data.step_order}`;
+            const stepOrder = data.step_order;
+            const executionId = `${runId}-${stepOrder}`;
             if (patchState.workflow.localExecutions.has(executionId)) return;
             patchState.workflow.localExecutions.add(executionId);   // 先占位再 await，防同页重复
-            let result;
-            try {
-                const response = await fetch('/api/local-claude/execute', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({execution_id: executionId, system_prompt: '', user_prompt: data.prompt || '', cwd: data.cwd})});
-                result = await response.json();
-                // 非 2xx 表示本机根本没跑起来（如工作目录不存在）：抛出让下面释放认领
-                if (!response.ok) throw new Error((result && result.error) || '本机无法执行该步骤');
-            } catch (error) {
-                // 释放认领，让其他客户端（有该目录的机器）接手
-                await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${data.step_order}/release-local`, {method:'POST'}).catch(() => {});
-                patchShowError(error.message, '本地流程执行失败');
+            if (wfCancelledLocalExec === executionId) wfCancelledLocalExec = null;   // 重新执行同一步骤时清除旧的取消标记
+
+            // 读本机产物目录下产物（结论.md/摘要.md），随结果回传。产物目录 = cc-web 会话建时的专用子目录
+            // （.wf-artifacts/<runId>/stepN，claim 下发的 output_dir）；老协议退回工作目录。
+            const readLocalFile = async (name) => {
+                try {
+                    const base = String(data.output_dir || data.cwd || '').replace(/\\/g, '/');
+                    if (!base) return null;
+                    const r = await fetch(`/api/files/${encodeURIComponent(`${base}/${name}`)}`);
+                    const p = await r.json().catch(() => ({}));
+                    const v = p.content;
+                    return (v != null && String(v).trim()) ? String(v) : null;
+                } catch (e) { return null; }
+            };
+            const cleanup = () => {
                 patchState.workflow.localExecutions.delete(executionId);
+                delete wfLocalStart[executionId];
+                if (wfActiveLocal && wfActiveLocal.executionId === executionId) wfActiveLocal = null;
+            };
+
+            // 1) 用 cc-web 会话承载本机 claude（与智能开发同机制：左侧会话语列可见、可续聊）。
+            //    建好会话拿到 cc-web session id 就尽早落库，让「查看会话」本机跑起来就能点。
+            let ccwebSessionId = null;
+            try {
+                const created = await fetch('/api/agent/new', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cwd: data.cwd || '', message: null, model: null, assistant: 'claude', resume_session_id: null }),
+                });
+                const cp = await created.json().catch(() => ({}));
+                if (!created.ok || !cp.success || !cp.sessionId) throw new Error(cp.error || '创建本地会话失败');
+                ccwebSessionId = cp.sessionId;
+                wfLocalStart[executionId] = Date.now();   // 对账保险：此会话刚开始，60s 内不参与对账收尾
+            } catch (error) {
+                // 建会话失败：释放认领，让别的客户端（有该目录的机器）接手
+                await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${stepOrder}/release-local`, { method: 'POST' }).catch(() => {});
+                patchShowError(error.message || '创建本地会话失败', '本地流程执行失败');
+                cleanup();
                 return;
             }
-            try {
-                const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${data.step_order}/local-result`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({execution_token:data.execution_token, text:result.text || '', error:result.error || null, session_id:result.session_id || null, conclusion:result.conclusion || null, summary:result.summary || null})});
-                applyWorkflowSnapshot(snapshot);
-            } catch (error) { patchShowError(error.message, '本地流程执行失败'); }
-            finally { patchState.workflow.localExecutions.delete(executionId); }
+            await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${stepOrder}/session-ccweb`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ execution_token: data.execution_token, ccweb_session_id: ccwebSessionId }) }).catch(() => {});
+            const early = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}`).catch(() => null);
+            if (early) applyWorkflowSnapshot(early);
+
+            // 2) 订阅该 cc-web 会话事件；SSE 无历史回放 → 收到 connected 后再 start，避免丢事件。
+            //    result / error 算一轮结束，读产物并回传 local-result（步骤才真正推进）。
+            let agentSessionId = null;
+            let finalText = '';
+            let finalError = null;
+            let promptSent = false;
+            let done = false;
+            let es = null;
+            const finalize = async () => {
+                if (done) return;
+                done = true;
+                if (es) { es.close(); es = null; }
+                if (wfCancelledLocalExec === executionId) { cleanup(); return; }   // 已取消：不回传、不推进
+                const [conclusion, summary] = await Promise.all([readLocalFile('结论.md'), readLocalFile('摘要.md')]);
+                try {
+                    const snap = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${stepOrder}/local-result`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ execution_token: data.execution_token, text: finalText || '', error: finalError, session_id: agentSessionId || null, ccweb_session_id: ccwebSessionId, conclusion, summary }) });
+                    applyWorkflowSnapshot(snap);
+                } catch (error) { patchShowError(error.message, '本地流程执行失败'); }
+                finally { cleanup(); }
+            };
+            const sendPrompt = async () => {
+                if (promptSent) return;
+                promptSent = true;
+                try {
+                    await fetch(`/api/agent/${encodeURIComponent(ccwebSessionId)}/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: data.prompt || '' }) });
+                } catch (error) { finalError = error.message; finalize(); }
+            };
+            const handleEvent = (ev) => {
+                switch (ev.type) {
+                    case 'start':
+                        if (ev.agentSessionId) agentSessionId = ev.agentSessionId;
+                        break;
+                    case 'chunk':
+                        finalText += ev.content || '';
+                        break;
+                    case 'result':
+                        if (ev.content) finalText = finalText ? `${finalText}\n\n${ev.content}` : (ev.content || '');
+                        finalize();
+                        break;
+                    case 'error':
+                        finalError = ev.message || '未知错误';
+                        finalize();
+                        break;
+                }
+            };
+            es = new EventSource(`/api/agent/${encodeURIComponent(ccwebSessionId)}/events`);
+            wfActiveLocal = { executionId, ccwebSessionId, es };
+            es.onmessage = event => {
+                let ev; try { ev = JSON.parse(event.data || '{}'); } catch { return; }
+                if (ev.type === 'connected') { sendPrompt(); return; }
+                handleEvent(ev);
+            };
+            es.onerror = () => { /* EventSource 自动重连；done 后会 close */ };
         }
 
         function renderWorkflowStatus() {
@@ -304,17 +427,118 @@
                 const status = step.status || 'pending';
                 const active = Number(step.step_order) === Number(currentStep);
                 const actions = [];
-                if (step.claude_target === 'local' && step.local_session_id && ['success', 'failed', 'waiting_confirmation'].includes(status)) actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-resume-step="${patchEscape(step.step_order)}">继续会话</button>`);
+                // local 步骤「查看会话」：优先用 cc-web 会话（左侧会话语列可见、可续聊）；cc-web 会话 id 没存上的
+                // （如步骤在别处执行/早存失败）退回 claude 会话 id 走只读回放。运行中含 running。
+                if (step.claude_target === 'local' && (step.local_ccweb_session_id || step.local_session_id) && ['running', 'success', 'failed', 'waiting_confirmation'].includes(status)) actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-view-local-step="${patchEscape(step.step_order)}">查看会话</button>`);
+                // server 步骤：会话在服务器上（jsonl 落在服务器家目录），跳聊天页走远程只读回放。
+                // 执行中（session_id 一启动就落库）就能围观，不只限已结束。
+                if (step.claude_target === 'server' && step.server_session_id && ['running', 'waiting_confirmation', 'success', 'failed'].includes(status)) actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-view-step="${patchEscape(step.step_order)}">查看会话</button>`);
                 actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-run-id="${patchEscape(runId)}" data-workflow-summary-step="${patchEscape(step.step_order)}">查看摘要</button>`);
                 actions.push(`<button type="button" class="patch-secondary-btn workflow-result-btn" data-workflow-run-id="${patchEscape(runId)}" data-workflow-result-step="${patchEscape(step.step_order)}">查看结果</button>`);
                 const flowTitle = step.flow_name ? `${step.flow_code || ''} ${step.flow_name}` : (step.flow_code || '');
-                return `<div class="workflow-step ${active ? 'active' : ''}"><strong class="workflow-step-no">步骤 ${step.step_order}</strong><span class="workflow-step-info" title="${patchEscape(flowTitle)}"><b>${patchEscape(step.flow_code || '')}</b>${step.flow_name ? `<small>${patchEscape(step.flow_name)}</small>` : ''}</span><span class="workflow-step-status workflow-status-${patchEscape(status)}">${patchEscape(workflowStatusLabel(status))}</span>${actions.length ? `<div class="workflow-step-actions">${actions.join('')}</div>` : ''}</div>`;
+                return `<div class="workflow-step ${active ? 'active' : ''}"><strong class="workflow-step-no">步骤 ${step.step_order}</strong><span class="workflow-step-info" title="${patchEscape(flowTitle)}"><b>${patchEscape(step.flow_code || '')}</b>${step.flow_name ? `<small>${patchEscape(step.flow_name)}</small>` : ''}</span><span class="workflow-step-status workflow-status-${patchEscape(status)}">${patchEscape(workflowStatusLabel(status))}</span>${actions.length ? `<div class="workflow-step-actions">${actions.join('')}</div>` : ''}<div class="workflow-step-artifacts" data-artifacts-step="${patchEscape(step.step_order)}" hidden></div></div>`;
             }).join('');
         }
         function renderWorkflowSteps() {
             const state = patchState.workflow;
             const stepsEl = document.getElementById('workflowHistorySteps');
             if (stepsEl) stepsEl.innerHTML = renderWorkflowStepMarkup(state.steps, state.currentStep, state.runId);
+            loadWorkflowStepArtifacts();
+        }
+
+        // ── 步骤产物列表（server 步骤列隔离输出目录文件、点击下载；local 步骤列本机工作目录文件、
+        //     文本直接打开、其余定位资源管理器——与智能开发的产物交互一致）──
+        const WORKFLOW_ARTIFACT_TEXT_EXTS = ['md', 'txt', 'sql', 'json', 'xml', 'java', 'properties', 'log', 'py', 'js', 'html', 'css', 'cfg', 'ini', 'yaml', 'yml', 'csv', 'bat', 'sh', 'diff', 'patch'];
+        function workflowArtifactIsText(name) {
+            const ext = String(name).split('.').pop().toLowerCase();
+            return WORKFLOW_ARTIFACT_TEXT_EXTS.includes(ext);
+        }
+
+        async function loadWorkflowStepArtifacts() {
+            const runId = patchState.workflow.runId;
+            if (!runId) return;
+            for (const step of patchState.workflow.steps || []) {
+                const box = document.querySelector(`[data-artifacts-step="${CSS.escape(String(step.step_order))}"]`);
+                if (!box) continue;
+                const finished = ['success', 'failed', 'waiting_confirmation'].includes(step.status);
+                if (!finished) { box.hidden = true; box.innerHTML = ''; box.dataset.loaded = ''; continue; }
+                if (box.dataset.loaded === '1') continue;
+                box.dataset.loaded = '1';
+                try {
+                    let items = [];
+                    if ((step.claude_target || 'server') === 'server') {
+                        const data = await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(step.step_order)}/artifacts`);
+                        items = (data.items || []).map(item => ({name: item.name, server: true}));
+                    } else {
+                        // local 步骤：产物集中在本步骤的**专用产物子目录**（.wf-artifacts/<run_id>/stepN），
+                        // 只列它，避免把客开工程原有文件误当产物；没有该目录（老数据/未跑）退回工作目录。
+                        const listPath = step.local_output_dir || step.resolved_directory;
+                        if (!listPath) { box.hidden = true; continue; }
+                        const response = await fetch(`/api/files?path=${encodeURIComponent(listPath)}`);
+                        const payload = await response.json().catch(() => ({}));
+                        if (!response.ok || payload.success === false) throw new Error(payload.error || '目录读取失败');
+                        items = (payload.files || []).filter(item => !item.is_dir).map(item => {
+                            const path = String(item.path || '');
+                            return {name: path.split(/[\\/]/).pop() || path, path, server: false};
+                        });
+                    }
+                    if (!items.length) { box.hidden = true; continue; }
+                    box.hidden = false;
+                    box.innerHTML = '<span class="workflow-artifacts-label">产物</span>' + items.map(item =>
+                        `<button type="button" class="workflow-artifact-btn" data-artifact-name="${patchEscape(item.name)}" data-artifact-path="${patchEscape(item.path || '')}"${item.server ? ' data-artifact-server="1"' : ''} title="${patchEscape(item.server ? '下载到本机' : (workflowArtifactIsText(item.name) ? '查看内容' : '在资源管理器中定位'))}">${patchEscape(item.name)}</button>`).join('');
+                } catch (error) {
+                    box.hidden = true;
+                    box.dataset.loaded = '';   // 失败可重试
+                }
+            }
+        }
+
+        // server 产物下载：patchRequest 只吃 JSON，这里照抄它的多地址轮询但拿 blob 触发浏览器下载
+        async function workflowDownloadServerArtifact(stepOrder, name) {
+            const servers = patchState.patchSearchServers || [];
+            if (!servers.length) throw new Error('补丁服务地址尚未加载');
+            let lastError = null;
+            for (const base of servers) {
+                const url = `${String(base).replace(/\/+$/, '')}/api/workflows/runs/${encodeURIComponent(patchState.workflow.runId)}/steps/${encodeURIComponent(stepOrder)}/artifacts/${encodeURIComponent(name)}`;
+                try {
+                    const headers = {};
+                    if (patchToken()) headers.Authorization = `Bearer ${patchToken()}`;
+                    const response = await patchFetchTimeout(url, { headers }, PATCH_REQUEST_TIMEOUT);
+                    if (!response.ok) throw new Error(`下载失败（HTTP ${response.status}）`);
+                    const blob = await response.blob();
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = name;
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+                    return;
+                } catch (error) { lastError = error; }
+            }
+            throw lastError || new Error('产物下载失败');
+        }
+
+        // local 文本产物：读内容并复用「步骤结果」弹窗展示
+        async function workflowOpenLocalTextArtifact(name, path) {
+            const response = await fetch(`/api/files/${String(path).replace(/\\/g, '/')}`);
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload.success === false) throw new Error(payload.error || `读取失败（HTTP ${response.status}）`);
+            const modal = document.getElementById('workflowResultModal');
+            document.getElementById('workflowResultTitle').textContent = name;
+            document.getElementById('workflowResultSubtitle').textContent = '产物文件（本机）';
+            document.getElementById('workflowResultMeta').innerHTML = `<span class="workflow-result-status">artifact</span><span title="${patchEscape(path)}">${patchEscape(path)}</span>`;
+            document.getElementById('workflowResultError').hidden = true;
+            document.getElementById('workflowResultContent').textContent = payload.content == null ? '（空文件）' : String(payload.content);
+            document.getElementById('workflowResultFullscreen').hidden = false;
+            modal.hidden = false;
+        }
+
+        // local 非文本产物：弹本机资源管理器并选中该文件
+        async function workflowRevealLocalArtifact(path) {
+            const response = await fetch('/api/files/reveal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload.success === false) throw new Error(payload.error || '定位文件失败');
         }
         function applyWorkflowSnapshot(snapshot) {
             if (!snapshot) return;
@@ -333,7 +557,10 @@
             renderWorkflowStatus();
             const current = patchState.workflow.steps.find(step => Number(step.step_order) === Number(patchState.workflow.currentStep)) || patchState.workflow.steps.slice(-1)[0];
             const output = document.getElementById('workflowHistoryOutput');
-            if (output) output.textContent = patchDecodeResultText(current?.output_result || snapshot.result || snapshot.error_message || '当前流程暂无输出。');
+            // 输出框展示「摘要」：优先落盘入库的 摘要.md（output_summary），
+            // 没有再从回复正文解析 progress_summary，最后才退回完整回复正文（执行中/旧数据）
+            const summaryText = current?.output_summary || extractProgressSummary(current?.output_result) || '';
+            output.textContent = summaryText || patchDecodeResultText(current?.output_result || snapshot.result || snapshot.error_message || '当前流程暂无输出。');
             const fsMain = document.getElementById('workflowHistoryFullscreen');
             const hasOutput = !!(output && output.textContent && output.textContent !== '当前流程暂无输出。');
             if (fsMain) fsMain.hidden = !hasOutput;
@@ -489,7 +716,9 @@
         }
         async function rerunWorkflow(runId, stepOrder, wholeFlow = false) {
             const step = Number(stepOrder);
-            const confirmed = await patchConfirm(wholeFlow ? '确定要重新执行该流程吗？将清除所有步骤的输出，并从第一步重新开始。' : `确定要重新执行步骤 ${step} 及其后所有步骤吗？这些步骤的输出将被清除。`, '重新执行');
+            const confirmed = await patchConfirm(wholeFlow
+                ? '确定要重新执行该流程吗？重新执行会清空之前步骤的原有产物（流转产出的文件将被删除），并从第一步重新开始。'
+                : `确定要重新执行步骤 ${step} 及其后所有步骤吗？重新执行会清空这些步骤的原有产物（流转产出的文件将被删除）。`, '重新执行');
             if (!confirmed) return;
             try {
                 await patchRequest(`/api/workflows/runs/${encodeURIComponent(runId)}/rerun`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({step_order: step})});
@@ -534,7 +763,15 @@
                     if (eventName === 'step_started') { patchState.workflow.currentStep = data.step_order; patchState.workflow.status = 'running'; if (step) step.status = 'running'; }
                     if (eventName === 'local_call_required') { patchState.workflow.status = 'running'; if (step) step.status = 'running'; }
                     if (eventName === 'step_completed') { patchState.workflow.status = 'waiting_confirmation'; if (step) step.status = 'waiting_confirmation'; const outEl = document.getElementById('workflowHistoryOutput'); if (outEl) { outEl.textContent = patchDecodeResultText(data.text || data.result || {}); const f = document.getElementById('workflowHistoryFullscreen'); const has = !!(outEl.textContent && outEl.textContent !== '当前流程暂无输出。'); if (f) f.hidden = !has; } const nextEl = document.getElementById('workflowHistoryNext'); if (nextEl) { nextEl.hidden = false; nextEl.disabled = false; } }
-                    if (eventName === 'workflow_completed' || eventName === 'workflow_cancelled' || eventName === 'workflow_error') { patchState.workflow.status = eventName === 'workflow_completed' ? 'success' : (eventName === 'workflow_error' ? 'failed' : 'cancelled'); if (step) step.status = eventName === 'workflow_completed' ? 'success' : (eventName === 'workflow_error' ? 'failed' : 'cancelled'); const nextEl = document.getElementById('workflowHistoryNext'); if (nextEl) nextEl.hidden = true; const cancelEl = document.getElementById('workflowCancel'); if (cancelEl) cancelEl.disabled = true; }
+                    if (eventName === 'workflow_completed' || eventName === 'workflow_cancelled' || eventName === 'workflow_error') { patchState.workflow.status = eventName === 'workflow_completed' ? 'success' : (eventName === 'workflow_error' ? 'failed' : 'cancelled'); if (step) step.status = eventName === 'workflow_completed' ? 'success' : (eventName === 'workflow_error' ? 'failed' : 'cancelled'); const nextEl = document.getElementById('workflowHistoryNext'); if (nextEl) nextEl.hidden = true; const cancelEl = document.getElementById('workflowCancel'); if (cancelEl) cancelEl.disabled = true;
+                        // 结束流程：中止本页正在跑的本机 cc-web 会话（真正中断 claude），并阻止其回传 local-result
+                        if (eventName === 'workflow_cancelled' && wfActiveLocal) {
+                            wfCancelledLocalExec = wfActiveLocal.executionId;
+                            fetch(`/api/agent/${encodeURIComponent(wfActiveLocal.ccwebSessionId)}/abort`, { method: 'POST' }).catch(() => {});
+                            if (wfActiveLocal.es) wfActiveLocal.es.close();
+                            wfActiveLocal = null;
+                        }
+                    }
                     renderWorkflowStatus(); renderWorkflowSteps();
                     // 本地步骤：先认领执行权，认领不到说明别的客户端在跑，静默跳过
                     if (eventName === 'local_call_required') await claimAndRunLocal(data.step_order);
@@ -549,7 +786,7 @@
                         for (const line of message.split('\n')) { if (line.startsWith('id:')) eventId = Number(line.slice(3).trim()); if (line.startsWith('event:')) eventName = line.slice(6).trim(); if (line.startsWith('data:')) dataText += line.slice(5).trim(); }
                         if (eventId) patchState.workflow.lastEventId = eventId;
                         await dispatch(eventName, dataText);
-                        if (['step_completed', 'step_confirmed', 'workflow_advanced', 'workflow_completed', 'workflow_cancelled', 'workflow_error', 'step_cancelled', 'template_updated'].includes(eventName)) {
+                        if (['step_completed', 'step_confirmed', 'workflow_advanced', 'workflow_completed', 'workflow_cancelled', 'workflow_error', 'step_cancelled', 'template_updated', 'server_session_started'].includes(eventName)) {
                             const snapshot = await patchRequest(`/api/workflows/runs/${encodeURIComponent(streamRunId)}`);
                             applyWorkflowSnapshot(snapshot);
                         }
@@ -580,8 +817,14 @@
                 patchState.workflow.lastEventId = Number(snapshot.last_event_id) || 0;
                 if (snapshot.local_waiting) claimAndRunLocal(snapshot.local_waiting.step_order);
                 if (!['success', 'failed', 'cancelled'].includes(snapshot.status)) connectWorkflowStream();
+                // 页面重开：对账本地步骤（上次离开时可能没收尾，靠 isStreaming 判断已结束后补收尾）
+                reconcileLocalSteps();
             } catch (error) { patchShowError(error.message, '流程详情加载失败'); }
         }
+        // 从别处返回本页（bfcache/历史前进回来）也做一次对账
+        window.addEventListener('pageshow', (event) => {
+            if (event.persisted && patchState.workflow.runId) reconcileLocalSteps();
+        });
         function initPage() {
             const token = patchToken();
             const runId = new URLSearchParams(location.search).get('run_id');
@@ -613,17 +856,48 @@
             document.getElementById('patchErrorModal').onclick = event => { if (event.target.id === 'patchErrorModal') patchCloseError(); };
             document.addEventListener('keydown', event => { if (event.key === 'Escape' && !document.getElementById('patchErrorModal').hidden) patchCloseError(); });
             document.addEventListener('click', event => {
+                const artifact = event.target.closest('button[data-artifact-name]');
+                if (artifact) {
+                    const name = artifact.dataset.artifactName;
+                    if (artifact.dataset.artifactServer) {
+                        // server 产物：带 token 拉 blob 触发下载
+                        const stepOrder = artifact.closest('[data-artifacts-step]')?.dataset.artifactsStep;
+                        workflowDownloadServerArtifact(stepOrder, name).catch(error => patchShowError(error.message, '产物下载失败'));
+                    } else if (workflowArtifactIsText(name)) {
+                        // local 文本产物：直接打开内容
+                        workflowOpenLocalTextArtifact(name, artifact.dataset.artifactPath).catch(error => patchShowError(error.message, '产物打开失败'));
+                    } else {
+                        // local 其他产物：定位到本机资源管理器
+                        workflowRevealLocalArtifact(artifact.dataset.artifactPath).catch(error => patchShowError(error.message, '定位文件失败'));
+                    }
+                    return;
+                }
                 const workflowSummary = event.target.closest('[data-workflow-summary-step]');
                 if (workflowSummary) { showWorkflowStepSummary(workflowSummary.dataset.workflowRunId || patchState.workflow.runId, workflowSummary.dataset.workflowSummaryStep); return; }
                 const workflowResult = event.target.closest('[data-workflow-result-step]');
                 if (workflowResult) { showWorkflowStepResult(workflowResult.dataset.workflowRunId || patchState.workflow.runId, workflowResult.dataset.workflowResultStep); return; }
-                const workflowResumeStep = event.target.closest('[data-workflow-resume-step]');
-                if (workflowResumeStep) {
-                    const stepOrder = workflowResumeStep.dataset.workflowResumeStep;
+                const workflowViewLocal = event.target.closest('[data-workflow-view-local-step]');
+                if (workflowViewLocal) {
+                    const stepOrder = workflowViewLocal.dataset.workflowViewLocalStep;
                     const step = (patchState.workflow.steps || []).find(item => Number(item.step_order) === Number(stepOrder));
-                    if (step && step.local_session_id) {
-                        const resumeQuery = `resume=1&sid=${encodeURIComponent(step.local_session_id)}&cwd=${encodeURIComponent(step.resolved_directory || '')}`;
-                        location.href = `/chat.html?${resumeQuery}`;
+                    if (step && step.local_ccweb_session_id) {
+                        // local 步骤会话 = 真实 cc-web 会话：开新月板按选中看（左侧会话语列可见、可续聊）。
+                        // 新标签页，避免离开当前页导致本机执行收尾回传中断。
+                        window.open(`/chat.html?session=${encodeURIComponent(step.local_ccweb_session_id)}`, '_blank');
+                    } else if (step && step.local_session_id) {
+                        // 没有 cc-web 会话（步骤在别处执行/早存失败）：退回本机 claude 会话只读回放
+                        window.open(`/chat.html?history=${encodeURIComponent(step.local_session_id)}`, '_blank');
+                    }
+                    return;
+                }
+                // server 步骤「查看会话」：会话在服务器上，跳独立只读回放页（无侧栏/资源管理器）
+                const workflowViewStep = event.target.closest('[data-workflow-view-step]');
+                if (workflowViewStep) {
+                    const stepOrder = workflowViewStep.dataset.workflowViewStep;
+                    const step = (patchState.workflow.steps || []).find(item => Number(item.step_order) === Number(stepOrder));
+                    if (step && step.server_session_id) {
+                        const viewQuery = `history=${encodeURIComponent(step.server_session_id)}&remote=1&run=${encodeURIComponent(patchState.workflow.runId)}&step=${encodeURIComponent(step.step_order)}`;
+                        location.href = `/server_replay.html?${viewQuery}`;
                     }
                     return;
                 }

@@ -24,6 +24,7 @@
                 <button class="mode-btn active" type="button" aria-current="page">智能开发</button>
             </nav>
             <div class="patch-topbar-actions">
+                <span id="patchUsageStats" class="patch-api-status" hidden title="当前在线用户数（近1小时有活动）与各功能累计使用次数（含配置的初始值），所有登录用户可见，每30分钟刷新"></span>
                 <span id="patchApiStatus" class="patch-api-status">未连接</span>
                 <span id="patchCurrentUser" class="patch-api-status"></span>
                 <button id="patchUserSettings" class="patch-secondary-btn" hidden>用户设置</button>
@@ -50,7 +51,7 @@
                 <button id="patchAuthRetry" class="patch-secondary-btn" type="button" hidden>重试</button>
             </div>
             <div id="patchLoginCard" class="patch-card">
-                <h2>登录 patch_search</h2>
+                <h2>登录智能开发系统</h2>
                 <div class="patch-search-row">
                     <input id="patchLoginUsername" class="patch-input" autocomplete="username" placeholder="用户名">
                     <input id="patchLoginPassword" class="patch-input" type="password" autocomplete="current-password" placeholder="密码">
@@ -158,6 +159,11 @@
                     <div class="smart-dev-head"><div><h2>智能分析</h2><p>选择流程模板并输入业务需求，启动后实时查看每步执行进度与输出。</p></div></div>
                     <label class="sr-only" for="workflowTemplateSelect">流程模板</label>
                     <div class="patch-search-row"><select id="workflowTemplateSelect" class="patch-input"><option value="">加载流程模板中...</option></select></div>
+                    <!-- 「按产品选目录」的模板（如标品代码分析）才显示：产品+版本用于匹配工作目录表里的标品源码目录 -->
+                    <div class="patch-search-row" id="workflowProductRow" hidden>
+                        <select id="workflowProductSelect" class="patch-input" aria-label="产品"><option value="">请选择产品</option></select>
+                        <select id="workflowVersionSelect" class="patch-input" aria-label="版本"><option value="">请选择版本</option></select>
+                    </div>
                     <p id="workflowTemplateDesc" class="smart-dev-desc" hidden></p>
                     <label class="sr-only" for="workflowBusinessInput">业务需求</label>
                     <textarea id="workflowBusinessInput" class="patch-input workflow-input" rows="5" placeholder="输入业务需求或问题"></textarea>
@@ -180,6 +186,7 @@
                             <div class="patch-detail-actions">
                                 <button id="patchNodeAbort" class="patch-secondary-btn" type="button" hidden>中断</button>
                                 <button id="patchNodeResumeSession" class="patch-secondary-btn" type="button" hidden title="在聊天页打开同一个 claude 会话（需在同一台机器）">查看会话</button>
+                                <button id="patchNodeContinue" class="patch-secondary-btn" type="button" hidden title="在原 claude 会话里发「继续」，接着把本轮跑完">继续</button>
                                 <button id="patchNodeUnsolved" class="patch-secondary-btn" type="button" hidden>问题未解决</button>
                                 <button id="patchNodeSolved" class="patch-primary-btn" type="button" hidden>问题已解决</button>
                             </div>
@@ -235,7 +242,7 @@
                 <div class="patch-card admin-panel">
                     <div class="admin-section-header"><div><h2>工作目录</h2><p>管理当前用户可用的工作目录。管理员创建的内置目录仅可查看和使用。</p></div><button id="patchNewDirectory" class="patch-primary-btn">新增目录</button></div>
                     <div id="patchDirectoryMessage" class="patch-message"></div>
-                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>编码</th><th>名称</th><th>路径</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="patchDirectoryBody"></tbody></table></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>编码</th><th>名称</th><th>路径</th><th>目录类型</th><th>归属</th><th>状态</th><th>操作</th></tr></thead><tbody id="patchDirectoryBody"></tbody></table></div>
                     <div class="patch-pager" data-pager="directory"></div>
                 </div>
             </section>
@@ -274,7 +281,7 @@
             </section>
             <section id="patchTabSessions" class="patch-tab-panel">
                 <div class="patch-card admin-panel">
-                    <div class="admin-section-header"><div><h2>会话存档</h2><p>已解决智能开发问题的完整会话内容（含思考过程）。仅管理员可见，可按账号、产品、工单关键字过滤并分页。</p></div></div>
+                    <div class="admin-section-header"><div><h2>会话存档</h2><p>智能开发每步边界的完整会话内容（含思考过程）。仅管理员可见，可按账号、产品、工单关键字过滤并分页。</p></div></div>
                     <div class="patch-search-row patch-search-toolbar" style="flex-wrap:wrap">
                         <input id="patchSessionsUser" class="patch-input" type="search" placeholder="账号ID" style="width:140px" autocomplete="off">
                         <input id="patchSessionsProduct" class="patch-input" type="search" placeholder="产品名" style="width:160px" autocomplete="off">
@@ -283,7 +290,7 @@
                         <button id="patchSessionsReset" class="patch-link-btn">重置</button>
                     </div>
                     <div id="patchSessionsMessage" class="patch-message"></div>
-                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>解决时间</th><th>账号ID</th><th>产品·版本</th><th>问题简述</th><th>消息数</th><th>claude会话</th><th>操作</th></tr></thead><tbody id="patchSessionsBody"><tr><td colspan="7" class="patch-empty">正在加载...</td></tr></tbody></table></div>
+                    <div class="patch-table-wrap"><table class="patch-table"><thead><tr><th>存档时间</th><th>步骤</th><th>账号ID</th><th>产品·版本</th><th>问题简述</th><th>消息数</th><th>claude会话</th><th>操作</th></tr></thead><tbody id="patchSessionsBody"><tr><td colspan="8" class="patch-empty">正在加载...</td></tr></tbody></table></div>
                     <div class="patch-pager" data-pager="sessions"></div>
                 </div>
             </section>
@@ -360,7 +367,7 @@
     </div>
 
     <div id="patchDirectoryModal" class="modal-overlay" hidden>
-        <div class="modal patch-admin-modal"><div class="modal-header"><h3>工作目录</h3><button id="patchDirectoryClose" class="modal-close">×</button></div><form id="patchDirectoryForm" class="patch-admin-form"><label>编码<input name="code" required></label><label>名称<input name="name" required></label><p class="patch-muted">内置目录仅供服务器 ClaudeCode 使用，必须是服务器上已存在的绝对路径，仅管理员可建；个人目录用于本地 ClaudeCode 步骤，填运行 cc-web 电脑上的目录，可在「智能分析 → 启动流程」时选用。</p><label>路径<input name="path" required placeholder="内置目录填服务器上已存在的绝对路径；个人目录填运行 cc-web 电脑上的目录"></label><label id="patchDirectoryBuiltinLabel"><input type="checkbox" name="is_builtin"> 管理员内置目录（仅管理员可勾选）</label></form><div class="modal-footer"><button id="patchDirectoryCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchDirectoryForm" class="btn-primary">保存</button></div></div>
+        <div class="modal patch-admin-modal"><div class="modal-header"><h3>工作目录</h3><button id="patchDirectoryClose" class="modal-close">×</button></div><form id="patchDirectoryForm" class="patch-admin-form"><label>编码<input name="code" required></label><label>名称<input name="name" required></label><p class="patch-muted">内置目录仅供服务器 ClaudeCode 使用，必须是服务器上已存在的绝对路径，仅管理员可建；个人目录用于本地 ClaudeCode 步骤，填运行 cc-web 电脑上的目录，可在「智能分析 → 启动流程」时选用。</p><label>路径<input name="path" required placeholder="内置目录填服务器上已存在的绝对路径；个人目录填运行 cc-web 电脑上的目录"></label><label>目录类型<select name="category" id="patchDirectoryCategory"><option value="custom">自定义</option><option value="source">标品源码</option><option value="patch_library">补丁库</option><option value="workspace">工作区</option></select></label><label id="patchDirectoryProductLabel" hidden>产品<select name="product_id" id="patchDirectoryProduct"><option value="">请选择产品</option></select></label><label id="patchDirectoryVersionLabel" hidden>版本<select name="version_id" id="patchDirectoryVersion"><option value="">请选择版本</option></select></label><small class="patch-muted">目录类型=标品源码时必选产品与版本：智能分析里「按产品选目录」的流程启动时按 产品+版本 匹配此目录。</small><label id="patchDirectoryBuiltinLabel"><input type="checkbox" name="is_builtin"> 管理员内置目录（仅管理员可勾选）</label></form><div class="modal-footer"><button id="patchDirectoryCancel" type="button" class="btn-cancel">取消</button><button type="submit" form="patchDirectoryForm" class="btn-primary">保存</button></div></div>
     </div>
 
     <div id="patchAdminModal" class="modal-overlay" hidden>
@@ -394,7 +401,7 @@
             <div class="modal-header"><h3>新建智能开发</h3><button id="patchNodeFormClose" class="modal-close">×</button></div>
             <form id="patchNodeRunForm" class="patch-admin-form">
                 <label class="patch-inline-field"><span class="patch-inline-label">问题/需求描述<span class="patch-required">*</span></span><textarea name="problem_desc" rows="4" required placeholder="描述要解决的问题，或要实现的需求"></textarea></label>
-                <label class="patch-inline-field"><span class="patch-inline-label">触发的url<span class="patch-required">*</span></span><input name="trigger_url" maxlength="2048" required placeholder="触发该问题/需求时的 URL，如：http://10.4.122.21:8080/nccloud/?billid=xxx"></label>
+                <label class="patch-inline-field"><span class="patch-inline-label">触发的url/入口类<span class="patch-required">*</span></span><input name="trigger_url" maxlength="2048" required placeholder="触发该问题/需求的 URL 或入口类，如：http://10.4.122.21:8080/nccloud/?billid=xxx 或 xxxLoginAction"></label>
                 <label class="patch-inline-field"><span class="patch-inline-label">关联的产品环境变量<span class="patch-required">*</span></span><select name="env_id" required><option value="">请选择产品环境</option></select></label>
                 <p id="patchNodeEnvHint" class="patch-node-env-hint"></p>
                 <label class="patch-inline-field"><span class="patch-inline-label">补丁输出路径<span class="patch-required">*</span></span><input name="patch_output_path" maxlength="1024" required placeholder="本机绝对路径，如：D:\patch-out\crm-20260920（不设默认值，每次自己填）"><button type="button" class="patch-folder-pick" data-folder-pick title="从本机选择目录">📁</button></label>
@@ -410,9 +417,10 @@
             <div class="modal-header"><h3>未解决 · 重跑</h3><button id="patchNodeRerunClose" class="modal-close">×</button></div>
             <div class="patch-admin-form">
                 <p id="patchNodeRerunMeta" class="patch-node-env-hint"></p>
-                <label class="patch-inline-field patch-inline-stack"><span class="patch-inline-label">上传日志文件<span class="patch-required">*</span></span><input id="patchNodeRerunFile" type="file" required></label>
+                <label class="patch-inline-field patch-inline-stack"><span class="patch-inline-label">上传日志文件（选填）</span><input id="patchNodeRerunFile" type="file"></label>
+                <label class="patch-inline-field patch-inline-stack"><span class="patch-inline-label">补充说明（选填）</span><textarea id="patchNodeRerunNote" rows="4" placeholder="补充本次复现的现象、操作步骤、期望结果等，会随日志一起交给 claude……"></textarea></label>
                 <label class="patch-inline-field patch-inline-stack"><span class="patch-inline-label">SQL 结果集（选填）</span><textarea id="patchNodeRerunSql" rows="4" placeholder="粘贴本次执行的 SQL 及其结果集……"></textarea></label>
-                <p class="patch-muted" style="margin:4px 0 0; font-size:12px; line-height:1.6;">日志文件必填，会拼到阶段一提示词后面一起交给 claude；SQL 结果集选填，填了也会一起拼上。日志超过约 1MB 自动截断。</p>
+                <p class="patch-muted" style="margin:4px 0 0; font-size:12px; line-height:1.6;">日志文件、补充说明均选填，会拼到阶段一提示词后面一起交给 claude；SQL 结果集选填，填了也会一起拼上。日志超过约 1MB 自动截断。</p>
             </div>
             <div class="modal-footer"><button id="patchNodeRerunCancel" type="button" class="btn-cancel">取消</button><button id="patchNodeRerunConfirm" type="button" class="btn-primary">确认重跑</button></div>
         </div>

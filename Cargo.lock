@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "cc-web"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "actix-cors",
  "actix-files",

@@ -42,7 +42,7 @@ fn save_event_progress(
     }
 
     // Update session file
-    let mut sessions = data.sessions.write().unwrap();
+    let mut sessions = data.sessions.write().unwrap_or_else(|e| e.into_inner());
     if let Some(session) = sessions.get_mut(session_id) {
         let last_is_assistant = session.messages.last()
             .map(|m| m.role == "assistant")
@@ -590,7 +590,7 @@ pub async fn start_prompt(
                 }
                 // Save agent session ID for session continuity (--resume)
                 if let Some(sid) = stream_result.agent_session_id {
-                    if let Some(session) = data_clone2.sessions.write().unwrap().get_mut(&session_id_for_save) {
+                    if let Some(session) = data_clone2.sessions.write().unwrap_or_else(|e| e.into_inner()).get_mut(&session_id_for_save) {
                         session.agent_session_id = Some(sid);
                     }
                     crate::save_sessions_to_disk(&data_clone2.sessions.read().unwrap());
@@ -1008,12 +1008,15 @@ pub async fn abort_session(
 
     // Remove the last user message that was aborted (the one without an assistant response)
     {
-        let mut sessions = data.sessions.write().unwrap();
+        let mut sessions = data.sessions.write().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = sessions.get_mut(&session_id) {
             // Find and remove the last user message that doesn't have a corresponding assistant response
             if let Some(last_msg) = session.messages.last() {
                 if last_msg.role == "user" {
-                    log::info!("[abort] Removing aborted user message: {:?}", &last_msg.content[..last_msg.content.len().min(50)]);
+                    // 日志预览不能用 `content[..min(50)]`——中文是多字节 UTF-8，索引可能切在字符中间直接 panic，
+                    // 还会毒化 sessions 锁 → 所有带 unwrap 的锁访问连锁 PoisonError 把整个 actix 服务打崩。
+                    let preview: String = last_msg.content.chars().take(50).collect();
+                    log::info!("[abort] Removing aborted user message: {:?}", preview);
                     session.messages.pop();
                 }
             }

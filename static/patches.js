@@ -405,6 +405,11 @@ function patchSetAuthenticated(user) {
     const previousUserId = patchState.user?.id;
     const userChanged = previousUserId !== (user?.id ?? null);
     patchState.user = user || null;
+    // 共享鉴权链保持最新：/sidenav.js 的 refreshUser 优先复用它，
+    // 登录/登出切换后 observer 触发的刷新拿到的也是当前用户，而不是启动时的旧结果
+    window.__patchAuthPromise = Promise.resolve(user || null);
+    // 顶栏使用统计（仅管理员）：登录态一变就拉一次，之后每 60s 轮询
+    patchScheduleUsageStats();
     if (!authenticated || userChanged) resetWorkflowRunState();
     if (!authenticated) { patchState.workflowHistory = {page: 1, size: 10, total: 0, items: []}; patchState.workflowDetail = {runId: '', snapshot: null}; document.getElementById('workflowHistoryBody').innerHTML = '<tr><td colspan="6" class="patch-empty">暂无流程运行记录</td></tr>'; patchState.mine = {page: 1, size: 10, total: 0, items: [], generation: 0}; const mineBody = document.getElementById('patchMineBody'); if (mineBody) mineBody.innerHTML = '<tr><td colspan="7" class="patch-empty">请登录后查看</td></tr>'; patchState.products = null; patchState.admin.products = []; patchState.admin.productId = null; const productBody = document.getElementById('patchProductBody'); if (productBody) productBody.innerHTML = '<tr><td colspan="5" class="patch-empty">请登录后查看</td></tr>'; }
     if (login) login.hidden = authenticated;
@@ -559,7 +564,8 @@ async function patchLogin() {
         patchState.authInvalidated = false;
         patchSetAuthenticated(data.user);
         message.textContent = '';
-        await Promise.all([loadPatches(), loadWorkflowTemplates()]);
+        // 不再预载其它页签：默认页签的数据由 patchSetAuthenticated 内部的 patchSwitchTab 按需加载，
+        // 检索/智能分析等其余页签等用户第一次点开时再拉（见 patchSwitchTab 里的各页签加载逻辑）
     } catch (error) {
         message.textContent = '';
         // 登录失败要弹窗；先把可能的"会话失效"标记清掉，否则 patchShowError 会被 authInvalidated 吞掉
@@ -588,6 +594,25 @@ function patchShowAuthRetry(message) {
     const retry = document.getElementById('patchAuthRetry');
     if (text) text.textContent = message || '无法连接服务器，请稍后重试或联系管理员';
     if (retry) retry.hidden = false;
+}
+
+// ── 顶栏使用统计（所有登录用户可见）：在线用户数 + 各功能累计使用次数 ──
+async function patchLoadUsageStats() {
+    const el = document.getElementById('patchUsageStats');
+    if (!el) return;
+    if (!patchToken() || patchState.authInvalidated) { el.hidden = true; return; }
+    try {
+        const data = await patchRequest('/api/dashboard/usage');
+        el.textContent = `在线用户 ${data.online_users} ｜ 检索 ${data.search_count} ｜ 智能开发 ${data.node_runs} ｜ 智能分析 ${data.workflow_runs} ｜ 补丁适配 ${data.adapt_runs}`;
+        el.hidden = false;
+    } catch (error) { /* 统计拉不到就保持隐藏，不打扰使用 */ }
+}
+
+let patchUsageStatsTimer = 0;
+function patchScheduleUsageStats() {
+    patchLoadUsageStats();
+    if (patchUsageStatsTimer) return;   // 页面级只挂一个轮询
+    patchUsageStatsTimer = setInterval(patchLoadUsageStats, 30 * 60 * 1000);   // 每 30 分钟拉一次
 }
 
 /* ── 获取新版本（cc-web 的 api/update.rs + patch_search 的 routes/ccweb_update.py）──
@@ -653,10 +678,10 @@ function patchUpdateRender(manual) {
         if (applyBtn) applyBtn.hidden = true;
         if (!manual) return;
         if (!remote) {
-            patchShowError('补丁中心还没有发布 cc-web 新版本。', '检查更新');
+            patchShowError(`本机当前版本 ${mine}。补丁中心还没有发布 cc-web 新版本。`, '检查更新');
         } else if (remote.has_package === false) {
             // 服务器上可能只发布了别的平台：把本机平台说出来，用户不用猜
-            patchShowError(`最新版本 ${remote.version} 暂无 ${platform} 的安装包，请联系管理员。`, '检查更新');
+            patchShowError(`本机当前版本 ${mine}；最新版本 ${remote.version} 暂无 ${platform} 的安装包，请联系管理员。`, '检查更新');
         } else {
             patchShowError(`本机版本 ${mine} 与服务器上的 ${remote.version} 一致，已是最新。`, '检查更新');
         }
@@ -1341,6 +1366,7 @@ function initPatchColumnResize(selector, storageKey, defaults, actionMin = 48, f
 
 async function showUploadModal(files) {
     patchState.files = Array.from(files);
+    document.getElementById('patchUploadCancel').textContent = '取消'; // 上次上传成功后自动关窗，按钮文案可能还停在「完成」，打开时复位
     let products;
     try { products = await ensureProductOptions(); } catch (error) { patchShowError(error.message, '产品选项加载失败'); return; }
     const productOptions = products.map(product => `<option value="${patchEscape(product.name)}">${patchEscape(product.name)}</option>`).join('');
@@ -1724,7 +1750,10 @@ function uploadOne(index, item, formData) {
 }
 
 async function startUpload() {
-    const items = Array.from(document.querySelectorAll('.patch-upload-item'));
+    // 只处理补丁上传弹窗里的条目：适配弹窗（showAdaptModal）也复用 .patch-upload-item 类
+    // 但结构不同（没有 .patch-file-product / .patch-file-version），全局选择会把它们扫进来，
+    // 造成 querySelector 返回 null 直接崩（见 line 1733）。
+    const items = Array.from(document.querySelectorAll('#patchUploadItems .patch-upload-item'));
     // 必填校验：产品名称、版本号
     let firstInvalid = null;
     items.forEach(item => {
@@ -1761,7 +1790,12 @@ async function startUpload() {
     document.getElementById('patchUploadStart').disabled = false;
     document.getElementById('patchUploadCancel').textContent = '完成';
     try { patchState.products = await fetchProducts(); } catch {}
-    if (failedCount) patchShowError(`${failedCount} 个补丁包上传失败，请检查文件状态后重试。`, '上传未完成');
+    if (failedCount) {
+        patchShowError(`${failedCount} 个补丁包上传失败，请检查文件状态后重试。`, '上传未完成');
+    } else {
+        // 全部上传成功：自动关闭弹窗（有失败的保留弹窗，失败条目已标红可就地重试）
+        closeUploadModal();
+    }
 }
 
 async function showPatchDetail(id) {
@@ -1807,6 +1841,29 @@ function updateWorkflowTemplateDesc() {
     const text = (template && (template.description || '')) ? template.description : '';
     desc.textContent = text;
     desc.hidden = !text;
+    // 「按产品选目录」的模板才显示 产品+版本 两个必填项（服务器下发的 requires_product 标记，
+    // 不按模板名字硬编码）：启动时按 产品+版本 到工作目录表匹配标品源码目录
+    const productRow = document.getElementById('workflowProductRow');
+    if (!productRow) return;
+    productRow.hidden = !Boolean(template && template.requires_product);
+    if (productRow.hidden) return;
+    ensureProductOptions().then(products => {
+        const productSelect = document.getElementById('workflowProductSelect');
+        const current = productSelect.value;
+        productSelect.innerHTML = '<option value="">请选择产品</option>' + products.map(product => `<option value="${patchEscape(String(product.id))}">${patchEscape(product.name)}</option>`).join('');
+        if (current && products.some(product => String(product.id) === current)) productSelect.value = current;
+        renderWorkflowVersionOptions();
+    }).catch(() => { document.getElementById('workflowProductSelect').innerHTML = '<option value="">产品加载失败</option>'; });
+}
+
+// 版本下拉跟随所选产品（数据来自 ensureProductOptions 拉取的产品字典，含各自版本列表）
+function renderWorkflowVersionOptions() {
+    const productSelect = document.getElementById('workflowProductSelect');
+    const versionSelect = document.getElementById('workflowVersionSelect');
+    if (!productSelect || !versionSelect) return;
+    const product = (patchState.products || []).find(item => String(item.id) === productSelect.value);
+    const versions = (product && product.versions) || [];
+    versionSelect.innerHTML = '<option value="">请选择版本</option>' + versions.map(version => `<option value="${patchEscape(String(version.id))}">${patchEscape(version.version)}</option>`).join('');
 }
 
 function patchUnescapeString(value) {
@@ -1890,7 +1947,24 @@ async function restoreWorkflowRun() {
 }
 
 async function createWorkflowRun(templateId, businessInput, directoryBindings) {
-    const data = await patchRequest('/api/workflows/runs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({template_id: templateId, business_input: businessInput, directory_bindings: directoryBindings || []}) });
+    const body = {template_id: templateId, business_input: businessInput, directory_bindings: directoryBindings || []};
+    // 模板含「按产品选目录」步骤时：产品+版本 必填（引擎按它解析该步骤的工作目录）
+    const productRow = document.getElementById('workflowProductRow');
+    if (productRow && !productRow.hidden) {
+        const productSelect = document.getElementById('workflowProductSelect');
+        const versionSelect = document.getElementById('workflowVersionSelect');
+        const productId = Number(productSelect.value) || 0;
+        const versionId = Number(versionSelect.value) || 0;
+        productSelect.removeAttribute('aria-invalid'); versionSelect.removeAttribute('aria-invalid');
+        if (!productId || !versionId) {
+            (!productId ? productSelect : versionSelect).setAttribute('aria-invalid', 'true');
+            (!productId ? productSelect : versionSelect).focus();
+            throw new Error('请选择产品与版本（用于匹配工作目录）');
+        }
+        body.product_id = productId;
+        body.version_id = versionId;
+    }
+    const data = await patchRequest('/api/workflows/runs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
     const runId = data.run_id || data.id;
     if (!runId) throw new Error('流程创建成功但未返回运行 ID');
     patchState.workflow.lastEventId = 0;
@@ -2092,7 +2166,34 @@ function patchSetupTabs() {
     });
 }
 
+// 重新进入补丁检索页签时清空搜索条件，回到「显示全部补丁」的初始态（不触发额外的检索请求）。
+function resetSearchConditions() {
+    const keywordInput = document.getElementById('patchKeyword');
+    if (keywordInput) keywordInput.value = '';
+    patchState.keyword = '';
+    const statusSelect = document.getElementById('patchSearchStatus');
+    if (statusSelect) statusSelect.value = '';
+    patchState.searchStatus = '';
+    ['patchAdvName', 'patchAdvProduct', 'patchAdvVersion', 'patchAdvKeyword', 'patchAdvDescription'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    patchState.advanced = { name: '', product: '', version: '', keyword: '', description: '' };
+    patchState.search.page = 1;
+    // 若高级搜索面板开着，收起并恢复普通工具栏
+    if (patchState.advancedOpen) {
+        patchState.advancedOpen = false;
+        const panel = document.getElementById('patchAdvancedPanel');
+        const toolbar = document.getElementById('patchSearchToolbar');
+        const toggle = document.getElementById('patchAdvancedToggle');
+        if (panel) panel.hidden = true;
+        if (toolbar) toolbar.hidden = false;
+        if (toggle) { toggle.classList.remove('active'); toggle.setAttribute('aria-expanded', 'false'); }
+    }
+}
+
 function patchSwitchTab(tab) {
+    const prevTab = document.querySelector('.patch-tab.active')?.dataset.tab;
     document.querySelectorAll('.patch-tab').forEach(button => {
         const active = button.dataset.tab === tab;
         button.classList.toggle('active', active);
@@ -2104,7 +2205,11 @@ function patchSwitchTab(tab) {
         panel.classList.toggle('active', active);
         panel.hidden = !active;
     });
-    if (tab === 'search' && patchToken() && !patchState.authInvalidated) loadPatches();
+    if (tab === 'search') {
+        // 从其它页签切回补丁检索：搜索条件是全局残留的，重新进入页签应清空，避免带着旧关键词(如"薪资")自动重搜。
+        if (prevTab && prevTab !== 'search') resetSearchConditions();
+        if (patchToken() && !patchState.authInvalidated) loadPatches();
+    }
     if (tab === 'smart' && patchToken() && !patchState.authInvalidated) { loadWorkflowTemplates(); restoreWorkflowRun(); loadWorkflowHistory(); }
     if ((tab === 'flow' || tab === 'prompt' || tab === 'template') && patchToken() && !patchState.authInvalidated) loadAdminSettings(tab);
     if (tab === 'analysis' && patchToken() && !patchState.authInvalidated) loadAnalysisPatches();
@@ -2127,21 +2232,58 @@ function patchSwitchTab(tab) {
 async function loadDirectories() {
     try {
         patchState.admin.directories = await patchRequest('/api/workflows/directories');
-        renderDirectoryTable();
+        // 目录类型列要显示 产品/版本（标品源码），产品字典按需拉一次，拉不到也不阻塞列表
+        ensureProductOptions().catch(() => {}).then(renderDirectoryTable);
     } catch (error) { document.getElementById('patchDirectoryMessage').textContent = ''; patchShowError(error.message, '工作目录加载失败'); }
 }
 
-// 工作目录：前端分页渲染
+// 工作目录：前端分页渲染（目录类型列：标品源码带 产品/版本 说明）
+const PATCH_DIRECTORY_CATEGORY_LABELS = { source: '标品源码', patch_library: '补丁库', workspace: '工作区', custom: '自定义' };
 function renderDirectoryTable() {
     const items = patchClientSlice(patchClientPager('directory'), patchState.admin.directories || []);
-    document.getElementById('patchDirectoryBody').innerHTML = items.map(item => `<tr><td>${patchEscape(item.code)}</td><td>${patchEscape(item.name)}</td><td>${patchEscape(item.path)}</td><td>${item.is_builtin ? '内置' : '个人'}</td><td>${item.status ? '启用' : '停用'}</td><td>${item.is_builtin && patchState.user.role !== 'admin' ? '只读' : `<button class="patch-link-btn" data-directory-edit="${patchEscape(item.id)}">编辑</button><button class="patch-link-btn" data-directory-delete="${patchEscape(item.id)}">停用</button><button class="patch-link-btn danger" data-directory-remove="${patchEscape(item.id)}">删除</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="patch-empty">暂无工作目录</td></tr>';
+    document.getElementById('patchDirectoryBody').innerHTML = items.map(item => {
+        let categoryText = PATCH_DIRECTORY_CATEGORY_LABELS[item.category] || item.category || '自定义';
+        if (item.category === 'source') {
+            const product = (patchState.products || []).find(p => String(p.id) === String(item.product_id));
+            const version = product && (product.versions || []).find(v => String(v.id) === String(item.version_id));
+            if (product) categoryText += `（${patchEscape(product.name)} ${version ? patchEscape(version.version) : '—'}）`;
+        }
+        return `<tr><td>${patchEscape(item.code)}</td><td>${patchEscape(item.name)}</td><td>${patchEscape(item.path)}</td><td>${categoryText}</td><td>${item.is_builtin ? '内置' : '个人'}</td><td>${item.status ? '启用' : '停用'}</td><td>${item.is_builtin && patchState.user.role !== 'admin' ? '只读' : `<button class="patch-link-btn" data-directory-edit="${patchEscape(item.id)}">编辑</button><button class="patch-link-btn" data-directory-delete="${patchEscape(item.id)}">停用</button><button class="patch-link-btn danger" data-directory-remove="${patchEscape(item.id)}">删除</button>`}</td></tr>`;
+    }).join('') || '<tr><td colspan="7" class="patch-empty">暂无工作目录</td></tr>';
     patchRenderPager('directory');
+}
+
+// 目录弹窗：类型=标品源码 时才显示并联动 产品/版本 下拉（数据来自产品字典）
+function patchDirectorySyncCategoryFields() {
+    const form = document.getElementById('patchDirectoryForm');
+    if (!form) return;
+    const isSource = form.category.value === 'source';
+    document.getElementById('patchDirectoryProductLabel').hidden = !isSource;
+    document.getElementById('patchDirectoryVersionLabel').hidden = !isSource;
+    if (!isSource) return;
+    const productSelect = document.getElementById('patchDirectoryProduct');
+    const versionSelect = document.getElementById('patchDirectoryVersion');
+    const current = productSelect.value;
+    productSelect.innerHTML = '<option value="">请选择产品</option>' + (patchState.products || []).map(product => `<option value="${patchEscape(String(product.id))}">${patchEscape(product.name)}</option>`).join('');
+    if (current) productSelect.value = current;
+    const product = (patchState.products || []).find(item => String(item.id) === productSelect.value);
+    const currentVersion = versionSelect.value;
+    versionSelect.innerHTML = '<option value="">请选择版本</option>' + ((product && product.versions) || []).map(version => `<option value="${patchEscape(String(version.id))}">${patchEscape(version.version)}</option>`).join('');
+    if (currentVersion) versionSelect.value = currentVersion;
 }
 
 function openDirectoryForm(item = {}) {
     patchState.admin.directoryId = item.id || null;
     const form = document.getElementById('patchDirectoryForm');
     form.code.value = item.code || ''; form.name.value = item.name || ''; form.path.value = item.path || ''; form.is_builtin.checked = Boolean(item.is_builtin); form.is_builtin.disabled = patchState.user.role !== 'admin';
+    form.category.value = item.category || 'custom';
+    // 产品字典按需拉一次（列表页本身不加载它），到位后再回填 产品/版本 选中值
+    ensureProductOptions().then(() => {
+        patchDirectorySyncCategoryFields();
+        if (item.product_id) document.getElementById('patchDirectoryProduct').value = String(item.product_id);
+        patchDirectorySyncCategoryFields();
+        if (item.version_id) document.getElementById('patchDirectoryVersion').value = String(item.version_id);
+    }).catch(() => { patchDirectorySyncCategoryFields(); });
     document.getElementById('patchDirectoryModal').hidden = false;
 }
 
@@ -2150,7 +2292,14 @@ async function saveDirectory(event) {
     const values = Object.fromEntries(new FormData(event.target).entries());
     const id = patchState.admin.directoryId;
     const path = id ? `/api/workflows/directories/${id}` : '/api/workflows/directories';
-    const body = {code: values.code, name: values.name, path: values.path, is_builtin: event.target.is_builtin.checked};
+    const body = {code: values.code, name: values.name, path: values.path, is_builtin: event.target.is_builtin.checked,
+                  category: values.category || 'custom',
+                  product_id: values.category === 'source' ? (Number(values.product_id) || null) : null,
+                  version_id: values.category === 'source' ? (Number(values.version_id) || null) : null};
+    if (body.category === 'source' && (!body.product_id || !body.version_id)) {
+        patchShowError('目录类型为标品源码时必须选择产品与版本', '工作目录保存失败');
+        return;
+    }
     // 个人目录指向运行 cc-web 的客户端机器，服务端不校验存在性；这里先拦住相对路径，避免拖到执行阶段才报错。
     if (!/^([a-zA-Z]:[\\/]|\\\\|\/)/.test(String(values.path || '').trim())) {
         patchShowError('工作目录路径必须是绝对路径，例如 D:\\project\\my-app', '工作目录保存失败');
@@ -2667,7 +2816,8 @@ function openAdminForm(kind, data = {}, readOnly = false) {
     if (kind === 'flow') {
         title.textContent = data.id ? '编辑流程' : '新增流程';
         const target = data.claude_target || 'server';
-        form.innerHTML = `<label>编码<input name="code" value="${patchEscape(data.code || '')}" ${data.id ? 'readonly' : ''} required></label><label>名称<input name="name" value="${patchEscape(data.name || '')}" required></label><label>描述<textarea name="description">${patchEscape(data.description || '')}</textarea></label><label>调用位置<select name="claude_target"><option value="local" ${target === 'local' ? 'selected' : ''}>本地 ClaudeCode</option><option value="server" ${target === 'server' ? 'selected' : ''}>服务器 ClaudeCode</option></select></label><label>工作目录<select name="directory_code" ${target === 'server' ? 'required' : ''}>${flowDirectoryOptions(target, data.directory_code)}</select><small class="patch-muted">本地 ClaudeCode 可留空，启动流程时由使用者逐步骤选择或手动填写本机路径。</small></label><label><input type="checkbox" name="save_context" ${data.save_context !== false ? 'checked' : ''}> 保存上下文</label>`;
+        const mode = data.directory_mode || 'fixed';
+        form.innerHTML = `<label>编码<input name="code" value="${patchEscape(data.code || '')}" ${data.id ? 'readonly' : ''} required></label><label>名称<input name="name" value="${patchEscape(data.name || '')}" required></label><label>描述<textarea name="description">${patchEscape(data.description || '')}</textarea></label><label>调用位置<select name="claude_target"><option value="local" ${target === 'local' ? 'selected' : ''}>本地 ClaudeCode</option><option value="server" ${target === 'server' ? 'selected' : ''}>服务器 ClaudeCode</option></select></label><label>目录模式<select name="directory_mode"><option value="fixed" ${mode === 'fixed' ? 'selected' : ''}>固定目录</option><option value="by_product" ${mode === 'by_product' ? 'selected' : ''}>按产品选目录（启动时选产品+版本自动匹配）</option></select><small class="patch-muted">按产品选目录：使用者启动流程时选产品与版本，系统在工作目录表里匹配该产品/版本的对应类型目录，配置侧无需为每个版本复制流程。</small></label><label id="flowRuntimeCategoryLabel" ${mode === 'by_product' ? '' : 'hidden'}>目录类型<select name="runtime_category"><option value="source" ${(data.runtime_category || 'source') === 'source' ? 'selected' : ''}>标品源码</option><option value="patch_library" ${data.runtime_category === 'patch_library' ? 'selected' : ''}>补丁库</option><option value="workspace" ${data.runtime_category === 'workspace' ? 'selected' : ''}>工作区</option></select></label><label id="flowDirectoryCodeLabel">工作目录<select name="directory_code" ${target === 'server' && mode === 'fixed' ? 'required' : ''}>${flowDirectoryOptions(target, data.directory_code)}</select><small class="patch-muted">目录模式=固定目录 时生效；本地 ClaudeCode 可留空，启动流程时由使用者逐步骤选择或手动填写本机路径。</small></label><label><input type="checkbox" name="save_context" ${data.save_context !== false ? 'checked' : ''}> 保存上下文</label>`;
     } else if (kind === 'prompt') {
         title.textContent = data.id ? '编辑提示词' : '新增提示词';
         form.innerHTML = `<label>名称<input name="name" value="${patchEscape(data.name || '')}" required></label><label>描述<input name="description" value="${patchEscape(data.description || '')}"></label><label>内容<textarea name="content" required placeholder="请输入可复用提示词内容">${patchEscape(data.content || '')}</textarea></label><label>状态<select name="status"><option value="1" ${data.status !== 0 ? 'selected' : ''}>启用</option><option value="0" ${data.status === 0 ? 'selected' : ''}>停用</option></select></label>`;
@@ -2743,7 +2893,7 @@ async function saveAdminForm(event) {
     const kind = patchState.admin.kind; const id = patchState.admin.id;
     const values = Object.fromEntries(new FormData(event.target).entries());
     let path; let body;
-    if (kind === 'flow') { path = id ? `/api/workflows/flows/${id}` : '/api/workflows/flows'; body = {code: values.code, name: values.name, description: values.description || null, claude_target: values.claude_target, directory_code: values.directory_code || null, save_context: event.target.save_context.checked}; }
+    if (kind === 'flow') { path = id ? `/api/workflows/flows/${id}` : '/api/workflows/flows'; body = {code: values.code, name: values.name, description: values.description || null, claude_target: values.claude_target, directory_code: values.directory_mode === 'by_product' ? null : (values.directory_code || null), directory_mode: values.directory_mode || 'fixed', runtime_category: values.directory_mode === 'by_product' ? (values.runtime_category || 'source') : null, save_context: event.target.save_context.checked}; }
     else if (kind === 'prompt') { path = id ? `/api/workflows/prompts/${id}` : '/api/workflows/prompts'; body = {name: values.name, content: values.content, description: values.description || null, status: Number(values.status)}; }
     else {
         const steps = collectTemplateSteps();
@@ -2860,6 +3010,10 @@ async function changePassword(event) {
 // 日志超过这个长度就不进 node_runs.json（清单每次状态变化都整体落盘，塞不下长文本）。
 // 提示词里始终带全文——日志是给 claude 定位问题用的输入，不要求它再抄一份落盘。
 const PATCH_NODE_LOG_INLINE_LIMIT = 8192;
+// claude 引擎/API 报错特征：这类报错 claude 常以**不带 is_error 的普通 result** 发出（如
+// "API Error: 500 No available channel for the requested model"），不识别就会被当成正常结论，
+// 落成「待判定 + 已解决/未解决」。命中就当「执行出错」处理（后端同步记为 error 状态）。
+const PATCH_NODE_ERROR_RE = /API Error:|No available channel|^\s*Error:|^\s*error:|ClaudeCode .*(fail|error)/i;
 // 合并说明.md 的判定：claude 按提示词在第一行写「结果：成功 / 结果：冲突」。
 // 没读到文件或读不懂时一律按"未成功"处理——宁可让用户去核对 git，也不要谎报已解决。
 const PATCH_NODE_MERGE_RE = /结果\s*[:：]\s*(成功|冲突)/;
@@ -2867,25 +3021,26 @@ const PATCH_NODE_MERGE_RE = /结果\s*[:：]\s*(成功|冲突)/;
 // 本地 phase(+verdict/failure) → 服务器 status（取值见 schema/migration_problem_run.sql）
 function patchNodeServerStatus(run) {
     if (run.phase === 'done') return run.verdict === 'solved' ? 'solved' : 'unsolved';
-    if (run.phase === 'failed') return run.failure === 'aborted' ? 'aborted' : 'merge_failed';
-    if (run.phase === 'awaiting_decision') return 'awaiting_decision';
+    // 执行出错 / 合并中断（failed）一律按「待判定」上报：非终态只有待判定一种，
+    // 区分动作交给界面按钮（已解决/未解决/继续），不再细分 error/merge_failed/aborted
+    if (run.phase === 'awaiting_decision' || run.phase === 'failed') return 'awaiting_decision';
     return 'running'; // analyzing / merging
 }
 
 function patchNodeStatusLabel(run) {
     if (run.phase === 'analyzing') return '执行中';
     if (run.phase === 'merging') return '合并中';
-    // 阶段一执行出错：仍停在待判定（按钮保留），但状态单独标成「执行出错」以便一眼区分
-    if (run.phase === 'awaiting_decision') return run.error ? '执行出错' : '待判定';
+    // 执行出错 / 合并中断一律显示「待判定」（含 run.error / failed 等一切非终态停顿），
+    // 待判定统一提供 已解决/未解决/继续 三个动作
+    if (run.phase === 'awaiting_decision' || run.phase === 'failed') return '待判定';
     if (run.phase === 'done') return run.verdict === 'solved' ? '已解决' : '未解决';
-    if (run.phase === 'failed') return run.failure === 'aborted' ? '已中断' : '合并失败';
     return '未知';
 }
 
 // 服务器 status → 中文（换机后本机没有这条 run，只能按服务器账本展示）
 const PATCH_NODE_SERVER_STATUS_LABEL = {
     running: '执行中', awaiting_decision: '待判定', solved: '已解决',
-    unsolved: '未解决', merge_failed: '合并失败', aborted: '已中断',
+    unsolved: '未解决', merge_failed: '合并失败', aborted: '已中断', error: '执行出错',
 };
 
 // 与 saveDirectory 同一条正则：cc-web 就在本机，路径存在性交给它判断，
@@ -2912,7 +3067,7 @@ function patchNodeStepDirOf(run) { return run.step_dir || run.out_dir; }  // 阶
 
 // 阶段二干净补丁的命名前缀：patch_<产品名><版本>_<yyyymmddHHmm>_。
 // 前缀（产品名版本 + 时间）用固定值，避免非法字符；「问题简述」那段由 claude 在阶段二结束时
-// 自己用一句话概括填在 _ 与 _znkf.zip 之间（做成占位符，见阶段二提示词第 5 步）。
+// 自己用一句话概括填在 _ 与 _<登录用户名>.zip 之间（做成占位符，见阶段二提示词第 5 步）。
 function patchNodeTimestampStamp() {
     const d = new Date();
     const p = n => String(n).padStart(2, '0');
@@ -3019,24 +3174,12 @@ function patchNodeLiveRun(run) {
     return run;
 }
 
-// 「已解决/未解决/重新执行/重新合并」按状态拆分（都作用于当前 run，动作见 patchNodeRunAction）：
-//   待判定   → 已解决（进合并）+ 未解决（补信息重跑阶段一）
-//   执行出错 → 重新执行（补信息重跑阶段一）
-//   合并失败 → 重新合并（补信息重跑阶段二）
-//   已中断   → 按当时阶段给「重新执行 / 重新合并」
+// 待判定（含执行出错、合并中断等一切非终态停顿）统一给三个动作（都作用于当前 run，动作见 patchNodeRunAction）：
+//   已解决 → 进合并（阶段二已在跑的重发合并提示词）+ 未解决 → 弹框补信息重跑阶段一 + 继续 → 原会话发「继续」
 function patchNodeActionButtons(run) {
     const btn = (action, label) => `<button class="patch-link-btn" data-node-action="${action}" data-node-id="${patchEscape(run.id)}">${label}</button>`;
-    if (run.phase === 'awaiting_decision' && !run.error) {
-        return [btn('solved', '已解决'), btn('unsolved', '未解决')];
-    }
-    if (run.phase === 'awaiting_decision' && run.error) {
-        return [btn('rerun', '重新执行')];
-    }
-    if (run.phase === 'failed' && run.failure === 'merge') {
-        return [btn('rerun', '重新合并')];
-    }
-    if (run.phase === 'failed' && run.failure === 'aborted') {
-        return [btn('rerun', run.stage === 2 ? '重新合并' : '重新执行')];
+    if (run.phase === 'awaiting_decision' || run.phase === 'failed') {
+        return [btn('solved', '已解决'), btn('unsolved', '未解决'), btn('rerun', '继续')];
     }
     return [];
 }
@@ -3271,27 +3414,26 @@ function patchNodeRenderRunPanel(run) {
         `补丁输出：${patchNodeTurnDir(run) || '—'}`,
     ].filter(Boolean).join(' · ');
     document.getElementById('patchNodeAbort').hidden = !streaming;
-    // 面板的判定/重跑按钮与列表操作列同一套语义（见 patchNodeActionButtons）：
-    // 已解决只出现在待判定；未解决/重新执行/重新合并按状态显示。
+    // 面板的判定按钮与列表操作列同一套语义（见 patchNodeActionButtons）：
+    // 待判定（含执行出错/合并中断）统一显示 已解决/问题未解决/继续。
     const panel = patchNodePanelActions(run);
     const solvedBtn = document.getElementById('patchNodeSolved');
     const unsolvedBtn = document.getElementById('patchNodeUnsolved');
     solvedBtn.hidden = !panel.solved;
     unsolvedBtn.hidden = !panel.unsolved;
     if (panel.unsolved) unsolvedBtn.textContent = panel.unsolvedLabel;
+    document.getElementById('patchNodeContinue').hidden = !panel.cont;
     // 有 id 就能跳：session_id 直选 cc-web 会话（执行中也能进去看实时输出），
     // 只剩 agent_session_id 时退到只读回放。不再要求 cwd。
     document.getElementById('patchNodeResumeSession').hidden = !(run.session_id || run.agent_session_id);
     patchNodeRenderArtifacts(run);
 }
 
-// 面板两个按钮的显隐与文案（与列表操作列 patchNodeActionButtons 同一套状态语义）
+// 面板按钮的显隐与文案（与列表操作列 patchNodeActionButtons 同一套状态语义）：
+// 待判定（含执行出错、合并中断）统一给 已解决 / 问题未解决 / 继续
 function patchNodePanelActions(run) {
-    if (run.phase === 'awaiting_decision' && !run.error) return { solved: true, unsolved: true, unsolvedLabel: '未解决' };
-    if (run.phase === 'awaiting_decision' && run.error) return { solved: false, unsolved: true, unsolvedLabel: '重新执行' };
-    if (run.phase === 'failed' && run.failure === 'merge') return { solved: false, unsolved: true, unsolvedLabel: '重新合并' };
-    if (run.phase === 'failed' && run.failure === 'aborted') return { solved: false, unsolved: true, unsolvedLabel: run.stage === 2 ? '重新合并' : '重新执行' };
-    return { solved: false, unsolved: false, unsolvedLabel: '未解决' };
+    const pending = run.phase === 'awaiting_decision' || run.phase === 'failed';
+    return { solved: pending, unsolved: pending, unsolvedLabel: '问题未解决', cont: pending };
 }
 
 // 运行详情已搬到独立页（node_run.html，「详情」按钮跳转）；面板只负责执行中的实时输出。
@@ -3315,6 +3457,8 @@ function patchNodeUnsolvedGuidance(run) {
         'NC 客开模块补丁用 java_generate_patch（参数：module_path=暂存目录、home=工程 home、',
         'files=所有改动文件一次传入（不要逐文件调）、java_home=JDK）；标准 war/web 工程用 java_generate_webapp_patch。',
         '打包完把 zip 条目列出来自查一遍，层级不对就重打包。',
+        '补丁包必须包含本次动到的源码：打包后检查 zip 里是否有改动/新增文件的 .java 源码，',
+        '没有就用 zip/jar uf 手动加进去（同一相对路径），加完复查。',
         '',
         '【源码检索要求】分析源码走 patch_source MCP：',
         `本次产品 ${env.product_name || ''} ${env.product_version || ''} → root=${mcpRoot}；`,
@@ -3355,7 +3499,7 @@ function patchNodePhaseOnePrompt(run, logInfo) {
     const lines = [
         '【问题 / 需求】',
         run.problem_desc,
-        `触发时的url为：${run.trigger_url || '（未填写）'}`,
+        `触发的url/入口类为：${run.trigger_url || '（未填写）'}（可能是访问该问题页面的 URL，也可能是 Java 入口类名，如 xxxLoginAction；用于帮你定位问题发生的入口）`,
         '',
         '【相关日志】',
         logInfo || '（未提供）',
@@ -3401,6 +3545,10 @@ function patchNodePhaseOnePrompt(run, logInfo) {
         `      java_home   = ${env.local_jdk_path}`,
         `      产物输出到 ${patchNodeTurnDir(run)}。打包完**把 zip 里的条目列出来自查一遍**（对照第 3a 条的目标路径），`,
         '      发现层级不对就重打包，不要带着错路径交付。',
+        '3f. 补丁包**必须包含本次动到的源码**：打包完成后用 unzip -l 列出补丁 zip 条目，检查是否含本次改动/新增的 .java 源码文件',
+        '      （与 .class 用同一套相对路径，如 src/client/ncbs/x/Foo.java → 补丁内 …/ncbs/x/Foo.java）。',
+        '      若补丁包只有编译后的 .class、没有对应的 .java 源码，就用现成命令（zip / jar uf）把暂存目录里那份源码',
+        '      **手动加回补丁包**（保持同一相对路径，不要新增任何目录层级），加完再 unzip -l 复查源码条目已在。',
         '4. 在你认为所有可能相关的类中补上特别详细的日志，日志必须尽可能全面。',
         '   把下次复现时要看的信息打全；这时第 1 步的结论就写"已补日志、待复现反馈"，不要猜一个根因糊弄过去。',
         '   补日志的具体要求：',
@@ -3477,8 +3625,10 @@ function patchNodePhaseOnePrompt(run, logInfo) {
 function patchNodePhaseTwoPrompt(run) {
     const env = run.env_snapshot || {};
     // 干净补丁命名：前缀（产品名版本+yyyymmddHHmm+_）前台算好；「问题简述」由 claude 自己概括填入。
-    // patch_<产品名><版本>_<yyyymmddHHmm>_<问题简述>_znkf.zip
+    // patch_<产品名><版本>_<yyyymmddHHmm>_<问题简述>_<登录用户名>.zip
     const patchPrefix = patchNodePatchPrefix(run);
+    // 后缀用当前登录系统的用户名，便于区分是谁开发出的补丁；非法文件名符号替换成 _。
+    const patchUser = String(patchState.user?.username || '').trim().replace(/[\\/:*?"<>|\s]+/g, '_') || 'user';
     return [
         '用户已确认问题已解决。',
         '**绝对禁止使用 git 提交或合并代码**：不要执行 git commit / push / merge / checkout / rebase，',
@@ -3505,14 +3655,17 @@ function patchNodePhaseTwoPrompt(run) {
         `   home        = ${env.package_path}`,
         '   files       = clean 里实际存在的相对路径（相对 module_path=clean；按第 2 步过滤后的清单，**不是 changes.txt 的全部行**，纯日志文件已被排除不在 clean 里），一次传入',
         `   java_home   = ${env.local_jdk_path}`,
-        `   产物输出到 ${patchNodeTurnDir(run)}，补丁 zip **命名格式固定为 ${patchPrefix}<问题简述>_znkf.zip**；`,
+        `   产物输出到 ${patchNodeTurnDir(run)}，补丁 zip **命名格式固定为 ${patchPrefix}<问题简述>_${patchUser}.zip**；`,
         '   其中 <问题简述> 由你结束时自己用最简短的话概括「这次到底解决了什么问题」（从最终修复的角度，',
         '   不要照抄用户原始描述的前几个字），控制在 ~20 字内，去掉 \\ / : * ? " < > |，空格用 _ 或直接省略；',
-        `   例如 ${patchPrefix}回单查询报错查询数据为空_znkf.zip。`,
+        `   例如 ${patchPrefix}回单查询报错查询数据为空_${patchUser}.zip。`,
         '   打包完**把 zip 里的条目列出来自查一遍**（对照第 2 步 clean 里的相对路径），层级不对就重打包；',
         '   **再抽查 zip 里是去日志版**：用 unzip -p / zipgrep 查补丁里的新改源码，不得再出现本次阶段一加的排查日志标记',
         '   （TbClockDebugLog 调用、为排查加的 Logger.error 输出等）；发现有，就在 clean 里清干净后重新打包，直到 zip 干净为止。',
         '   **这个 clean 补丁才是最终要部署的补丁**（不含排查日志）；阶段一那个 zip 保留作对照，不要覆盖。',
+        '   **补丁包必须包含本次动到的源码（去日志版）**：打包后 unzip -l 检查补丁里是否含本次业务改动文件的 .java 源码；',
+        '   若只有 .class、没有对应 .java 源码，就用 zip / jar uf 把 clean 里对应的 .java 源码**手动加进补丁包**',
+        '   （同一相对路径，不要新增目录层级），加完复查源码条目已在。',
         `6. 用 diff-report skill 重新生成 HTML 对比报告：对比的是**去日志后的 clean 版（只业务改动）** vs 基线——`,
         `   先把 ${patchNodeStepDirOf(run)}\\baseline 原样复制到 ${patchNodeTurnDir(run)}\\baseline`,
         '   （基线 = 客开工程原文件 / 标品源码，阶段一建的，没被本次同步污染），保证 clean 与 baseline 同根便于 diff-report；',
@@ -3537,6 +3690,7 @@ async function patchNodeSendPrompt(run, prompt) {
             body: JSON.stringify({ message: prompt }),
         });
     } catch (error) {
+        run.error = true;
         patchNodeAppendText(`\n[启动失败] ${error.message}\n`);
         await patchNodeAfterTurn(run, `启动失败：${error.message}`);
     }
@@ -3638,6 +3792,15 @@ function patchNodeHandleEvent(run, event) {
         case 'result':
             patchNodeAppendText(`\n\n${event.content || ''}\n`);
             patchNodeFinalizeTiming(run);
+            // claude 的 API/CLI 报错常以**不带 is_error 的普通 result** 发出（如
+            // "API Error: 500 No available channel..."），不识别就会被当成正常结论进「待判定」。
+            // 命中引擎报错特征就按报错收尾（结论带上报错文本），状态仍是「待判定」，
+            // 用户可用「继续」按钮在原会话里发「继续」重试。
+            if (PATCH_NODE_ERROR_RE.test(event.content || '')) {
+                run.error = true;
+                patchNodeAfterTurn(run, `执行出错：${event.content || '未知错误'}`);
+                break;
+            }
             patchNodeAfterTurn(run, event.content || '');
             break;
         case 'error':
@@ -3658,18 +3821,27 @@ function patchNodeToolArgs(input) {
     try { return JSON.stringify(input); } catch { return String(input); }
 }
 
-// 一轮执行结束（阶段一或阶段二都会走到这里）
-// 已解决后把完整会话内容存档到服务器（管理员可查）。fire-and-forget，失败静默，session_archived 去重。
+// 一轮执行结束（阶段一或阶段二都会走到这里）：把该步骤边界的完整会话内容存档到服务器（管理员可查）。
+// 不再只在「已解决」时存——每个回合结束都打一个快照（s1/s2/…=阶段一第N次，m=阶段二合并），
+// 进行中 / 未解决 / 中途放弃的 run 也能看每步会话。fire-and-forget，失败静默，按 step 去重。
 // 内容源 = 本机 claude 会话 jsonl（经 /api/claude-sessions 解析出的完整会话，user/assistant/tool_use/tool_result）。
 async function patchNodeArchiveSession(run) {
-    if (run.session_archived === true) return;          // 已存过不重复
+    // 老 run 已经按「已解决」整体存过（session_archived=true）：保持原样，不重复补造 per-step 行
+    if (run.session_archived === true) return;
+    const step = run.stage === 2 ? 'm' : `s${run.phase1_step || 1}`;
+    const archivedSteps = Array.isArray(run.session_archived_steps) ? run.session_archived_steps : [];
+    if (archivedSteps.includes(step)) return;            // 该步骤已存过不重复
     const sid = run.agent_session_id;
     if (!sid) return;                                   // 拿不到 claude 会话 id 就跳过
     const payload = await patchNodeCcWeb(`/api/claude-sessions/${encodeURIComponent(sid)}?full=1`).catch(() => null);
     if (!payload || !Array.isArray(payload.messages)) return;
     const env = run.env_snapshot || {};
+    // 该快照所在步骤的状态：阶段二按终态（solved / merge_failed），阶段一统一记 pending（待判定）
+    const isPhase2 = run.stage === 2;
+    const verdict = isPhase2 ? (run.verdict === 'solved' ? 'solved' : 'merge_failed') : 'pending';
     const body = {
         local_run_id: run.id,
+        step,
         product_name: env.product_name || null,
         product_version: env.product_version || null,
         module_name: null,
@@ -3678,15 +3850,15 @@ async function patchNodeArchiveSession(run) {
         agent_session_id: sid,
         message_count: payload.messages.length,
         conversation_json: JSON.stringify(payload.messages),
-        verdict: run.verdict || 'solved',
-        solved_at: new Date().toISOString(),
+        verdict,
+        solved_at: run.verdict === 'solved' ? new Date().toISOString() : null,
     };
     await patchRequest('/api/problem-run-sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
-    run.session_archived = true;
+    run.session_archived_steps = archivedSteps.concat(step);
     patchNodeSaveRun(run).catch(() => {});
 }
 
@@ -3697,8 +3869,9 @@ async function patchNodeAfterTurn(run, report) {
     await patchNodeSettleRun(run);
     await patchNodeSaveRun(run).catch(() => {});
     patchNodeReport(run);
-    // 真正已解决（阶段二成功落终态）→ 把完整会话内容存档到服务器（管理员可查）
-    if (run.verdict === 'solved') patchNodeArchiveSession(run).catch(() => {});
+    // 每个回合结束（阶段一某次 / 阶段二合并）都把该步骤会话存档到服务器（管理员可查），
+    // 不再等「已解决」——进行中/未解决/放弃的 run 也能看每步会话（内部按 step 去重）
+    patchNodeArchiveSession(run).catch(() => {});
     patchNodeRenderRunPanel(run);
     await loadProblemRuns();
 }
@@ -3750,7 +3923,38 @@ async function patchNodeSettleRun(run) {
                 if (text) { run.report = text; break; }
             } catch (error) { /* 该文件不存在，试下一个 */ }
         }
+        // 结论文件也没有（claude 没跑完就死了）：查本 run 的 claude 会话，最后一条
+        // assistant 文本命中引擎报错特征（如"API Error: 503 未配置供应商"）就按「执行出错」收尾。
+        // Why：claude 重试期间不产生输出事件，SSE 静默几分钟后半死，终态 error 事件经常
+        // 送到不了浏览器；对账（reconcile）这条路一定会走，把兜底放这里才可靠。
+        if (!run.report && !run.error) {
+            const errText = await patchNodeDetectSessionError(run);
+            if (errText) {
+                run.error = true;
+                run.report = `执行出错：${errText}`;
+            }
+        }
     }
+}
+
+// 取本 run 的 claude 会话（--resume 同一条），看最后一条 assistant 文本是否为引擎报错。
+// 只看最后一条：正常收尾的最后一条是结论性文本，不会以 API Error 开头；报错场景 claude
+// 死前的最后一句正是错误信息本身。拉不到会话（接口挂了/会话不存在）返回 null，不影响收尾。
+async function patchNodeDetectSessionError(run) {
+    const sid = run.agent_session_id;
+    if (!sid) return null;
+    const payload = await patchNodeCcWeb(`/api/claude-sessions/${encodeURIComponent(sid)}?full=1`).catch(() => null);
+    if (!payload || !Array.isArray(payload.messages)) return null;
+    for (let i = payload.messages.length - 1; i >= 0; i -= 1) {
+        const message = payload.messages[i];
+        if (!message || message.role !== 'assistant') continue;
+        const content = message.content;
+        const text = typeof content === 'string' ? content
+            : (Array.isArray(content) ? content.filter(block => block && block.type === 'text').map(block => block.text || '').join('\n') : '');
+        if (text && PATCH_NODE_ERROR_RE.test(text)) return text;
+        return null;   // 最后一条 assistant 不是报错文案 → 这轮不是引擎报错收尾
+    }
+    return null;
 }
 
 // 与后端对账：把"其实早就跑完、但浏览器没收到 result 事件"的 run 收尾。
@@ -3786,8 +3990,8 @@ async function patchNodeReconcileRuns() {
         await patchNodeSettleRun(run);
         await patchNodeSaveRun(run).catch(() => {});
         patchNodeReport(run);
-        // 收尾那一刻页面不在的已解决 run，也要把会话存档补上
-        if (run.verdict === 'solved') patchNodeArchiveSession(run).catch(() => {});
+        // 收尾那一刻页面不在的 run，也要把缺的步骤会话存档补上（内部按 step 去重，不会重复）
+        patchNodeArchiveSession(run).catch(() => {});
     }
 }
 
@@ -3803,9 +4007,16 @@ window.addEventListener('pageshow', (event) => {
     }
 });
 
-// ── 会话存档（管理员）：已解决 run 的完整会话内容，按账号/产品/工单过滤 + 分页 ──
+// ── 会话存档（管理员）：智能开发每步边界的完整会话内容，按账号/产品/工单过滤 + 分页 ──
 // 分页状态用 {page,size,total} 以对接统一分页条（size 即 page_size）。
 const patchSessions = { page: 1, size: 20, total: 0, filters: { user_id: '', product: '', local_run_id: '' } };
+
+// 步骤代码 → 给人看的名字（s1/s2/…=阶段一第N次，m=阶段二合并）
+function patchSessionStepLabel(step) {
+    if (step === 'm') return '阶段二 · 合并';
+    const n = /^s(\d+)$/.exec(step || '');
+    return n ? `阶段一 · 第${n[1]}次` : (step || '—');
+}
 
 function patchSessionsQueryString() {
     const q = new URLSearchParams();
@@ -3829,16 +4040,17 @@ async function loadRunSessions() {
         patchSessions.size = Number(payload.page_size) || patchSessions.size;
         const items = Array.isArray(payload.items) ? payload.items : [];
         if (!items.length) {
-            body.innerHTML = '<tr><td colspan="7" class="patch-empty">暂无存档</td></tr>';
+            body.innerHTML = '<tr><td colspan="8" class="patch-empty">暂无存档</td></tr>';
         } else {
             body.innerHTML = items.map(row => `<tr>
-                <td>${patchEscape(patchFormatDateTime(row.solved_at ? new Date(row.solved_at) : new Date(row.created_at)))}</td>
+                <td>${patchEscape(patchFormatDateTime(row.created_at ? new Date(row.created_at) : new Date()))}</td>
+                <td>${patchEscape(patchSessionStepLabel(row.step))}</td>
                 <td>${patchEscape(String(row.created_by_user_id ?? '—'))}</td>
                 <td>${patchEscape(`${row.product_name || '—'} ${row.product_version || ''}`.trim())}</td>
                 <td><span class="patch-truncated-name" title="${patchEscape(row.problem_desc || '')}">${patchEscape(patchNodeInline(row.problem_desc || '—', 50))}</span></td>
                 <td>${patchEscape(String(row.message_count ?? 0))}</td>
                 <td><span class="patch-muted">${patchEscape(String(row.agent_session_id || '—').slice(0, 8))}</span></td>
-                <td><button class="patch-link-btn" data-session-view="${patchEscape(row.local_run_id)}">查看</button></td>
+                <td><button class="patch-link-btn" data-session-view="${patchEscape(row.local_run_id)}" data-session-step="${patchEscape(row.step || '')}">查看</button></td>
             </tr>`).join('');
         }
         const totalPages = Math.max(1, Math.ceil(patchSessions.total / patchSessions.size));
@@ -3875,11 +4087,12 @@ function renderSessionMessages(messages) {
     }).join('');
 }
 
-async function openRunSession(localRunId) {
+async function openRunSession(localRunId, step) {
     let row;
     try {
         // patchRequest 已拆 {code,data} 直接返回 data（= 单条存档行），不要再 .data
-        row = (await patchRequest(`/api/problem-run-sessions/${encodeURIComponent(localRunId)}`)) || {};
+        const suffix = step ? `?step=${encodeURIComponent(step)}` : '';
+        row = (await patchRequest(`/api/problem-run-sessions/${encodeURIComponent(localRunId)}${suffix}`)) || {};
     } catch (error) { patchShowError(error.message, '查看会话失败'); return; }
     let messages = [];
     try { messages = JSON.parse(row.conversation_json || '[]'); } catch (err) { messages = []; }
@@ -3887,8 +4100,9 @@ async function openRunSession(localRunId) {
     overlay.className = 'file-overlay';
     overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
     const title = `${row.product_name || ''} ${row.product_version || ''}`.trim() || '会话存档';
+    const stepLabel = patchSessionStepLabel(row.step);
     overlay.innerHTML = `<div class="file-viewer session-viewer">
-        <div class="file-viewer-header"><span class="file-viewer-name">📋 ${patchEscape(title)} · 已解决会话</span><button class="file-viewer-close" type="button">×</button></div>
+        <div class="file-viewer-header"><span class="file-viewer-name">📋 ${patchEscape(title)} · ${patchEscape(stepLabel)}</span><button class="file-viewer-close" type="button">×</button></div>
         <div class="file-viewer-content session-scroll">${renderSessionMessages(messages)}</div>
     </div>`;
     overlay.querySelector('.file-viewer-close').onclick = () => overlay.remove();
@@ -3939,7 +4153,7 @@ async function patchNodeStartRun(event) {
     const problemDesc = String(values.problem_desc || '').trim();
     if (!problemDesc) { patchShowError('问题/需求描述为必填项', '智能开发创建失败'); form.problem_desc.focus(); return; }
     const triggerUrl = String(values.trigger_url || '').trim();
-    if (!triggerUrl) { patchShowError('触发的url为必填项', '智能开发创建失败'); form.trigger_url.focus(); return; }
+    if (!triggerUrl) { patchShowError('触发的url/入口类为必填项', '智能开发创建失败'); form.trigger_url.focus(); return; }
     const env = (patchState.admin.projectEnvs || []).find(item => String(item.id) === String(values.env_id));
     if (!env) { patchShowError('请选择关联的产品环境变量', '智能开发创建失败'); return; }
     if (!patchNodeIsAbsolutePath(env.code_directory)) {
@@ -4096,9 +4310,9 @@ async function patchNodeSolved(run) {
     patchNodeConnect(run, patchNodePhaseTwoPrompt(run));
 }
 
-// ── 未解决 / 重新执行 / 重新合并：两种续跑 ──
-// 未解决（待判定）→ 弹框上传日志 → 阶段一提示词 + 日志一起发给 claude；
-// 重新执行 / 重新合并（执行出错 / 合并失败 / 已中断）→ 直接发「继续」，靠 --resume 上下文延续。
+// ── 未解决 / 继续：两种续跑 ──
+// 未解决 → 弹框上传日志/补充说明 → 阶段一提示词一起发给 claude（回到阶段一，新开一步）；
+// 继续（执行出错/合并中断/想接着跑）→ 直接发「继续」，靠 --resume 上下文延续。
 
 // 重新执行 / 重新合并（执行出错 / 合并失败 / 已中断）：直接发「继续」，靠 --resume 上下文延续
 function patchNodeRerun(run) {
@@ -4108,6 +4322,11 @@ function patchNodeRerun(run) {
     run.verdict = null;
     run.report = '';
     run.retry_count = (run.retry_count || 0) + 1;
+    // 继续跑的是**同一个 step**：清掉该 step 的会话存档标记，这轮结束重新打快照。
+    // 否则"出错→继续"场景里，出错那一刻已经存过一版，继续跑完会被按 step 去重跳过，
+    // 存档就永远停在出错瞬间的内容（服务器按 (local_run_id, step) upsert，重存即覆盖为最新完整会话）
+    const rerunStep = run.stage === 2 ? 'm' : `s${run.phase1_step || 1}`;
+    run.session_archived_steps = (Array.isArray(run.session_archived_steps) ? run.session_archived_steps : []).filter(item => item !== rerunStep);
     patchNodeAppendText(`\n\n【重跑】第 ${run.retry_count} 次执行${run.stage === 2 ? '合并' : '阶段一'}（发「继续」）…\n`);
     patchNodeFlushOutput();
     patchNodeSaveRun(run).catch(() => {});
@@ -4118,15 +4337,16 @@ function patchNodeRerun(run) {
     patchNodeConnect(run, '继续');
 }
 
-// 未解决（待判定）：弹框上传日志文件（必填）→ 拼到阶段一提示词后面一起交给 claude
+// 未解决（待判定）：弹框（日志文件/补充说明/SQL 均选填）→ 拼到阶段一提示词后面一起交给 claude
 let patchNodeRerunTarget = null;
 
 function patchNodeUnsolved(run) {
     patchNodeRerunTarget = run;
     const retry = (run.retry_count || 0) + 1;
     document.getElementById('patchNodeRerunMeta').textContent =
-        `将重跑：阶段一 · 问题分析（第 ${retry} 次）。请上传本次复现的日志文件（必填），会拼到阶段一提示词后面一起交给 claude，上下文延续。`;
+        `将重跑：阶段一 · 问题分析（第 ${retry} 次）。可上传本次复现的日志文件（选填）、填写补充说明（选填），会拼到阶段一提示词后面一起交给 claude，上下文延续。`;
     document.getElementById('patchNodeRerunFile').value = '';
+    document.getElementById('patchNodeRerunNote').value = '';
     document.getElementById('patchNodeRerunSql').value = '';
     document.getElementById('patchNodeRerunModal').hidden = false;
 }
@@ -4155,19 +4375,17 @@ function patchNodeReadLogFile(file, maxBytes) {
 async function patchNodeUnsolvedConfirm() {
     const run = patchNodeRerunTarget;
     if (!run) return;
-    // 日志文件必填
+    // 日志文件选填：没上传就不读，也不拼进提示词
     const fileInput = document.getElementById('patchNodeRerunFile');
     const file = fileInput && fileInput.files && fileInput.files[0];
-    if (!file) {
-        patchShowError('请先选择要上传的日志文件', '未解决');
-        return;
-    }
-    let content;
-    try {
-        content = await patchNodeReadLogFile(file, 1000000);
-    } catch (error) {
-        patchShowError(error.message, '未解决');
-        return;
+    let content = '';
+    if (file) {
+        try {
+            content = await patchNodeReadLogFile(file, 1000000);
+        } catch (error) {
+            patchShowError(error.message, '未解决');
+            return;
+        }
     }
     patchNodeRerunTarget = null;
     document.getElementById('patchNodeRerunModal').hidden = true;
@@ -4178,17 +4396,31 @@ async function patchNodeUnsolvedConfirm() {
     run.turn_dir = run.step_dir;
     run.stage_dir = patchNodeJoin(run.step_dir, 'work');
     // 明说新 step：阶段一提示词在之前的上下文里还指向旧 step 目录，必须先覆盖它
-    let prompt = `【本次为第 ${run.phase1_step} 次执行（新开 ${run.step_dir}）】所有产物（changes.txt / 结论.md / 补丁 zip / baseline / report / aisql.sql）都写到 ${run.turn_dir}；改动只写暂存目录 ${run.stage_dir}。之前提示词里更早的目录一律作废。\n\n${patchNodeUnsolvedGuidance(run)}\n\n${content}\n\n以上是详细的日志信息，请你根据这个日志信息帮我解决问题`;
+    let prompt = `【本次为第 ${run.phase1_step} 次执行（新开 ${run.step_dir}）】所有产物（changes.txt / 结论.md / 补丁 zip / baseline / report / aisql.sql）都写到 ${run.turn_dir}；改动只写暂存目录 ${run.stage_dir}。之前提示词里更早的目录一律作废。\n\n${patchNodeUnsolvedGuidance(run)}`;
+    if (content) {
+        prompt += `\n\n${content}\n\n以上是详细的日志信息，请你根据这个日志信息帮我解决问题`;
+    } else {
+        prompt += `\n\n本次重跑未上传日志文件，请结合会话上下文里已有的信息，以及下方用户的补充说明（如有），继续帮我排查并解决问题。`;
+    }
+    const noteText = (document.getElementById('patchNodeRerunNote').value || '').trim();
+    if (noteText) prompt += `\n\n【用户的补充说明】\n${noteText}`;
     const sqlText = (document.getElementById('patchNodeRerunSql').value || '').trim();
     if (sqlText) prompt += `\n\n【用户提供的 SQL 结果集】\n${sqlText}`;
-    // 重置运行态，回到阶段一；同一会话续跑
+    // 重置运行态，回到阶段一；同一会话续跑。
+    // stage 归 1 必不可少：合并中断（stage=2）的 run 现在也能点「未解决」回到阶段一，
+    // 不归位会让状态/按钮/会话存档的 step 代码都按阶段二算。
     run.phase = 'analyzing';
+    run.stage = 1;
     run.error = false;
     run.failure = null;
     run.verdict = null;
     run.report = '';
     run.retry_count = (run.retry_count || 0) + 1;
-    patchNodeAppendText(`\n\n【重跑】已上传日志 ${file.name}（${(file.size / 1024).toFixed(0)}KB），第 ${run.retry_count} 次执行阶段一…\n`);
+    patchNodeAppendText(
+        file
+            ? `\n\n【重跑】已上传日志 ${file.name}（${(file.size / 1024).toFixed(0)}KB），第 ${run.retry_count} 次执行阶段一…\n`
+            : `\n\n【重跑】第 ${run.retry_count} 次执行阶段一…\n`
+    );
     patchNodeFlushOutput();
     await patchNodeSaveRun(run).catch(() => {});
     patchNodeReport(run);
@@ -4198,10 +4430,9 @@ async function patchNodeUnsolvedConfirm() {
     patchNodeConnect(run, prompt);
 }
 
-// 面板按钮统一分发：待判定（未解决）→ 上传日志；其余（重新执行/重新合并/已中断）→ 发「继续」
+// 面板「问题未解决」统一走弹框补信息重跑阶段一；原会话发「继续」由专门的「继续」按钮负责
 function patchNodeRerunOrUnsolved(run) {
-    if (run.phase === 'awaiting_decision' && !run.error) return patchNodeUnsolved(run);
-    return patchNodeRerun(run);
+    return patchNodeUnsolved(run);
 }
 
 async function patchNodeAbort(run) {
@@ -4242,7 +4473,7 @@ function patchNodeResumeSession(run) {
 
 async function patchNodeRemoveRun(run) {
     const ok = await patchConfirm(
-        `从本机运行清单里删除这条记录？\n\n不会删除补丁输出目录里的产物（${run.out_dir || '—'}），也不会删除 cc-web 会话。`,
+        `从本机运行清单里删除这条记录？\n\n不会删除补丁输出目录里的产物（${run.out_dir || '—'}），也不会删除 cc-web 会话；服务器账本仅做逻辑删除（记录保留，列表不再显示）。`,
         '删除运行记录'
     );
     if (!ok) return;
@@ -4252,8 +4483,9 @@ async function patchNodeRemoveRun(run) {
         patchShowError(error.message, '删除运行记录失败');
         return;
     }
-    // 服务器那份只是影子，删不掉不该挡住本地操作
-    patchRequest(`/api/problem-runs/${encodeURIComponent(run.id)}`, { method: 'DELETE' }).catch(() => {});
+    // 服务器那份只是影子，删不掉不该挡住本地操作；但要**等它删完再刷新列表**——
+    // 否则 loadProblemRuns 先跑时服务器行还在，会闪成「仅存档」，要手动刷新才消失
+    await patchRequest(`/api/problem-runs/${encodeURIComponent(run.id)}`, { method: 'DELETE' }).catch(() => {});
     if (patchState.node.current && patchState.node.current.id === run.id) {
         patchNodeCloseStream();
         patchState.node.current = null;
@@ -4334,6 +4566,9 @@ function patchBindEvents() {
     document.getElementById('patchNewTemplate').onclick = () => openAdminForm('template');
     document.getElementById('patchNewDirectory').onclick = () => openDirectoryForm();
     document.getElementById('patchDirectoryForm').onsubmit = saveDirectory;
+    // 目录弹窗：类型切换控制 产品/版本 显隐与联动；产品切换刷新版本下拉
+    document.getElementById('patchDirectoryCategory').onchange = patchDirectorySyncCategoryFields;
+    document.getElementById('patchDirectoryProduct').onchange = patchDirectorySyncCategoryFields;
     document.getElementById('patchNewProjectEnv').onclick = () => openProjectEnvForm().catch(error => patchShowError(error.message, '产品环境打开失败'));
     document.getElementById('patchProjectEnvForm').onsubmit = saveProjectEnv;
     // 换产品就重列版本；fillProjectEnvVersions 会重建 options，旧版本号自动清空
@@ -4356,6 +4591,7 @@ function patchBindEvents() {
     document.getElementById('patchNodeAbort').onclick = () => { if (patchState.node.current) patchNodeAbort(patchState.node.current); };
     document.getElementById('patchNodeSolved').onclick = () => { if (patchState.node.current) patchNodeSolved(patchState.node.current); };
     document.getElementById('patchNodeUnsolved').onclick = () => { if (patchState.node.current) patchNodeRerunOrUnsolved(patchState.node.current); };
+    document.getElementById('patchNodeContinue').onclick = () => { if (patchState.node.current) patchNodeRerun(patchState.node.current); };
     // 未解决/重新执行/重新合并的补充信息弹框
     document.getElementById('patchNodeRerunClose').onclick = () => { document.getElementById('patchNodeRerunModal').hidden = true; patchNodeRerunTarget = null; };
     document.getElementById('patchNodeRerunCancel').onclick = () => { document.getElementById('patchNodeRerunModal').hidden = true; patchNodeRerunTarget = null; };
@@ -4413,9 +4649,20 @@ function patchBindEvents() {
         if (patchState.admin.kind !== 'flow' || event.target.name !== 'claude_target') return;
         const directory = event.currentTarget.querySelector('[name="directory_code"]');
         directory.innerHTML = flowDirectoryOptions(event.target.value, directory.value);
-        // server 必须选择内置目录；local 允许留空（运行时再指定）
-        if (event.target.value === 'server') directory.setAttribute('required', '');
+        // server 且目录模式=固定目录 必须选择内置目录；其余允许留空（按产品选/运行时再指定）
+        if (event.target.value === 'server' && event.currentTarget.querySelector('[name="directory_mode"]')?.value === 'fixed') directory.setAttribute('required', '');
         else directory.removeAttribute('required');
+    });
+    // 流程表单：目录模式切换 → 目录类型显隐 + 固定目录必填联动
+    document.getElementById('patchAdminForm').addEventListener('change', event => {
+        if (patchState.admin.kind !== 'flow' || event.target.name !== 'directory_mode') return;
+        const form = event.currentTarget;
+        const byProduct = event.target.value === 'by_product';
+        const categoryLabel = form.querySelector('#flowRuntimeCategoryLabel');
+        if (categoryLabel) categoryLabel.hidden = !byProduct;
+        const directory = form.querySelector('[name="directory_code"]');
+        if (byProduct) directory.removeAttribute('required');
+        else if (form.querySelector('[name="claude_target"]').value === 'server') directory.setAttribute('required', '');
     });
     document.getElementById('patchAdminClose').onclick = () => { document.getElementById('patchAdminModal').hidden = true; };
     document.getElementById('patchAdminCancel').onclick = () => { document.getElementById('patchAdminModal').hidden = true; };
@@ -4553,6 +4800,8 @@ function patchBindEvents() {
         row.querySelector('[data-dir-path]').disabled = !event.target.checked;
     });
     document.getElementById('workflowTemplateSelect').addEventListener('change', updateWorkflowTemplateDesc);
+    // 「按产品选目录」模板：产品切换 → 刷新版本下拉（数据来自产品字典）
+    document.getElementById('workflowProductSelect').onchange = renderWorkflowVersionOptions;
     document.getElementById('workflowHistoryRefresh').onclick = () => loadWorkflowHistory();
     document.addEventListener('click', (event) => {
         const workflowView = event.target.closest('[data-workflow-view-id]');
@@ -4718,7 +4967,7 @@ function patchBindEvents() {
     document.getElementById('patchSessionsBody').addEventListener('click', (event) => {
         const button = event.target.closest('button[data-session-view]');
         if (!button) return;
-        openRunSession(button.dataset.sessionView).catch(error => patchShowError(error.message, '查看会话失败'));
+        openRunSession(button.dataset.sessionView, button.dataset.sessionStep).catch(error => patchShowError(error.message, '查看会话失败'));
     });
 }
 
@@ -4728,22 +4977,24 @@ patchBindPagerEvents();
 patchInitPagers();
 patchInitListPagers();
 patchInitSidenav();
-// 先读取服务端 /api/patch-config（地址在 cc-web 代码内写死），异常时直接报错并中止后续请求
-patchLoadConfig().then(() => {
-    patchRestoreAuth().then(authenticated => {
-        if (!authenticated) return;
-        // 从流程运行详情页返回时带 ?tab=smart，直接切到智能分析页签
-        const returnTab = new URLSearchParams(location.search).get('tab');
-        const tabButton = returnTab && document.querySelector(`.patch-tab[data-tab="${returnTab}"]`);
-        // 深链守卫：?tab=X 只在 X 当前可见（未被菜单可见性隐藏）时才切过去，否则回落到默认页签
-        if (tabButton && !tabButton.hidden) { patchSwitchTab(returnTab); loadPatches(); }
-        else { loadPatches(); loadWorkflowTemplates(); restoreWorkflowRun(); loadWorkflowHistory(); }
-    });
-}).catch(error => {
+// 先读取服务端 /api/patch-config（地址在 cc-web 代码内写死），异常时直接报错并中止后续请求。
+// 整条链挂到 window.__patchAuthPromise：/sidenav.js 复用它的结果渲染菜单，
+// 不再自己发一遍 /api/patch-config + /api/auth/me（此前两份脚本各拉一次，刷新时请求翻倍）
+window.__patchAuthPromise = patchLoadConfig().then(() => patchRestoreAuth().then(authenticated => {
+    if (!authenticated) return null;
+    // 从流程运行详情页返回时带 ?tab=smart，直接切到智能分析页签。
+    // 深链守卫 + 已激活守卫：?tab=X 只在 X 可见且与当前页签不同才切——
+    // 相同也切会让该页签数据被拉两遍（侧边栏导航会把 ?tab= 写进地址栏，刷新时必现双请求）
+    const returnTab = new URLSearchParams(location.search).get('tab');
+    const tabButton = returnTab && document.querySelector(`.patch-tab[data-tab="${returnTab}"]`);
+    if (tabButton && !tabButton.hidden && document.querySelector('.patch-tab.active')?.dataset.tab !== returnTab) patchSwitchTab(returnTab);
+    return patchState.user;
+})).catch(error => {
     document.documentElement.classList.remove('patch-auth-pending');
     const status = document.getElementById('patchApiStatus');
     if (status) { status.textContent = '配置缺失'; status.className = 'patch-api-status error'; }
     patchShowError(error.message, '补丁中心配置错误');
+    return null;
 });
 
 // 从流程运行详情页用浏览器「后退」回来时，可能命中 bfcache：页面直接从内存恢复，

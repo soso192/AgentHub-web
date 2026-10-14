@@ -156,7 +156,7 @@ async function resumeSessionFromUrl() {
             return true;
         }
     }
-    if (historySid && await openClaudeHistoryView(historySid)) {
+    if (historySid && await openClaudeHistoryView(historySid, remoteSessionTarget(params))) {
         clearUrlQuery();
         return true;
     }
@@ -242,36 +242,121 @@ function clearUrlQuery() {
 // 用在「cc-web 会话已经不在、但 claude 的运行记录还在」的场合：**只展示，不新建会话、不能发消息**。
 // jsonl 是按步落盘的（一次助手消息/一次工具调用一行），所以每 2s 重读一次追新；
 // 内容连续 20s 没变化就停（那次 claude 会话应该是结束了）。
-async function openClaudeHistoryView(sid) {
+// remote 参数（{run, step}）：智能分析 server 步骤的「查看会话」——会话 jsonl 在服务器上，
+// 数据改从 patch_search 的 /steps/{n}/session 接口拉，消息结构一致、渲染复用；
+// 轮询策略也不同：5s 一次、以步骤状态为准（执行中一直轮、终态即停，见下方注释）。
+function remoteSessionTarget(params) {
+    if (params.get('remote') !== '1' || !params.get('run') || !params.get('step')) return null;
+    return { run: params.get('run'), step: params.get('step') };
+}
+
+// 聊天页没有 patches.js：这里自己取补丁服务地址（cc-web /api/patch-config 下发）与令牌
+let remotePatchServersCache = null;
+async function remotePatchServers() {
+    if (remotePatchServersCache && remotePatchServersCache.length) return remotePatchServersCache;
+    const response = await fetch('/api/patch-config');
+    if (!response.ok) throw new Error('cc-web 配置接口不可用');
+    const config = (await response.json().catch(() => ({}))) || {};
+    let servers = Array.isArray(config.patch_search_servers) ? config.patch_search_servers
+        : (config.patch_search_api ? [config.patch_search_api] : []);
+    servers = servers.map(v => String(v).trim()).filter(Boolean);
+    if (!servers.length) throw new Error('补丁服务地址未配置');
+    remotePatchServersCache = servers;
+    return servers;
+}
+
+// 服务器会话回放数据源：GET /api/workflows/runs/{run}/steps/{step}/session?after=<size>。
+// after 与上次返回的 size 相同 → 服务端只 stat 不解析，返回 {unchanged:true}（静默期近乎免费）。
+async function remoteSessionFetch(runId, stepOrder, after) {
+    const servers = await remotePatchServers();
+    const token = localStorage.getItem('patch-search-access-token') || '';
+    let lastError = null;
+    for (const base of servers) {
+        const url = `${base.replace(/\/+$/, '')}/api/workflows/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepOrder)}/session` + (after != null ? `?after=${after}` : '');
+        try {
+            const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+            const payload = await res.json().catch(() => ({}));
+            if (res.status === 401) throw new Error('登录已失效，请回补丁中心重新登录后再查看');
+            if (!res.ok) throw new Error(payload.message || payload.detail || `HTTP ${res.status}`);
+            if (payload.code !== 0) throw new Error(payload.message || payload.detail || '请求失败');
+            return payload.data || {};
+        } catch (e) { lastError = e; }
+    }
+    throw lastError || new Error('无法连接补丁中心');
+}
+
+async function openClaudeHistoryView(sid, remote = null) {
     const viewId = `claude:${sid}`;
-    const load = async () => {
-        const res = await fetch(`${API_BASE}/api/claude-sessions/${encodeURIComponent(sid)}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return (await res.json()).messages || [];
-    };
+    // 远程回放的轮询状态：lastSize 供「未变化短路」（after 参数），stepStatus 决定继续/停止
+    let lastSize = null;
+    let stepStatus = '';
+    const load = remote
+        ? async () => {
+            const data = await remoteSessionFetch(remote.run, remote.step, lastSize);
+            stepStatus = data.step_status || '';
+            if (data.unchanged) return null;
+            lastSize = data.size;
+            return data.messages || [];
+        }
+        : async () => {
+            const res = await fetch(`${API_BASE}/api/claude-sessions/${encodeURIComponent(sid)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return (await res.json()).messages || [];
+        };
     let messages;
     try {
         messages = await load();
     } catch (e) {
         console.error('Failed to load claude session history:', e);
+        if (remote) {
+            showAppNotice(`读取服务器会话失败：${e.message}`, '无法打开会话');
+            return true;
+        }
         return false;
     }
-    if (!messages.length) return false;   // 本机没这个 jsonl / 还什么都没写 → 交给调用方提示
+    if (!messages || !messages.length) {
+        // 远程会话刚建立还没写内容：明确提示，别落到「本机记录」的误导文案上
+        if (remote) { showAppNotice(`服务器上的 claude 会话 ${sid} 暂无可展示内容。`, '无法打开会话'); return true; }
+        return false;   // 本机没这个 jsonl / 还什么都没写 → 交给调用方提示
+    }
 
     const view = getSessionView(viewId);
     view.innerHTML = '';
+    // 远端回放：只读提示固定在输入框位置的 #serverReplayBanner（随执行状态联动），不叠顶部横幅；
+    // 本机回放保持原样：顶部横幅说明只读。
+    const sentinel = document.createElement('div');
     const banner = document.createElement('div');
-    banner.className = 'claude-history-banner';
-    banner.textContent = `只读回放：原聊天会话已不在，下面是 claude 会话 ${sid} 的本机记录（不能在此继续对话）。`;
-    view.appendChild(banner);
+    if (remote) {
+        view.appendChild(sentinel);   // 占位哨兵，供下方「重画清到哨兵为止」的逻辑使用
+    } else {
+        banner.className = 'claude-history-banner';
+        banner.textContent = `只读回放：原聊天会话已不在，下面是 claude 会话 ${sid} 的本机记录（不能在此继续对话）。`;
+        view.appendChild(banner);
+    }
     welcomeScreen.style.display = 'none';
     chatContainer.style.display = 'flex'; chatContainer.flexDirection = 'column';
     typingIndicator.style.display = 'none';
     inputArea.style.display = 'none';   // 只读：不给发送入口（切到别的会话时 selectSession 会恢复）
     showSessionView(viewId);
 
+    // ── 远端回放实时状态条：固定显示，执行中走脉冲、到终态定格 ──
+    let srb = null;
+    const TERMINAL = ['success', 'failed', 'cancelled'];
+    const setReplayBanner = status => {
+        srb = document.getElementById('serverReplayBanner');
+        if (!srb) return;
+        const running = status && !TERMINAL.includes(status);
+        srb.className = 'server-replay-banner' + (running ? ' live' : ' ended');
+        srb.innerHTML = `<span class="srb-dot"></span><span class="srb-text">${
+            running ? '服务器会话执行中 · 实时更新中' : '服务器会话已结束 · 只读查看'
+        }</span>`;
+        srb.style.display = 'flex';
+        inputArea.style.display = 'none';
+    };
+
     let rendered = 0;
     const render = list => {
+        const before = rendered;
         const atBottom = chatContainer.scrollTop + chatContainer.clientHeight >= chatContainer.scrollHeight - 40;
         const keep = chatContainer.scrollTop;
         if (rendered > 0 && list.length >= rendered) {
@@ -282,13 +367,45 @@ async function openClaudeHistoryView(sid) {
             renderMessagesInto(view, list.slice(rendered - 1), 'claude');
         } else {
             // 首屏，或者记录反而变短了（jsonl 被重写/压缩）→ 整块重来
-            while (view.lastElementChild && view.lastElementChild !== banner) view.lastElementChild.remove();
+            while (view.lastElementChild && view.lastElementChild !== (remote ? sentinel : banner)) view.lastElementChild.remove();
             renderMessagesInto(view, list, 'claude');
         }
         if (!atBottom) chatContainer.scrollTop = keep;   // renderMessagesInto 会滚到底，别抢用户的滚动位置
+        // 执行中轮询新增内容：给最新一条消息做短暂高亮，强化「正在跑」的临场感（首屏 / 终态不触发）
+        if (remote && before > 0 && list.length > before) {
+            const newest = view.querySelector('.message:last-of-type');
+            if (newest) {
+                newest.classList.remove('msg-flash');
+                void newest.offsetWidth;   // 强制重触发动画
+                newest.classList.add('msg-flash');
+            }
+        }
         rendered = list.length;
     };
     render(messages);
+    if (remote) setReplayBanner(stepStatus);
+
+    if (remote) {
+        // 服务器回放轮询：5s 一次，以步骤状态为准——还在执行就一直轮（未变化短路让 claude
+        // 长思考的静默期只剩一次 stat），到终态取到最终内容即停。不用「N 秒不变」的启发式。
+        const timer = setInterval(async () => {
+            // 用户切去别的会话了：停掉轮询、隐藏状态条，别让后续重画把别人的滚动位置拽到底部
+            if (view.style.display === 'none') {
+                clearInterval(timer);
+                if (srb) srb.style.display = 'none';
+                return;
+            }
+            try {
+                const list = await load();
+                if (list !== null) render(list);
+                setReplayBanner(stepStatus);
+                if (TERMINAL.includes(stepStatus)) clearInterval(timer);
+            } catch (e) {
+                // 单次失败忽略，下一轮再来
+            }
+        }, 5000);
+        return true;
+    }
 
     let stale = 0;
     const timer = setInterval(async () => {
@@ -542,6 +659,9 @@ function isAdaptRunSessionCached(sessionId) {
 }
 async function refreshInputReadonlyState() {
     const banner = document.getElementById('nodeReadonlyBanner');
+    // 服务器回放的固定状态条：任何会话切换都先藏掉——远端回放打开时 openClaudeHistoryView 会再显示
+    const srb = document.getElementById('serverReplayBanner');
+    if (srb) srb.style.display = 'none';
     const sid = currentSessionId;
     if (!sid) { if (banner) banner.style.display = 'none'; return; }
     let isBackground = false;
