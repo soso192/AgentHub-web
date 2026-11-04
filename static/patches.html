@@ -64,6 +64,7 @@
             <div class="patch-tabs" role="tablist">
                 <button class="patch-tab active" data-tab="node">智能开发</button>
                 <button class="patch-tab" data-tab="smart">智能分析</button>
+                <button id="patchCodeSearchTab" class="patch-tab" data-tab="codesearch">源码搜索</button>
                 <button class="patch-tab" data-tab="search">普通检索</button>
                 <button class="patch-tab" data-tab="upload">补丁上传</button>
                 <button class="patch-tab" data-tab="mine">我的补丁</button>
@@ -154,6 +155,14 @@
                 </div>
             </section>
 
+            <section id="patchTabCodesearch" class="patch-tab-panel">
+                <!-- 源码搜索 Web 工具（iframe 嵌入）。地址来自 /api/patch-config 的 code_search_url
+                     （cc-web.exe 同目录 patch_servers.json 可配，改完重启 cc-web 生效）；
+                     未配置时整个页签隐藏（patchLoadConfig 控制）。src 由 patches.js 首次进入页签时懒加载。 -->
+                <div class="patch-card patch-codesearch-card">
+                    <iframe id="patchCodeSearchFrame" title="源码搜索" src="about:blank"></iframe>
+                </div>
+            </section>
             <section id="patchTabSmart" class="patch-tab-panel">
                 <div class="patch-card smart-dev-card">
                     <div class="smart-dev-head"><div><h2>智能分析</h2><p>选择流程模板并输入业务需求，启动后实时查看每步执行进度与输出。</p></div></div>
@@ -216,6 +225,11 @@
                     <div id="patchPromptMessage" class="patch-message"></div>
                     <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>名称</th><th>描述</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="patchPromptBody"></tbody></table></div>
                     <div class="patch-pager" data-pager="prompt"></div>
+                </div>
+                <div class="patch-card admin-panel prompt-data-panel">
+                    <div class="admin-section-header"><div><h2>智能开发提示词（问题解决节点）</h2><p>按 产品×版本作用域×阶段 配置 阶段一/阶段二/未解决重跑 提示词模板；运行时优先用配置模板（含 {{var}} 占位符），未配置走本机内置默认。版本填精确串（6.5）或用 * 表示该产品所有版本共用。</p></div><div class="patch-analysis-actions"><button id="patchNodePromptSeed" class="patch-secondary-btn">按产品载入内置默认</button><button id="patchNodePromptNew" class="patch-primary-btn">新增配置</button></div></div>
+                    <div id="patchNodePromptMessage" class="patch-message"></div>
+                    <div class="patch-table-wrap"><table class="patch-table patch-actions-table"><thead><tr><th>产品</th><th>版本</th><th>阶段</th><th>状态</th><th>描述</th><th>操作</th></tr></thead><tbody id="patchNodePromptBody"><tr><td colspan="6" class="patch-empty">暂无配置</td></tr></tbody></table></div>
                 </div>
             </section>
 
@@ -375,6 +389,33 @@
             <div class="modal-header"><h3 id="patchAdminModalTitle">新增配置</h3><button id="patchAdminClose" class="modal-close">×</button></div>
             <form id="patchAdminForm" class="patch-admin-form"></form>
             <div class="modal-footer"><button id="patchAdminCancel" type="button" class="btn-cancel">取消</button><button id="patchAdminSave" type="submit" form="patchAdminForm" class="btn-primary">保存</button></div>
+        </div>
+    </div>
+
+    <div id="patchNodePromptModal" class="modal-overlay" hidden>
+        <div class="modal patch-admin-modal">
+            <div class="modal-header"><h3 id="patchNodePromptModalTitle">新增智能开发提示词配置</h3><button id="patchNodePromptClose" class="modal-close">×</button></div>
+            <form id="patchNodePromptForm" class="patch-admin-form">
+                <label>产品名<input name="product_name" required placeholder="例如 NCCloud"></label>
+                <label>版本作用域<input name="version_scope" required placeholder="精确版本(6.5) 或 * (该产品所有版本共用)"></label>
+                <label>阶段<select name="stage"><option value="phase1">阶段一(问题分析)</option><option value="phase2">阶段二(合并同步)</option><option value="retry">未解决重跑</option></select></label>
+                <label>状态<select name="status"><option value="1">启用</option><option value="0">停用</option></select></label>
+                <label>描述<input name="description" placeholder="用途说明(选填)"></label>
+                <small class="patch-muted">内容为 {{var}} 占位符模板，运行时把实际变量替换进去后发给 claude。可点「载入内置默认」以现版提示词为起点再改；用「插入变量」下拉避免手敲错占位符；提示词较长可点「全屏编辑」。</small>
+                <label>内容<textarea name="content" id="patchNpContent" class="patch-np-content" required placeholder="请输入提示词模板"></textarea></label>
+                <div class="patch-admin-inline"><button type="button" id="patchNpLoadBuiltin" class="patch-secondary-btn">载入内置默认（以现版为起点）</button>
+                <button type="button" id="patchNpFull" class="patch-secondary-btn">全屏编辑</button>
+                <label class="patch-insert-var">插入变量<select id="patchNpVarInsert"><option value="">选择变量</option></select><button type="button" id="patchNpVarInsertBtn" class="patch-secondary-btn">插入</button></label></div>
+            </form>
+            <div class="modal-footer"><button id="patchNodePromptCancel" type="button" class="btn-cancel">取消</button><button id="patchNodePromptSave" type="submit" form="patchNodePromptForm" class="btn-primary">保存</button></div>
+        </div>
+    </div>
+
+    <div id="patchNpFullModal" class="modal-overlay patch-np-full-overlay" hidden>
+        <div class="patch-np-full">
+            <div class="patch-np-full-head"><strong>编辑提示词内容</strong><button type="button" id="patchNpFullClose" class="modal-close">×</button></div>
+            <textarea id="patchNpFullContent" class="patch-np-full-content" spellcheck="false" placeholder="请输入提示词模板"></textarea>
+            <div class="modal-footer"><button id="patchNpFullCancel" type="button" class="btn-cancel">取消</button><button id="patchNpFullSave" type="button" class="btn-primary">确定</button></div>
         </div>
     </div>
 

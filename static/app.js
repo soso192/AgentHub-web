@@ -58,7 +58,7 @@ function confirmAppAction(message, title = '确认操作') {
         document.getElementById('appConfirmMessage').textContent = message;
         document.getElementById('appConfirmCancel').onclick = () => close(false);
         document.getElementById('appConfirmAccept').onclick = () => close(true);
-        modal.onclick = event => { if (event.target === modal) close(false); };
+        // 点遮罩不关闭弹窗（2026-11 需求：只能通过关闭/确定/取消按钮关闭）
         modal.style.display = 'flex';
         requestAnimationFrame(() => document.getElementById('appConfirmAccept').focus());
     });
@@ -622,12 +622,11 @@ function renderSessionList() {
 // It syncs the topbar assistant/model selectors, loads messages
 // from the backend (if not already loaded), and shows the session view.
 let selectSessionGeneration = 0; // 竞态条件保护：每次调用递增，丢弃过期调用
-// ── 后台任务会话只读 ──
+// ── 后台任务会话归属缓存 ──
 // 判定某 cc-web 会话是不是「后台任务」创建的：智能开发节点（/api/node/runs）或补丁适配
-// （/api/adapt/runs）。两者的会话都由后台线程驱动，用户在聊天页插话会打乱它们的上下文
-// ——适配还是多个补丁共用同一个 --resume 会话，插一句就直接错位。
-// 命中就只读：隐藏输入框与发送/停止按钮（两者都在 inputArea 内），并显示提示条。
-// 判定粒度是「会话属于后台任务」，不区分入口（点「查看会话」或手动从列表点开都一样只读）。
+// （/api/adapt/runs）。按需求（2026-11）这两类会话**不再只读**——用户可在聊天页自由交互；
+// 本段保留的意义只剩维持归属缓存：补丁适配的"这一轮结束"判定（softFinishTurn）靠
+// isAdaptRunSessionCached 读这份缓存。
 let nodeRunsCache = null;
 let nodeRunsCacheAt = 0;
 async function isNodeRunSession(sessionId) {
@@ -657,25 +656,17 @@ async function isAdaptRunSession(sessionId) {
 function isAdaptRunSessionCached(sessionId) {
     return Array.isArray(adaptRunsCache) && adaptRunsCache.some(run => String(run.session_id) === String(sessionId));
 }
+// 后台任务会话不再限制输入（2026-11 需求：允许用户在聊天页与 claude 自由交互）。
+// 保留职责：①藏旧只读提示条（含服务器回放条的重置）；②暖 node/adapt 归属缓存供 softFinishTurn 用。
 async function refreshInputReadonlyState() {
     const banner = document.getElementById('nodeReadonlyBanner');
     // 服务器回放的固定状态条：任何会话切换都先藏掉——远端回放打开时 openClaudeHistoryView 会再显示
     const srb = document.getElementById('serverReplayBanner');
     if (srb) srb.style.display = 'none';
+    if (banner) banner.style.display = 'none';
     const sid = currentSessionId;
-    if (!sid) { if (banner) banner.style.display = 'none'; return; }
-    let isBackground = false;
-    try {
-        const [isNode, isAdapt] = await Promise.all([isNodeRunSession(sid), isAdaptRunSession(sid)]);
-        isBackground = isNode || isAdapt;
-    } catch {}
-    if (sid !== currentSessionId) return; // 查询期间用户已切到别的会话
-    if (isBackground) {
-        inputArea.style.display = 'none'; // 输入框 + 发送/停止按钮一起隐藏
-        if (banner) banner.style.display = 'block';
-    } else if (banner) {
-        banner.style.display = 'none';
-    }
+    if (!sid) return;
+    try { await Promise.all([isNodeRunSession(sid), isAdaptRunSession(sid)]); } catch {} // 只暖缓存
 }
 
 async function selectSession(sessionId) {
@@ -746,7 +737,7 @@ async function selectSession(sessionId) {
     welcomeScreen.style.display = 'none';
     chatContainer.style.display = 'flex'; chatContainer.style.flexDirection = 'column';
     inputArea.style.display = 'block';
-    // 后台任务（智能开发 / 补丁适配）创建的会话 → 聊天页只读（隐藏输入框 + 发送/停止按钮，显示提示条）
+    // 后台任务（智能开发 / 补丁适配）会话也允许自由交互（2026-11 放开）：这里只暖缓存+清旧提示条
     refreshInputReadonlyState();
 
     // If backend says this session is still streaming but frontend has no connection,
@@ -2164,7 +2155,7 @@ function showFileContent(filePath, content) {
     const fileName = filePath.split(/[/\\]/).pop();
     const overlay = document.createElement('div');
     overlay.className = 'file-overlay';
-    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    // 点遮罩不关闭（2026-11 需求：只能通过右上角 × 关闭查看器）
     overlay.innerHTML = `<div class="file-viewer"><div class="file-viewer-header"><span class="file-viewer-name">📄 ${escapeHtml(fileName)}</span><button class="file-viewer-close" onclick="this.closest('.file-overlay').remove()">×</button></div><pre class="file-viewer-content">${escapeHtml(content)}</pre></div>`;
     document.body.appendChild(overlay);
 }
@@ -2174,7 +2165,7 @@ function showFileContent(filePath, content) {
 function setupEventListeners() {
     document.getElementById('appNoticeClose').onclick = closeAppNotice;
     document.getElementById('appNoticeConfirm').onclick = closeAppNotice;
-    document.getElementById('appNoticeModal').onclick = event => { if (event.target.id === 'appNoticeModal') closeAppNotice(); };
+    // 点遮罩不关闭弹窗（2026-11 需求）：只能通过弹窗自带按钮关闭
     toggleSidebar.onclick = () => sidebar.classList.toggle('closed');
     newSessionBtn.onclick = () => { newSessionForm.style.display = newSessionForm.style.display === 'none' ? 'block' : 'none'; };
     cancelSessionBtn.onclick = () => { newSessionForm.style.display = 'none'; cwdInput.value = ''; };
@@ -2397,7 +2388,7 @@ class SplitViewManager {
                 chatContainer.style.display = 'flex';
                 chatContainer.style.flexDirection = 'column';
                 inputArea.style.display = 'block';
-                refreshInputReadonlyState(); // 智能开发会话退出面板模式后仍保持只读
+                refreshInputReadonlyState(); // 退出面板模式后刷新缓存归属（会话已可自由交互，仅暖缓存）
 
                 // 退出面板模式时，如果 AI 仍在流式传输，将 SSE 连接重定向回主视图
                 const isStreaming = streamingSessions.has(currentSessionId);

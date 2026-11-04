@@ -416,7 +416,7 @@
                     const name = String(path).split(/[\\/]/).pop();
                     const overlay = document.createElement('div');
                     overlay.className = 'file-overlay';
-                    overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+                    // 点遮罩不关闭（2026-11 需求：只能通过右上角 × 关闭查看器）
                     const inner = type === 'md'
                         ? `<div class="file-viewer-content node-run-md text-block">${renderMarkdown(content) || '<p>（空内容）</p>'}</div>`
                         : `<pre class="file-viewer-content">${patchEscape(content)}</pre>`;
@@ -541,7 +541,7 @@
                 const name = String(filePath).split(/[\\/]/).pop();
                 const overlay = document.createElement('div');
                 overlay.className = 'file-overlay';
-                overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+                // 点遮罩不关闭（2026-11 需求：只能通过右上角 × 关闭查看器）
                 overlay.innerHTML = `<div class="file-viewer"><div class="file-viewer-header"><span class="file-viewer-name">📄 ${patchEscape(name)}</span><button class="file-viewer-close" type="button">×</button></div><pre class="file-viewer-content">${patchEscape(content)}</pre></div>`;
                 overlay.querySelector('.file-viewer-close').onclick = () => overlay.remove();
                 document.body.appendChild(overlay);
@@ -624,7 +624,7 @@
             };
             document.getElementById('patchErrorClose').onclick = patchCloseError;
             document.getElementById('patchErrorConfirm').onclick = patchCloseError;
-            document.getElementById('patchErrorModal').onclick = event => { if (event.target.id === 'patchErrorModal') patchCloseError(); };
+            // 点遮罩不关闭弹窗（2026-11 需求）：只能通过弹窗自带按钮关闭
             // 产物点击：按类型（html 浏览器打开 / md·txt 页内查看 / zip 定位）
             document.getElementById('nodeRunArtifacts').addEventListener('click', event => {
                 const item = event.target.closest('[data-artifact-path]');

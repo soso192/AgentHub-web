@@ -24,12 +24,17 @@
     const ADMIN_ONLY = ['menus', 'sessions', 'release'];
     // 取不到用户时的兜底：等价于服务器 DEFAULT_VISIBLE（analysis / product 默认对普通用户隐藏）
     const DEFAULT_HIDDEN = ['analysis', 'product'];
+    // 源码搜索 Web 工具地址（cc-web /api/patch-config 的 code_search_url；空 = 未配置 → 菜单项隐藏）
+    let codeSearchUrl = '';
 
     const SVG_ATTRS = 'class="patch-sidenav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
 
     const ITEMS = [
         {key: 'node', label: '智能开发', icon: '<circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line>'},
         {key: 'smart', label: '智能分析', icon: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>'},
+        // 源码搜索：嵌入外部 Web 工具（地址由 /api/patch-config 的 code_search_url 下发）。
+        // 显隐只看「有没有配地址」，不走服务器菜单权限（见 applyVisibility 特判）。
+        {key: 'codesearch', label: '源码搜索', icon: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><circle cx="11.5" cy="14.5" r="2.5"></circle><line x1="13.3" y1="16.3" x2="15" y2="18"></line>'},
         {key: 'search', label: '普通检索', icon: '<circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>'},
         {key: 'upload', label: '补丁上传', icon: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line>'},
         {key: 'mine', label: '我的补丁', icon: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>'},
@@ -70,6 +75,9 @@
         const keys = user && Array.isArray(user.menus) ? user.menus : null;
         document.querySelectorAll('#patchSidenav .patch-sidenav-item').forEach(item => {
             const key = item.dataset.sidenavTab;
+            // 源码搜索：显隐只看是否配置了 code_search_url（cc-web 的 patch_servers.json），
+            // 与登录角色/菜单权限无关——它是工具入口，不是补丁中心业务菜单。
+            if (key === 'codesearch') { item.hidden = !codeSearchUrl; return; }
             if (ADMIN_ONLY.includes(key)) { item.hidden = !isAdmin; return; }
             if (isAdmin) { item.hidden = false; return; }        // admin：全集
             if (keys) { item.hidden = !keys.includes(key); return; }
@@ -78,6 +86,17 @@
         // 与主页面同款安全网：一个菜单都不可见时至少留第一项，别给一个空侧边栏
         const items = Array.from(document.querySelectorAll('#patchSidenav .patch-sidenav-item'));
         if (items.length && !items.some(item => !item.hidden)) items[0].hidden = false;
+    }
+
+    // 源码搜索地址：cc-web 本机接口（无需登录态），拿到后按配置重新应用显隐
+    async function loadCodeSearchConfig() {
+        try {
+            const response = await fetch('/api/patch-config');
+            if (!response.ok) return;
+            const config = await response.json().catch(() => ({}));
+            codeSearchUrl = String((config && config.code_search_url) || '').trim().replace(/\/+$/, '');
+        } catch (error) { return; }
+        applyVisibility(loadCachedUser() || null);
     }
 
     // 逐条地址试 /api/auth/me（与详情页取当前用户同款），拿不到就返回 null 走兜底
@@ -187,6 +206,7 @@
     // 之前两版各有可见副作用：完全不隐藏 → 普通用户「全部菜单一闪而过」；
     // 一律隐藏等 /api/auth/me → 管理员「菜单慢慢补齐」像登录慢。缓存让两边首帧都对。
     applyVisibility(loadCachedUser() || null);
+    loadCodeSearchConfig();   // 异步取源码搜索地址，拿到后单独刷新该菜单项显隐
     bindToggle();
     // 等 patches.js（在本文件之后加载）把共享鉴权链挂到 window 再取用户：
     // 有共享链就复用（省掉 patch-config + auth/me 各一次），没有才自己发请求

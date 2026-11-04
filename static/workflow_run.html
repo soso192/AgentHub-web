@@ -151,7 +151,7 @@
                 document.getElementById('patchConfirmMessage').textContent = message;
                 document.getElementById('patchConfirmCancel').onclick = () => close(false);
                 document.getElementById('patchConfirmAccept').onclick = () => close(true);
-                modal.onclick = event => { if (event.target === modal) close(false); };
+                // 点遮罩不关闭弹窗（2026-11 需求：只能通过关闭/确定/取消按钮关闭）
                 modal.hidden = false;
                 requestAnimationFrame(() => document.getElementById('patchConfirmAccept').focus());
             });
@@ -845,15 +845,15 @@
             document.getElementById('workflowHistoryFullscreen').onclick = () => toggleWorkflowFullscreen('workflowHistoryOutputBox', 'workflowHistoryFullscreen');
             document.getElementById('workflowResultClose').onclick = () => { exitWorkflowFullscreen('workflowResultOutput'); document.getElementById('workflowResultModal').hidden = true; };
             document.getElementById('workflowResultFullscreen').onclick = () => toggleWorkflowFullscreen('workflowResultOutput', 'workflowResultFullscreen');
-            document.getElementById('workflowResultModal').onclick = event => { if (event.target.id === 'workflowResultModal') { exitWorkflowFullscreen('workflowResultOutput'); event.currentTarget.hidden = true; } };
+            // 点遮罩不关闭弹窗（2026-11 需求）：只能通过弹窗自带按钮关闭
             document.getElementById('workflowSummaryClose').onclick = () => { exitWorkflowFullscreen('workflowSummaryOutput'); document.getElementById('workflowSummaryModal').hidden = true; };
             document.getElementById('workflowSummaryFullscreen').onclick = () => toggleWorkflowFullscreen('workflowSummaryOutput', 'workflowSummaryFullscreen');
-            document.getElementById('workflowSummaryModal').onclick = event => { if (event.target.id === 'workflowSummaryModal') { exitWorkflowFullscreen('workflowSummaryOutput'); event.currentTarget.hidden = true; } };
+            // 点遮罩不关闭弹窗（2026-11 需求）：只能通过弹窗自带按钮关闭
             document.addEventListener('fullscreenchange', syncWorkflowFullscreenButtons);
             document.addEventListener('webkitfullscreenchange', syncWorkflowFullscreenButtons);
             document.getElementById('patchErrorClose').onclick = patchCloseError;
             document.getElementById('patchErrorConfirm').onclick = patchCloseError;
-            document.getElementById('patchErrorModal').onclick = event => { if (event.target.id === 'patchErrorModal') patchCloseError(); };
+            // 点遮罩不关闭弹窗（2026-11 需求）：只能通过弹窗自带按钮关闭
             document.addEventListener('keydown', event => { if (event.key === 'Escape' && !document.getElementById('patchErrorModal').hidden) patchCloseError(); });
             document.addEventListener('click', event => {
                 const artifact = event.target.closest('button[data-artifact-name]');
@@ -911,7 +911,7 @@
             const close = () => { document.getElementById('patchErrorModal').hidden = true; };
             document.getElementById('patchErrorClose').onclick = close;
             document.getElementById('patchErrorConfirm').onclick = close;
-            document.getElementById('patchErrorModal').onclick = event => { if (event.target.id === 'patchErrorModal') close(); };
+            // 点遮罩不关闭弹窗（2026-11 需求）：只能通过弹窗自带按钮关闭
             patchShowError(error.message, '补丁中心配置错误');
         });
     })();
