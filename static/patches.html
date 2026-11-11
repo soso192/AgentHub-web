@@ -352,7 +352,7 @@
         <div class="modal patch-admin-modal">
             <div class="modal-header"><h3>发布 cc-web 新版本</h3><button id="patchReleaseClose" class="modal-close" type="button">×</button></div>
             <form id="patchReleaseForm" class="patch-admin-form">
-                <label>发布通道<select name="edition"><option value="dev">开发版（现有通道，哨兵 CCWEB-VERSION:x.y.z）</option><option value="novice">小白版（novice 通道，哨兵 CCWEB-VERSION:novice-x.y.z）</option></select><small class="patch-muted">小白版包必须用 cargo build --features novice 编译的 exe；通道选错会被哨兵校验拦下</small></label>
+                <label>发布通道<select name="edition"><option value="dev">开发版（现有通道，哨兵 CCWEB-VERSION:x.y.z）</option><option value="novice">小白版（novice 通道，哨兵 CCWEB-VERSION:novice-x.y.z）</option></select><small class="patch-muted">小白版包必须用 cargo build --features implCon 编译的 exe；通道选错会被哨兵校验拦下</small></label>
                 <label>版本号<span class="patch-required">*</span><input name="version" maxlength="64" required placeholder="如：1.0.1"><small class="patch-muted">必须与编译时 Cargo.toml 里的 version 一致</small></label>
                 <label>更新说明<textarea name="notes" rows="3" placeholder="显示在开发机的更新提示里（可留空）"></textarea></label>
                 <label>Windows 程序<input type="file" name="windows" accept=".exe"><small class="patch-muted" data-release-note="windows">未选择</small></label>

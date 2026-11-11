@@ -53,15 +53,15 @@ const PLATFORM: &str = "";
 /// 发布时服务器靠它确认"这个二进制确实是用这个版本号编译出来的"——直接去二进制里找裸版本号
 /// 会误判（exe 里本来就有别的依赖的版本串，比如某个 crate 的 `1.0.1`），必须用这个唯一前缀。
 /// 它随 `/api/version` 返回，保证不会被优化掉、确实留在二进制里。
-#[cfg(feature = "novice")]
+#[cfg(feature = "implCon")]
 pub const VERSION_MARKER: &str = concat!("CCWEB-VERSION:novice-", env!("CARGO_PKG_VERSION"));
-#[cfg(not(feature = "novice"))]
+#[cfg(not(feature = "implCon"))]
 pub const VERSION_MARKER: &str = concat!("CCWEB-VERSION:", env!("CARGO_PKG_VERSION"));
 
 /// 本机的 edition 标识（发给 patch_search 的升级接口，用于选择正确的升级通道）
-#[cfg(feature = "novice")]
+#[cfg(feature = "implCon")]
 pub const EDITION: &str = "novice";
-#[cfg(not(feature = "novice"))]
+#[cfg(not(feature = "implCon"))]
 pub const EDITION: &str = "dev";
 
 /// 本机 exe 路径（自更新的目标就是它）

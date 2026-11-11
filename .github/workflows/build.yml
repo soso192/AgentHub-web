@@ -38,31 +38,31 @@ jobs:
             features: ''
             artifact: cc-web
             archive: cc-web-macos-x64.tar.gz
-          # ── 小白版（--features novice）──
+          # ── 小白版（--features implCon）──
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            edition: novice
-            features: '--features novice'
-            artifact: cc-web-novice.exe
-            archive: cc-web-novice-windows-x64.zip
+            edition: implCon
+            features: '--features implCon'
+            artifact: cc-web-implCon.exe
+            archive: cc-web-implCon-windows-x64.zip
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            edition: novice
-            features: '--features novice'
-            artifact: cc-web-novice
-            archive: cc-web-novice-linux-x64.tar.gz
+            edition: implCon
+            features: '--features implCon'
+            artifact: cc-web-implCon
+            archive: cc-web-implCon-linux-x64.tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
-            edition: novice
-            features: '--features novice'
-            artifact: cc-web-novice
-            archive: cc-web-novice-macos-arm64.tar.gz
+            edition: implCon
+            features: '--features implCon'
+            artifact: cc-web-implCon
+            archive: cc-web-implCon-macos-arm64.tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
-            edition: novice
-            features: '--features novice'
-            artifact: cc-web-novice
-            archive: cc-web-novice-macos-x64.tar.gz
+            edition: implCon
+            features: '--features implCon'
+            artifact: cc-web-implCon
+            archive: cc-web-implCon-macos-x64.tar.gz
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.target }}, ${{ matrix.edition }})
@@ -78,13 +78,13 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
 
-      # cargo 产物固定叫 cc-web(.exe)，按版本改名后再打包
+      # cargo 产物固定叫 cc-web(.exe)：开发版不用改名，只有小白版需要改成 cc-web-implCon
       - name: Rename artifact (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.edition == 'implCon'
         run: cp "target/${{ matrix.target }}/release/cc-web" "target/${{ matrix.target }}/release/${{ matrix.artifact }}"
 
       - name: Rename artifact (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.edition == 'implCon'
         shell: pwsh
         run: Copy-Item "target\${{ matrix.target }}\release\cc-web.exe" "target\${{ matrix.target }}\release\${{ matrix.artifact }}"
 

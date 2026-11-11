@@ -14,7 +14,7 @@ pub struct RevealRequest {
 // ── 小白版专属：/api/files/* 路径白名单 ──
 // 小白版只放行 cc-web 自己的 temp/recordings 目录，以及本机运行清单里登记过的目录
 // （暂存/产物/home/客开/JDK）。开发版不编译这段——开发者本来就要浏览任意路径。
-#[cfg(feature = "novice")]
+#[cfg(feature = "implCon")]
 fn path_under(canonical: &std::path::Path, root_str: &str) -> bool {
     match std::fs::canonicalize(std::path::Path::new(root_str)) {
         Ok(canon_root) => canonical.starts_with(canon_root),
@@ -22,7 +22,7 @@ fn path_under(canonical: &std::path::Path, root_str: &str) -> bool {
     }
 }
 
-#[cfg(feature = "novice")]
+#[cfg(feature = "implCon")]
 fn ensure_path_allowed(path_str: &str, data: &web::Data<crate::AppState>) -> Result<(), HttpResponse> {
     // 不存在的路径放行到后续正常逻辑报 404/400（错误信息更友好），这里只拦"存在但越界"
     let canonical = match std::fs::canonicalize(std::path::Path::new(path_str)) {
@@ -186,11 +186,11 @@ fn pick_folder_blocking(start: Option<&str>) -> Result<Option<String>, String> {
 }
 
 pub async fn list_files(query: web::Query<ListFilesQuery>, data: web::Data<crate::AppState>) -> HttpResponse {
-    #[cfg(feature = "novice")]
+    #[cfg(feature = "implCon")]
     if let Err(resp) = ensure_path_allowed(query.path.as_deref().unwrap_or("."), &data) {
         return resp;
     }
-    #[cfg(not(feature = "novice"))]
+    #[cfg(not(feature = "implCon"))]
     let _ = &data;
 
     let dir_path = query.path.as_deref().unwrap_or(".");
@@ -273,11 +273,11 @@ pub async fn list_files(query: web::Query<ListFilesQuery>, data: web::Data<crate
 }
 
 pub async fn read_file(path: web::Path<String>, data: web::Data<crate::AppState>) -> HttpResponse {
-    #[cfg(feature = "novice")]
+    #[cfg(feature = "implCon")]
     if let Err(resp) = ensure_path_allowed(&path, &data) {
         return resp;
     }
-    #[cfg(not(feature = "novice"))]
+    #[cfg(not(feature = "implCon"))]
     let _ = &data;
 
     let file_path = path.into_inner();
@@ -350,11 +350,11 @@ fn content_type_for(file_path: &str) -> &'static str {
 /// 原始字节服务：给浏览器在**新标签里直接打开/渲染**（html 渲染、txt/md 直接看）。
 /// 不设 Content-Disposition: attachment，否则会变成下载而不是打开。
 pub async fn read_file_raw(path: web::Path<String>, data: web::Data<crate::AppState>) -> HttpResponse {
-    #[cfg(feature = "novice")]
+    #[cfg(feature = "implCon")]
     if let Err(resp) = ensure_path_allowed(&path, &data) {
         return resp;
     }
-    #[cfg(not(feature = "novice"))]
+    #[cfg(not(feature = "implCon"))]
     let _ = &data;
 
     let file_path = path.into_inner();
@@ -398,11 +398,11 @@ pub async fn read_file_raw(path: web::Path<String>, data: web::Data<crate::AppSt
 /// 在系统文件管理器里定位该文件（Windows explorer /select、macOS open -R、Linux xdg-open 父目录）。
 /// cc-web 就运行在产物所在机器上，所以能弹出本机资源管理器并选中该文件。
 pub async fn reveal_file(body: web::Json<RevealRequest>, data: web::Data<crate::AppState>) -> HttpResponse {
-    #[cfg(feature = "novice")]
+    #[cfg(feature = "implCon")]
     if let Err(resp) = ensure_path_allowed(body.path.as_deref().unwrap_or(""), &data) {
         return resp;
     }
-    #[cfg(not(feature = "novice"))]
+    #[cfg(not(feature = "implCon"))]
     let _ = &data;
 
     let file_path = body.path.as_deref().unwrap_or("");

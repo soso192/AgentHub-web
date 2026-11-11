@@ -1,6 +1,6 @@
 use actix_web::{web, App, HttpServer};
 // 小白版不装 CORS 中间件（见 HttpServer::new 里的说明），该 crate 只在开发版用到
-#[cfg(not(feature = "novice"))]
+#[cfg(not(feature = "implCon"))]
 use actix_cors::Cors;
 use std::sync::RwLock;
 use tokio::sync::{broadcast, watch, Mutex};
@@ -12,7 +12,7 @@ mod static_files;
 mod logging;
 mod claude_history;
 // 接口录制（CDP）：只在小白版编译（依赖 WebSocket 客户端，开发版 exe 不带）
-#[cfg(feature = "novice")]
+#[cfg(feature = "implCon")]
 mod recorder;
 
 use ai::{AssistantRegistry, AiAssistant};
@@ -188,20 +188,20 @@ pub fn save_node_runs_to_disk_async(data: &AppState) {
 /// 监听地址与本地访问地址（编译期内嵌写死，按版本区分）
 /// 小白版 2026-11-09 起改为 0.0.0.0（允许局域网访问）；CORS 仍是关闭的，
 /// 跨源网页读不到接口响应，但局域网机器可以直接打开本机页面使用。
-#[cfg(feature = "novice")]
+#[cfg(feature = "implCon")]
 const BIND_ADDR: &str = "0.0.0.0:3031";
-#[cfg(not(feature = "novice"))]
+#[cfg(not(feature = "implCon"))]
 const BIND_ADDR: &str = "0.0.0.0:3030";
 
-#[cfg(feature = "novice")]
+#[cfg(feature = "implCon")]
 const WEB_URL: &str = "http://127.0.0.1:3031";
-#[cfg(not(feature = "novice"))]
+#[cfg(not(feature = "implCon"))]
 const WEB_URL: &str = "http://localhost:3030";
 
 /// 数据目录名（~/.cc-web 或 ~/.cc-web-novice），按版本区分；两个版本可共存于同一台机器
-#[cfg(feature = "novice")]
+#[cfg(feature = "implCon")]
 pub const DATA_DIR_NAME: &str = ".cc-web-novice";
-#[cfg(not(feature = "novice"))]
+#[cfg(not(feature = "implCon"))]
 pub const DATA_DIR_NAME: &str = ".cc-web";
 
 /// 是否允许自动打开浏览器。
@@ -350,7 +350,7 @@ async fn main() -> std::io::Result<()> {
         // 跨源页面读 cc-web 接口（小白版监听 0.0.0.0:3031，局域网可达，但没有 CORS
         // 响应头时网页脚本读不到响应体，`curl` 这类非浏览器客户端不受此限制——小白版
         // 接口本身没有鉴权，部署在可信局域网内是前提）。
-        #[cfg(not(feature = "novice"))]
+        #[cfg(not(feature = "implCon"))]
         let app = app.wrap(
             Cors::default()
                 .allow_any_origin()
@@ -387,7 +387,7 @@ async fn main() -> std::io::Result<()> {
             ;
 
         // ── 开发版专属路由：补丁适配 + 智能分析（小白版不注册）──
-        #[cfg(not(feature = "novice"))]
+        #[cfg(not(feature = "implCon"))]
         let app = app
             .route("/api/adapt/upload", web::post().to(api::adapt::upload))
             .route("/api/adapt/import", web::post().to(api::adapt::import_patch))
@@ -406,7 +406,7 @@ async fn main() -> std::io::Result<()> {
             ;
 
         // ── 小白版专属路由：接口录制（CDP）──
-        #[cfg(feature = "novice")]
+        #[cfg(feature = "implCon")]
         let app = app
             .route("/api/recorder/open", web::post().to(recorder::open))
             .route("/api/recorder/status", web::get().to(recorder::status))

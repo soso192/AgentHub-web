@@ -4,7 +4,7 @@
 //! XHR/Fetch 请求（默认只收 `.do`），页面里只注入一个悬浮按钮，点击后通过
 //! sessionStorage 与 cc-web 通信（400ms 轮询）。停止录制 = 自动导出脱敏 JSON 并关闭浏览器。
 //!
-//! 只在 novice feature 下编译（`tokio-tungstenite` 是 optional 依赖，开发版 exe 不带）。
+//! 只在 implCon feature 下编译（`tokio-tungstenite` 是 optional 依赖，开发版 exe 不带）。
 //!
 //! API（给前端的契约，见 novice_chat.js 的录制交互）：
 //! - POST /api/recorder/open   body `{ record_url, env_id? }`

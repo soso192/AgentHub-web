@@ -6,7 +6,7 @@
 // （一条 200、一条 500，带 Authorization 头与 password 字段）→ 停止后断言导出 JSON：
 // 接口齐全、报错接口有响应体、凭据已脱敏。
 //
-// 需要：已构建 target/release/cc-web.exe（--features novice）、本机有 Chrome/Edge。
+// 需要：已构建 target/release/cc-web.exe（--features implCon）、本机有 Chrome/Edge。
 const { spawn, execSync } = require('child_process');
 const http = require('http');
 const fs = require('fs');
@@ -80,7 +80,7 @@ function ccweb(method, apiPath, body, headers = {}) {
 }
 
 (async () => {
-    if (!fs.existsSync(EXE)) { console.error('缺少 ' + EXE + '，先 cargo build --release --features novice'); process.exit(1); }
+    if (!fs.existsSync(EXE)) { console.error('缺少 ' + EXE + '，先 cargo build --release --features implCon'); process.exit(1); }
     let configBackup = null;
     let ccwebProc = null;
     try {

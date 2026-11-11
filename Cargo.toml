@@ -5,10 +5,10 @@ edition = "2021"
 description = "Claude Code Web Interface - A web-based UI for Claude Code CLI"
 
 [features]
-# 小白版：cargo build --release --features novice
+# 小白版：cargo build --release --features implCon
 # 区别：端口 3031（仅本机）、数据目录 ~/.cc-web-novice/、裁剪路由、不同前端页面、升级通道带 novice 标识、
 #       接口录制模块（CDP，需要 WebSocket 客户端依赖——只在小白版编进来，开发版 exe 不带）
-novice = ["dep:tokio-tungstenite"]
+implCon = ["dep:tokio-tungstenite"]
 
 [dependencies]
 actix-web = "4"
@@ -32,7 +32,7 @@ actix-multipart = "0.8.5"
 zip = "8.6.0"
 reqwest = { version = "0.13.5", features = ["json", "blocking"] }
 sha2 = "0.10"
-# 接口录制：CDP 走 WebSocket。optional——只在 novice feature 下编译（开发版 exe 不含）
+# 接口录制：CDP 走 WebSocket。optional——只在 implCon feature 下编译（开发版 exe 不含）
 tokio-tungstenite = { version = "0.26", optional = true }
 
 # 目录选择对话框：只在 Windows/macOS 编译。rfd 在 Linux 上要 wayland/gtk 系统库
