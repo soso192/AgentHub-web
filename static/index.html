@@ -68,7 +68,8 @@
                 <span class="logo">⚡ CC-Web</span>
                 <nav class="app-mode-toggle" aria-label="应用模式">
                     <button class="mode-btn active" type="button" onclick="location.href='/chat.html'" aria-current="page">聊天</button>
-                    <button class="mode-btn" type="button" onclick="location.href='/patches.html'">智能开发</button>
+                    <!-- 指根路径：开发版落 patches.html、小白版落 novice.html，一份页面两版通用 -->
+                    <button class="mode-btn" type="button" onclick="location.href='/'">智能开发</button>
                 </nav>
 
                 <!-- Assistant Selector -->
@@ -133,9 +134,12 @@
                 <div id="serverReplayBanner" class="server-replay-banner" style="display:none;"></div>
 
                 <div class="input-area" id="inputArea" style="display:none;">
+                    <div class="nv-chat-files" id="chatFileList"></div>
                     <div class="input-wrapper">
+                        <button id="chatAttachBtn" class="nv-attach-btn" type="button" title="添加图片或文件">📎</button>
+                        <input type="file" id="chatFiles" multiple style="display:none">
                         <label class="sr-only" for="messageInput">消息内容</label>
-                        <textarea id="messageInput" placeholder="输入消息，Enter 发送，Shift + Enter 换行" rows="1"></textarea>
+                        <textarea id="messageInput" placeholder="输入消息，Enter 发送，Shift + Enter 换行（可粘贴图片）" rows="1"></textarea>
                         <button id="sendBtn" class="send-btn" type="button">发送</button>
                         <button id="stopBtn" class="stop-btn" type="button" style="display:none;">⏹ 停止</button>
                     </div>
@@ -210,6 +214,12 @@
     </div>
 
     <script src="/folderpick.js"></script>
+    <!-- 小白版聊天页增强（开发版加载后自动 no-op）：建排查表单/录制/建会话发一次阶段一提示词 -->
+    <script src="/common.js"></script>
+    <script src="/node_core.js"></script>
+    <script src="/prompts_novice.js"></script>
     <script src="/app.js"></script>
+    <script src="/novice_chat.js"></script>
+    <script src="/chat_attachments.js"></script>
 </body>
 </html>

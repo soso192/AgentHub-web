@@ -666,6 +666,15 @@ button:active:not(:disabled), [role="button"]:active { transform: translateY(1px
 
 .input-area { padding: 10px 16px; border-top: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
 .input-wrapper { display: flex; gap: 8px; align-items: flex-end; max-width: 860px; margin: 0 auto; }
+/* 聊天输入框附件（chat_attachments.js，两版共用） */
+.nv-attach-btn { flex: 0 0 auto; align-self: flex-end; width: 34px; height: 34px; margin: 0 2px 4px 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 16px; transition: border-color .15s, color .15s; }
+.nv-attach-btn:hover { border-color: var(--accent); color: var(--accent); }
+.nv-chat-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 6px; max-width: 860px; margin: 0 auto; }
+.nv-chat-files:empty { display: none; }
+.nv-chat-files .nv-file-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 240px; padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); font-size: 12px; }
+.nv-chat-files .nv-file-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nv-chat-files .nv-file-chip button { border: none; background: none; color: var(--text-secondary); cursor: pointer; padding: 0 2px; font-size: 14px; }
+.nv-chat-files .nv-file-chip button:hover { color: var(--error); }
 textarea {
     flex: 1; padding: 10px 14px; border: 1px solid var(--border);
     border-radius: var(--radius-md); font-size: 14px; font-family: inherit;

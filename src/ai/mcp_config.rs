@@ -31,7 +31,7 @@ const ENV_OVERRIDE: &str = "CC_WEB_MCP_CONFIG";
 const DEFAULT_FILE: &str = "mcp-servers.json";
 /// 解析后的输出文件名，与源文件放同一目录，便于对照
 const RESOLVED_FILE: &str = "mcp-servers.resolved.json";
-const DATA_DIR: &str = ".cc-web";
+const DATA_DIR: &str = if cfg!(feature = "novice") { ".cc-web-novice" } else { ".cc-web" };
 
 /// 读 cc-web 的 MCP 配置，解析相对路径并落盘，返回给 `--mcp-config` 用的绝对路径。
 ///

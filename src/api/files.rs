@@ -11,6 +11,65 @@ pub struct RevealRequest {
     pub path: Option<String>,
 }
 
+// ── 小白版专属：/api/files/* 路径白名单 ──
+// 小白版只放行 cc-web 自己的 temp/recordings 目录，以及本机运行清单里登记过的目录
+// （暂存/产物/home/客开/JDK）。开发版不编译这段——开发者本来就要浏览任意路径。
+#[cfg(feature = "novice")]
+fn path_under(canonical: &std::path::Path, root_str: &str) -> bool {
+    match std::fs::canonicalize(std::path::Path::new(root_str)) {
+        Ok(canon_root) => canonical.starts_with(canon_root),
+        Err(_) => false, // 登记的根不存在（home 没挂/目录被删）→ 视为不放行
+    }
+}
+
+#[cfg(feature = "novice")]
+fn ensure_path_allowed(path_str: &str, data: &web::Data<crate::AppState>) -> Result<(), HttpResponse> {
+    // 不存在的路径放行到后续正常逻辑报 404/400（错误信息更友好），这里只拦"存在但越界"
+    let canonical = match std::fs::canonicalize(std::path::Path::new(path_str)) {
+        Ok(p) => p,
+        Err(_) => return Ok(()),
+    };
+    // cc-web 自己的目录：temp（运行工作区）+ recordings（接口录制导出，在安装目录下）
+    for root in [crate::cc_web_temp_dir(), crate::cc_web_install_dir().join("recordings")] {
+        if path_under(&canonical, &root.to_string_lossy()) {
+            return Ok(());
+        }
+    }
+    // 聊天页会话的工作目录：用户在聊天页显式指定的 cwd（文件面板要能浏览它）
+    {
+        let sessions = data.sessions.read().unwrap();
+        for session in sessions.values() {
+            if !session.cwd.trim().is_empty() && path_under(&canonical, &session.cwd) {
+                return Ok(());
+            }
+        }
+    }
+    // 本机运行清单登记过的目录：产物/暂存目录 + 环境快照里的 home、客开目录、本地 JDK
+    let runs = data.node_runs.read().unwrap();
+    for run in runs.values() {
+        for key in ["out_dir", "stage_dir", "turn_dir"] {
+            if let Some(v) = run.get(key).and_then(|k| k.as_str()) {
+                if path_under(&canonical, v) {
+                    return Ok(());
+                }
+            }
+        }
+        if let Some(env) = run.get("env_snapshot") {
+            for key in ["package_path", "code_directory", "local_jdk_path"] {
+                if let Some(v) = env.get(key).and_then(|k| k.as_str()) {
+                    if path_under(&canonical, v) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    Err(HttpResponse::Forbidden().json(serde_json::json!({
+        "success": false,
+        "error": "小白版仅能访问运行工作目录、补丁输出目录和产品环境登记的 home/客开目录"
+    })))
+}
+
 #[derive(Deserialize)]
 pub struct PickFolderQuery {
     /// 输入框当前值：是个目录就从它接着浏览（rfd 的 set_directory）
@@ -126,7 +185,14 @@ fn pick_folder_blocking(start: Option<&str>) -> Result<Option<String>, String> {
     Err("该平台不支持图形目录选择，请手动输入路径".to_string())
 }
 
-pub async fn list_files(query: web::Query<ListFilesQuery>) -> HttpResponse {
+pub async fn list_files(query: web::Query<ListFilesQuery>, data: web::Data<crate::AppState>) -> HttpResponse {
+    #[cfg(feature = "novice")]
+    if let Err(resp) = ensure_path_allowed(query.path.as_deref().unwrap_or("."), &data) {
+        return resp;
+    }
+    #[cfg(not(feature = "novice"))]
+    let _ = &data;
+
     let dir_path = query.path.as_deref().unwrap_or(".");
 
     let path = std::path::Path::new(dir_path);
@@ -206,7 +272,14 @@ pub async fn list_files(query: web::Query<ListFilesQuery>) -> HttpResponse {
     }))
 }
 
-pub async fn read_file(path: web::Path<String>) -> HttpResponse {
+pub async fn read_file(path: web::Path<String>, data: web::Data<crate::AppState>) -> HttpResponse {
+    #[cfg(feature = "novice")]
+    if let Err(resp) = ensure_path_allowed(&path, &data) {
+        return resp;
+    }
+    #[cfg(not(feature = "novice"))]
+    let _ = &data;
+
     let file_path = path.into_inner();
     let path = std::path::Path::new(&file_path);
 
@@ -276,7 +349,14 @@ fn content_type_for(file_path: &str) -> &'static str {
 
 /// 原始字节服务：给浏览器在**新标签里直接打开/渲染**（html 渲染、txt/md 直接看）。
 /// 不设 Content-Disposition: attachment，否则会变成下载而不是打开。
-pub async fn read_file_raw(path: web::Path<String>) -> HttpResponse {
+pub async fn read_file_raw(path: web::Path<String>, data: web::Data<crate::AppState>) -> HttpResponse {
+    #[cfg(feature = "novice")]
+    if let Err(resp) = ensure_path_allowed(&path, &data) {
+        return resp;
+    }
+    #[cfg(not(feature = "novice"))]
+    let _ = &data;
+
     let file_path = path.into_inner();
     let path = std::path::Path::new(&file_path);
 
@@ -317,7 +397,14 @@ pub async fn read_file_raw(path: web::Path<String>) -> HttpResponse {
 
 /// 在系统文件管理器里定位该文件（Windows explorer /select、macOS open -R、Linux xdg-open 父目录）。
 /// cc-web 就运行在产物所在机器上，所以能弹出本机资源管理器并选中该文件。
-pub async fn reveal_file(body: web::Json<RevealRequest>) -> HttpResponse {
+pub async fn reveal_file(body: web::Json<RevealRequest>, data: web::Data<crate::AppState>) -> HttpResponse {
+    #[cfg(feature = "novice")]
+    if let Err(resp) = ensure_path_allowed(body.path.as_deref().unwrap_or(""), &data) {
+        return resp;
+    }
+    #[cfg(not(feature = "novice"))]
+    let _ = &data;
+
     let file_path = body.path.as_deref().unwrap_or("");
     let path = std::path::Path::new(file_path);
     if file_path.is_empty() || !path.exists() {

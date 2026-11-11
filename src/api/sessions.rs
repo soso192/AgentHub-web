@@ -12,6 +12,7 @@ pub async fn list_sessions(data: web::Data<AppState>) -> HttpResponse {
             "model": session.model,
             "messageCount": session.messages.len(),
             "firstMessage": session.messages.first().map(|m| m.content.clone()).unwrap_or_default(),
+            "name": session.name.clone(),
             "created": session.created_at.to_rfc3339(),
             "modified": session.updated_at.to_rfc3339(),
             "isStreaming": streaming.contains(id),
@@ -86,6 +87,7 @@ pub async fn get_session(
             "assistant": session.assistant,
             "cwd": session.cwd,
             "model": session.model,
+            "name": session.name.clone(),
             "messages": messages,
             "created": session.created_at.to_rfc3339(),
             "modified": session.updated_at.to_rfc3339(),
@@ -95,6 +97,38 @@ pub async fn get_session(
             "error": "Session not found"
         }))
     }
+}
+
+#[derive(serde::Deserialize)]
+pub struct RenameSessionRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// PATCH /api/sessions/{id}/name —— 修改会话名称（存 sessions.json 的 name 字段）。
+/// name 为空表示恢复默认（列表改回显示 firstMessage）。
+pub async fn rename_session(
+    data: web::Data<AppState>,
+    path: web::Path<String>,
+    body: web::Json<RenameSessionRequest>,
+) -> HttpResponse {
+    let session_id = path.into_inner();
+    let name = body.name.as_deref().unwrap_or("").trim().to_string();
+    if name.chars().count() > 100 {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "会话名称不能超过 100 个字符"
+        }));
+    }
+    let mut sessions = data.sessions.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(session) = sessions.get_mut(&session_id) {
+        session.name = if name.is_empty() { None } else { Some(name) };
+    } else {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "Session not found"
+        }));
+    }
+    crate::save_sessions_to_disk(&sessions);
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
 }
 
 pub async fn delete_session(

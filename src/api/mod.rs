@@ -5,6 +5,7 @@ pub mod files;
 pub mod local_claude;
 pub mod patch_config;
 pub mod node_runs;
+pub mod env_check;
 pub mod adapt;
 pub mod adapt_bg;
 pub mod update;

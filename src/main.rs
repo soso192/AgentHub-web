@@ -1,4 +1,6 @@
 use actix_web::{web, App, HttpServer};
+// 小白版不装 CORS 中间件（见 HttpServer::new 里的说明），该 crate 只在开发版用到
+#[cfg(not(feature = "novice"))]
 use actix_cors::Cors;
 use std::sync::RwLock;
 use tokio::sync::{broadcast, watch, Mutex};
@@ -9,6 +11,9 @@ mod models;
 mod static_files;
 mod logging;
 mod claude_history;
+// 接口录制（CDP）：只在小白版编译（依赖 WebSocket 客户端，开发版 exe 不带）
+#[cfg(feature = "novice")]
+mod recorder;
 
 use ai::{AssistantRegistry, AiAssistant};
 use ai::claude::ClaudeAssistant;
@@ -58,13 +63,29 @@ pub struct AppState {
     pub adapt_runs: RwLock<std::collections::HashMap<String, api::adapt_bg::AdaptRun>>,
 }
 
-/// `~/.cc-web` 数据目录（不存在则创建）。
-fn cc_web_dir() -> std::path::PathBuf {
+/// `~/.cc-web`（或小白版 `~/.cc-web-novice`）数据目录（不存在则创建）。
+pub fn cc_web_dir() -> std::path::PathBuf {
     let data_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".cc-web");
+        .join(DATA_DIR_NAME);
     std::fs::create_dir_all(&data_dir).ok();
     data_dir
+}
+
+/// **cc-web.exe 所在目录**（安装目录）。便携数据（temp、recordings 等）都落在这里。
+pub fn cc_web_install_dir() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// `temp` 根目录：放在 **cc-web.exe 所在目录** 下（便携，不塞用户目录）。
+/// 智能开发运行目录、问题附件、聊天附件等临时文件都落在这里。
+pub fn cc_web_temp_dir() -> std::path::PathBuf {
+    let dir = cc_web_install_dir().join("temp");
+    std::fs::create_dir_all(&dir).ok();
+    dir
 }
 
 /// Get the path to the sessions data file
@@ -164,9 +185,24 @@ pub fn save_node_runs_to_disk_async(data: &AppState) {
 }
 
 // ── 自动打开浏览器（双击 cc-web.exe / start.bat 启动后直达 Web 界面） ──
-/// 监听地址与本地访问地址（编译期内嵌写死）
+/// 监听地址与本地访问地址（编译期内嵌写死，按版本区分）
+/// 小白版 2026-11-09 起改为 0.0.0.0（允许局域网访问）；CORS 仍是关闭的，
+/// 跨源网页读不到接口响应，但局域网机器可以直接打开本机页面使用。
+#[cfg(feature = "novice")]
+const BIND_ADDR: &str = "0.0.0.0:3031";
+#[cfg(not(feature = "novice"))]
 const BIND_ADDR: &str = "0.0.0.0:3030";
+
+#[cfg(feature = "novice")]
+const WEB_URL: &str = "http://127.0.0.1:3031";
+#[cfg(not(feature = "novice"))]
 const WEB_URL: &str = "http://localhost:3030";
+
+/// 数据目录名（~/.cc-web 或 ~/.cc-web-novice），按版本区分；两个版本可共存于同一台机器
+#[cfg(feature = "novice")]
+pub const DATA_DIR_NAME: &str = ".cc-web-novice";
+#[cfg(not(feature = "novice"))]
+pub const DATA_DIR_NAME: &str = ".cc-web";
 
 /// 是否允许自动打开浏览器。
 /// 默认允许；如需后台/服务方式启动、或不想每次自动弹浏览器，
@@ -244,7 +280,9 @@ async fn main() -> std::io::Result<()> {
 
     // Register Claude Code assistant
     let claude = ClaudeAssistant::new();
-    println!("   ✅ Claude ({})", claude.default_model());
+    // 模型显示：settings.json 没配 model 时显示「默认（settings.json）」，而不是 unknown——
+    // 那种情况下 cc-web 不传 --model，claude 自己按它的配置选模型
+    println!("   ✅ Claude ({})", ai::claude::claude_model_display(claude.default_model()));
     log::info!("Claude Code registered (default model: {})", claude.default_model());
     registry.register(Box::new(claude));
 
@@ -296,30 +334,41 @@ async fn main() -> std::io::Result<()> {
         println!("   📄 patch_search API ({} 条): {}", patch_servers.len(), patch_servers.join(", "));
     }
     println!("   🔗 Listening on {}", BIND_ADDR);
-    println!("   📝 Logs: ~/.cc-web/logs/");
+    println!("   📝 Logs: ~/{}/logs/", DATA_DIR_NAME);
     println!();
 
     let server_builder = HttpServer::new(move || {
-        let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header()
-            .max_age(3600);
-
-        App::new()
-            .wrap(cors)
+        let app = App::new()
             // 注释掉 actix Logger 中间件，避免 HTTP 请求日志输出到控制台
             // 详细日志已通过 logging 系统写入文件
             // .wrap(middleware::Logger::default())
             .app_data(data.clone())
             // 补丁包上传走 multipart：放宽请求体上限（默认偏小）
-            .app_data(web::PayloadConfig::new(500 * 1024 * 1024))
-            // API routes
+            .app_data(web::PayloadConfig::new(500 * 1024 * 1024));
+        // 开发版保持宽松 CORS（沿用现行为）。小白版不装 CORS 中间件 = 不发任何
+        // Access-Control-Allow-Origin：页面本身由本进程同源服务，浏览器禁止一切
+        // 跨源页面读 cc-web 接口（小白版监听 0.0.0.0:3031，局域网可达，但没有 CORS
+        // 响应头时网页脚本读不到响应体，`curl` 这类非浏览器客户端不受此限制——小白版
+        // 接口本身没有鉴权，部署在可信局域网内是前提）。
+        #[cfg(not(feature = "novice"))]
+        let app = app.wrap(
+            Cors::default()
+                .allow_any_origin()
+                .allow_any_method()
+                .allow_any_header()
+                .max_age(3600),
+        );
+
+        let app = app
+            // ── 共享路由（两个版本都有）──
             .route("/api/models", web::get().to(api::models::get_models))
             .route("/api/assistants", web::get().to(api::models::list_assistants))
             .route("/api/sessions", web::get().to(api::sessions::list_sessions))
             .route("/api/sessions/{id}", web::get().to(api::sessions::get_session))
             .route("/api/sessions/{id}", web::delete().to(api::sessions::delete_session))
+            .route("/api/sessions/{id}/name", web::patch().to(api::sessions::rename_session))
+            // 聊天框发送的图片/文件（保存到会话工作目录，AI 用 Read 查看；两版共用）
+            .route("/api/chat/attachment", web::post().to(api::node_runs::save_chat_attachment))
             .route("/api/agent/new", web::post().to(api::agent::new_session))
             .route("/api/agent/{id}/start", web::post().to(api::agent::start_prompt))
             .route("/api/agent/{id}/abort", web::post().to(api::agent::abort_session))
@@ -335,7 +384,11 @@ async fn main() -> std::io::Result<()> {
             .route("/api/files/reveal", web::post().to(api::files::reveal_file))
             // 在本机弹系统原生「选择文件夹」对话框，选中路径回填输入框（见 folderpick.js）
             .route("/api/pick-folder", web::get().to(api::files::pick_folder))
-            // 补丁适配（用户端）：上传补丁包并解压、检查客开工程 git 状态
+            ;
+
+        // ── 开发版专属路由：补丁适配 + 智能分析（小白版不注册）──
+        #[cfg(not(feature = "novice"))]
+        let app = app
             .route("/api/adapt/upload", web::post().to(api::adapt::upload))
             .route("/api/adapt/import", web::post().to(api::adapt::import_patch))
             .route("/api/adapt/git-status", web::get().to(api::adapt::git_status))
@@ -348,13 +401,31 @@ async fn main() -> std::io::Result<()> {
             .route("/api/adapt/runs/{id}/re-report", web::post().to(api::adapt::re_report))
             .route("/api/adapt/runs/{id}/retry-failed", web::post().to(api::adapt::retry_failed))
             .route("/api/adapt/runs/{id}/delete", web::post().to(api::adapt::delete_run))
-            .route("/api/files/{path:.*}", web::get().to(api::files::read_file))
             .route("/api/local-claude/execute", web::post().to(api::local_claude::execute))
             .route("/api/local-claude/{execution_id}/cancel", web::post().to(api::local_claude::cancel))
+            ;
+
+        // ── 小白版专属路由：接口录制（CDP）──
+        #[cfg(feature = "novice")]
+        let app = app
+            .route("/api/recorder/open", web::post().to(recorder::open))
+            .route("/api/recorder/status", web::get().to(recorder::status))
+            .route("/api/recorder/close", web::post().to(recorder::close))
+            // 新建排查表单里的问题图片/附件（保存到本次运行目录，AI 用 Read 查看）
+            .route("/api/node/problem-image", web::post().to(api::node_runs::save_problem_image))
+            ;
+
+        // ── 更多共享路由 ──
+        app
+            .route("/api/files/{path:.*}", web::get().to(api::files::read_file))
             // 智能开发节点的本机运行清单（见 api/node_runs.rs）
             .route("/api/node/runs", web::get().to(api::node_runs::list_runs))
             .route("/api/node/runs/{id}", web::put().to(api::node_runs::put_run))
             .route("/api/node/runs/{id}", web::delete().to(api::node_runs::delete_run))
+            // 建运行工作目录（小白版：暂存/产物目录都在 <数据目录>/temp/node/<runId> 下）
+            .route("/api/node/workspace", web::post().to(api::node_runs::create_workspace))
+            // 环境自检（小白版环境检查页；开发版也可调）
+            .route("/api/env-check", web::get().to(api::env_check::env_check))
             // 调试 API：返回所有会话的实时状态快照
             .route("/api/debug/state", web::get().to(debug_state))
             // 补丁中心配置：向前端下发 patch_search 后端地址（代码内写死，无需 patch_config.json）

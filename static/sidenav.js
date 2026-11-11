@@ -60,6 +60,44 @@
         return new URLSearchParams(location.search).get('tab') || '';
     }
 
+    // ── 小白版固定菜单（与开发版共用这一份文件，按 /api/version 的 edition 切换）──
+    // 小白版菜单写死在客户端：智能开发（= 开发版完整页面）/ 聊天 / 产品环境变量 / 环境检查。
+    // 后两项在 /novice.html（小白版的轻量页），智能开发/聊天是独立页面。
+    const NOVICE_ITEMS = [
+        { key: 'node', label: '智能开发', href: '/patches.html?tab=node', icon: ITEMS[0].icon },
+        { key: 'chat', label: '聊天', href: '/chat.html', icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>' },
+        { key: 'env', label: '产品环境变量', href: '/novice.html?view=env', icon: ITEMS.find(item => item.key === 'project_env').icon },
+        { key: 'check', label: '环境检查', href: '/novice.html?view=check', icon: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>' },
+    ];
+    let noviceEdition = false;
+
+    function renderNovice() {
+        const host = document.querySelector('#patchSidenav .patch-sidenav-items');
+        if (!host) return;
+        const path = location.pathname;
+        const view = new URLSearchParams(location.search).get('view');
+        const active = path.endsWith('/chat.html') ? 'chat'
+            : path.endsWith('/novice.html') ? (view === 'check' ? 'check' : 'env')
+            : 'node';
+        // 不挂 data-sidenav-tab：交给浏览器整页跳转（跨页面导航，不做 SPA 页内切换）
+        host.innerHTML = NOVICE_ITEMS.map(item =>
+            `<a class="patch-sidenav-item${item.key === active ? ' active' : ''}" href="${item.href}" title="${item.label}">` +
+            `<svg ${SVG_ATTRS}>${item.icon}</svg><span class="patch-sidenav-label">${item.label}</span></a>`
+        ).join('');
+    }
+
+    // 取 exe 版本：小白版 → 用固定菜单并停用「按账号菜单权限渲染」
+    async function loadEdition() {
+        try {
+            const response = await fetch('/api/version');
+            if (response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                noviceEdition = Boolean(payload && payload.data && payload.data.edition === 'novice');
+            }
+        } catch (error) { /* 取不到按开发版处理 */ }
+        if (noviceEdition) renderNovice();
+    }
+
     function render() {
         const host = document.querySelector('#patchSidenav .patch-sidenav-items');
         if (!host) return;
@@ -71,6 +109,8 @@
     }
 
     function applyVisibility(user) {
+        // 小白版：固定菜单，不走账号菜单权限
+        if (noviceEdition) return;
         const isAdmin = Boolean(user && user.role === 'admin');
         const keys = user && Array.isArray(user.menus) ? user.menus : null;
         document.querySelectorAll('#patchSidenav .patch-sidenav-item').forEach(item => {
@@ -207,6 +247,7 @@
     // 一律隐藏等 /api/auth/me → 管理员「菜单慢慢补齐」像登录慢。缓存让两边首帧都对。
     applyVisibility(loadCachedUser() || null);
     loadCodeSearchConfig();   // 异步取源码搜索地址，拿到后单独刷新该菜单项显隐
+    loadEdition();            // 小白版：拿到 edition 后换成固定菜单
     bindToggle();
     // 等 patches.js（在本文件之后加载）把共享鉴权链挂到 window 再取用户：
     // 有共享链就复用（省掉 patch-config + auth/me 各一次），没有才自己发请求

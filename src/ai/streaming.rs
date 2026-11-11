@@ -21,6 +21,19 @@
 use tokio::sync::broadcast;
 use serde_json::Value;
 
+/// 按字节上限截断字符串，落在多字节字符中间时退到最近的字符边界。
+/// 日志截断用：直接 `&s[..n]` 在中文内容上会 panic（byte index not a char boundary）。
+fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 /// Result of a streaming session
 pub struct StreamResult {
     /// The agent's internal session ID (for --resume / session continuity)
@@ -51,7 +64,7 @@ pub fn process_stream_line(
     let event: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
-            log::warn!("[streaming] JSON parse error: {} (line: {})", e, &line[..line.len().min(80)]);
+            log::warn!("[streaming] JSON parse error: {} (line: {})", e, truncate_utf8(line, 80));
             return (None, false);
         }
     };
@@ -157,7 +170,7 @@ pub fn process_stream_line(
             let is_error = event.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
 
             if is_error {
-                log::warn!("[streaming] error result: {}", &result_text[..result_text.len().min(100)]);
+                log::warn!("[streaming] error result: {}", truncate_utf8(result_text, 100));
                 send_event(tx, serde_json::json!({
                     "type": "error",
                     "message": result_text

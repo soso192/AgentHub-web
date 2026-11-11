@@ -8,6 +8,27 @@ use std::sync::RwLock;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+/// 传给 claude 的 --model 值：空串和占位值 "unknown"（~/.claude/settings.json 里
+/// 没配 model/ANTHROPIC_MODEL 时 read_default_model 的兜底值）**不传 --model**，
+/// 让 claude 按它自己的 settings.json env 默认值决定用哪个模型。
+/// 传 `--model unknown` 会让 claude 启动即报"模型不存在"，整个执行直接失败。
+fn claude_model_arg(model: &str) -> Option<&str> {
+    let value = model.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("unknown") {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// 启动横幅用的模型显示名（unknown → 说明按 settings.json 默认走）
+pub fn claude_model_display(model: &str) -> String {
+    match claude_model_arg(model) {
+        Some(value) => value.to_string(),
+        None => "默认（settings.json）".to_string(),
+    }
+}
+
 /// Claude Code CLI assistant implementation
 pub struct ClaudeAssistant {
     // 内部锁：create/delete/set 只锁这一小块，流式（stream_session）不碰它 →
@@ -431,10 +452,14 @@ impl AiAssistant for ClaudeAssistant {
         let claude_cmd = self.claude_cmd.clone();
         let mcp_flags = self.mcp_flags();
         tokio::task::spawn_blocking(move || {
-            let mut args = vec![
-                "--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--model",
-                selected_model.as_str(),
+            let mut args: Vec<&str> = vec![
+                "--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions",
             ];
+            // 空/unknown 不传 --model（交给 claude 自己的 settings.json 默认值）
+            if let Some(model_value) = claude_model_arg(&selected_model) {
+                args.push("--model");
+                args.push(model_value);
+            }
             args.extend(mcp_flags.iter().map(|value| value.as_str()));
             let mut cmd = if claude_cmd.starts_with("node:") {
                 let mut command = Command::new("node");
@@ -566,15 +591,18 @@ impl AiAssistant for ClaudeAssistant {
         let mcp_flags = self.mcp_flags();
 
         let result = tokio::task::spawn_blocking(move || {
-            let mut args = vec![
+            let mut args: Vec<String> = vec![
                 "--print".to_string(),
                 "--output-format".to_string(),
                 "text".to_string(),
                 "--permission-mode".to_string(),
                 "bypassPermissions".to_string(),
-                "--model".to_string(),
-                model.clone(),
             ];
+            // 空/unknown 不传 --model（交给 claude 自己的 settings.json 默认值）
+            if let Some(model_value) = claude_model_arg(&model) {
+                args.push("--model".to_string());
+                args.push(model_value.to_string());
+            }
             args.extend(mcp_flags);
 
             let mut cmd = Command::new(&claude_cmd);
@@ -648,16 +676,19 @@ impl AiAssistant for ClaudeAssistant {
         });
 
         tokio::task::spawn_blocking(move || {
-            let mut args = vec![
+            let mut args: Vec<String> = vec![
                 "--print".to_string(),
                 "--output-format".to_string(),
                 "stream-json".to_string(),
                 "--verbose".to_string(),
                 "--permission-mode".to_string(),
                 "bypassPermissions".to_string(),
-                "--model".to_string(),
-                model.clone(),
             ];
+            // 空/unknown 不传 --model（交给 claude 自己的 settings.json 默认值）
+            if let Some(model_value) = claude_model_arg(&model) {
+                args.push("--model".to_string());
+                args.push(model_value.to_string());
+            }
             args.extend(mcp_flags);
 
             let mut cmd = Command::new(&claude_cmd);
@@ -840,16 +871,19 @@ impl AiAssistant for ClaudeAssistant {
     ) -> StreamResult {
         log::info!("[claude] stream_session: session={}, model={}, resume={:?}", session_id, model, existing_agent_session_id);
 
-        let mut args = vec![
+        let mut args: Vec<String> = vec![
             "--print".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--verbose".to_string(),
             "--permission-mode".to_string(),
             "bypassPermissions".to_string(),
-            "--model".to_string(),
-            model.to_string(),
         ];
+        // 空/unknown 不传 --model（交给 claude 自己的 settings.json 默认值）
+        if let Some(model_value) = claude_model_arg(model) {
+            args.push("--model".to_string());
+            args.push(model_value.to_string());
+        }
 
         if let Some(resume_id) = existing_agent_session_id {
             args.push("--resume".to_string());

@@ -518,6 +518,8 @@ function updateModelSelectors() {
 }
 
 function renderAssistantCards() {
+    // 小白版统一外壳没有欢迎页的助手卡片（#assistantCards 不存在）
+    if (!assistantCards) return;
     assistantCards.innerHTML = '';
     assistants.forEach(a => {
         const card = document.createElement('div');
@@ -642,6 +644,8 @@ async function isNodeRunSession(sessionId) {
 let adaptRunsCache = null;
 let adaptRunsCacheAt = 0;
 async function isAdaptRunSession(sessionId) {
+    // 小白版不注册补丁适配路由（/api/adapt/*），别去请求 404
+    if (document.body.classList.contains('novice-shell')) return false;
     const now = Date.now();
     if (!adaptRunsCache || now - adaptRunsCacheAt > 30000) {
         const res = await fetch(`${API_BASE}/api/adapt/runs`);

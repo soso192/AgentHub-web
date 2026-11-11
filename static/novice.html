@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="CC-Web 小白版：智能开发（AI 排查）+ 产品环境变量与环境检查。">
+<title>CC-Web 小白版</title>
+<script>
+// 没有登录 token 时立刻整页进 /login：放在 head 里同步执行，避免先闪一下主界面
+(function () {
+    try {
+        if (!localStorage.getItem('patch-search-access-token')) window.location.replace('/login');
+    } catch (e) {
+        window.location.replace('/login');
+    }
+})();
+</script>
+<!-- 主题在 app.js / novice.js 里按 cc-web-theme 初始化，与聊天页同一套 -->
+<link rel="stylesheet" href="/style.css">
+<style>
+/* ── 小白版统一外壳（左侧菜单 + 会话列表；右侧内容区） ── */
+.nv-menu { display: flex; flex-direction: column; padding: 12px 8px 2px; gap: 2px; }
+.nv-menu-item { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 14px; border-left: 3px solid transparent; }
+.nv-menu-item:hover { background: rgba(0,0,0,.05); }
+.nv-menu-item.active { background: var(--accent-soft, #e8f0fe); color: var(--accent, #2b6cf6); font-weight: 600; border-left-color: var(--accent, #2b6cf6); }
+.nv-sep { height: 1px; background: var(--border, #e5e7eb); margin: 8px 12px; }
+.nv-sessions-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 14px 6px; gap: 8px; }
+.nv-sessions-head h2 { font-size: 12.5px; font-weight: 600; margin: 0; color: var(--text-secondary, #8a9099); }
+.nv-sessions-actions { display: flex; align-items: center; gap: 8px; }
+.nv-check-all { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--text-secondary, #8a9099); cursor: pointer; user-select: none; }
+.nv-check-all input { width: 13px; height: 13px; margin: 0; cursor: pointer; }
+#btn-delete-selected { padding: 3px 8px; font-size: 11.5px; }
+/* 会话项：多选框 + 重命名按钮（app.js 渲染的 .session-item 由 novice.js 追加） */
+#sessionList .session-check { display: flex; align-items: center; margin-right: 6px; flex: 0 0 auto; cursor: pointer; }
+#sessionList .session-check input { width: 13px; height: 13px; margin: 0; cursor: pointer; }
+#sessionList .edit-btn { background: none; border: none; cursor: pointer; font-size: 13px; color: var(--text-muted, #999); padding: 0 4px; opacity: .6; transition: opacity .12s; }
+#sessionList .edit-btn:hover { opacity: 1; color: var(--accent, #2b6cf6); }
+.nv-side-foot { display: flex; gap: 6px; padding: 10px 10px; border-top: 1px solid var(--border, #e5e7eb); }
+.nv-side-foot button { flex: 1; padding: 7px 4px; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; background: transparent; color: inherit; font-size: 12.5px; cursor: pointer; }
+/* 帮助下拉：点「帮助」在按钮上方展开两个入口 */
+.nv-help-wrap { flex: 1; position: relative; }
+.nv-help-wrap > #btn-help, .nv-help-wrap > #btn-settings { width: 100%; }
+.nv-help-menu {
+    position: absolute; left: 0; right: auto; min-width: 150px; bottom: calc(100% + 8px); z-index: 60;
+    display: flex; flex-direction: column; gap: 2px; padding: 6px;
+    background: var(--bg-elevated, #fff); border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px; box-shadow: var(--shadow-lg, 0 8px 24px rgba(0,0,0,.16));
+}
+.nv-help-menu button { flex: none; width: 100%; text-align: left; white-space: nowrap; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; font-size: 13px; }
+.nv-help-menu button:hover { background: var(--bg-hover, rgba(0,0,0,.06)); }
+
+/* 用户设置 / 更新弹窗内容 */
+.nv-user-panel { padding: 16px 20px 20px; font-size: 13.5px; }
+.nv-user-panel h4 { margin: 0 0 10px; font-size: 14px; }
+.nv-profile { display: grid; grid-template-columns: 76px 1fr; gap: 6px 10px; margin: 0 0 18px; }
+.nv-profile dt { color: var(--text-secondary, #8a9099); }
+.nv-profile dd { margin: 0; overflow-wrap: anywhere; }
+.nv-progress { position: relative; height: 10px; margin: 12px 0 26px; border-radius: 6px; background: rgba(0,0,0,.08); overflow: hidden; }
+.nv-progress span { display: block; height: 100%; width: 0; background: #2b6cf6; transition: width .15s; }
+.nv-progress em { position: absolute; left: 0; right: 0; top: 14px; font-size: 12px; font-style: normal; color: var(--text-secondary, #8a9099); }
+.nv-user { font-size: 11.5px; color: var(--text-secondary, #8a9099); padding: 0 14px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 右侧：聊天视图（复用 chat 的原生结构，整体作为一个可切换视图） */
+#nv-view-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.nv-bar { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border, #e5e7eb); }
+.nv-new-run { padding: 7px 16px; border: 0; border-radius: 8px; background: #2b6cf6; color: #fff; font-weight: 600; font-size: 13.5px; cursor: pointer; }
+.nv-new-run:hover { opacity: .92; }
+
+/* 环境 / 检查面板 */
+.nv-panel { padding: 18px 22px; overflow: auto; flex: 1; min-height: 0; }
+.nv-panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.nv-panel-head h1 { font-size: 19px; margin: 0; }
+.nv-head-actions { display: flex; align-items: center; gap: 8px; }
+.nv-hint { font-size: 12.5px; color: var(--text-secondary, #8a9099); margin: -6px 0 12px; }
+.nv-link-btn { padding: 7px 14px; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; background: transparent; color: inherit; font-size: 13px; cursor: pointer; }
+.nv-link-btn:hover { border-color: #2b6cf6; color: #2b6cf6; }
+.nv-danger { color: #d84a3f; }
+.nv-danger:hover { border-color: #d84a3f; color: #d84a3f; }
+.nv-primary-btn { padding: 7px 14px; border: 0; border-radius: 8px; background: #2b6cf6; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+.nv-empty { background: rgba(0,0,0,.02); border: 1px dashed var(--border, #e5e7eb); border-radius: 10px; padding: 36px 20px; text-align: center; color: var(--text-secondary, #8a9099); font-size: 13.5px; line-height: 2; }
+.nv-env-item { border: 1px solid var(--border, #e5e7eb); border-radius: 10px; padding: 12px 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 14px; }
+.nv-env-item-main, .nv-env-main { flex: 1; min-width: 0; }
+.nv-env-name { font-weight: 600; font-size: 14px; margin-bottom: 3px; }
+.nv-env-sub { font-size: 12.5px; color: var(--text-secondary, #8a9099); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nv-env-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.nv-check-card { border: 1px solid var(--border, #e5e7eb); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
+.nv-check-card.ok { border-left: 4px solid #1a9c6b; }
+.nv-check-card.bad { border-left: 4px solid #d84a3f; }
+.nv-check-title { font-weight: 600; font-size: 14px; margin-bottom: 3px; }
+.nv-check-detail { font-size: 12.5px; color: var(--text-secondary, #8a9099); word-break: break-all; }
+.nv-check-hint { font-size: 12.5px; margin-top: 7px; background: rgba(0,0,0,.03); border-radius: 8px; padding: 7px 11px; line-height: 1.6; }
+
+/* 补丁检索：标题/搜索框、分页条固定，只有补丁列表滚动 */
+#nv-view-patch { display: flex; flex-direction: column; overflow: hidden; }
+#nv-view-patch .nv-panel-head, #nv-view-patch .nv-search-row, #nv-view-patch .nv-pager { flex: 0 0 auto; }
+#nv-view-patch #patchSearchList { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
+.nv-search-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.nv-search-row input { flex: 1; padding: 8px 11px; border: 1px solid var(--border, #e0e4e9); border-radius: 8px; font-size: 14px; background: var(--card, #fff); color: inherit; box-sizing: border-box; }
+.nv-patch-item { border: 1px solid var(--border, #e5e7eb); border-radius: 10px; padding: 12px 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 14px; }
+.nv-patch-main { flex: 1; min-width: 0; }
+.nv-patch-name { font-weight: 600; font-size: 14px; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nv-patch-meta { font-size: 12.5px; color: var(--text-secondary, #8a9099); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nv-patch-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.nv-pager { display: flex; align-items: center; gap: 10px; justify-content: flex-end; margin-top: 12px; font-size: 12.5px; color: var(--text-secondary, #8a9099); }
+.nv-code { max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all; background: rgba(0,0,0,.04); border-radius: 8px; padding: 10px 12px; font: 12px/1.6 Consolas, monospace; margin: 0 0 12px; }
+.nv-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.nv-tag { display: inline-block; padding: 1px 7px; border-radius: 10px; background: rgba(43,108,246,.10); color: var(--accent, #2b6cf6); font-size: 12px; }
+
+/* 表单（环境变量弹窗 / 排查弹窗共用一套壳内表单样式） */
+.nv-field { display: block; margin-bottom: 12px; font-size: 13.5px; }
+.nv-field > span { display: block; margin-bottom: 5px; color: var(--text-secondary, #8a9099); }
+.nv-field .req { color: #d84a3f; margin-left: 2px; }
+.nv-input, .nv-field input[type=text], .nv-field input[type=password], .nv-field textarea, .nv-field select { width: 100%; padding: 8px 11px; border: 1px solid var(--border, #e0e4e9); border-radius: 8px; font-size: 14px; background: var(--card, #fff); color: inherit; box-sizing: border-box; }
+.nv-field textarea { resize: vertical; }
+.nv-path-row { display: flex; gap: 6px; }
+.nv-path-row input { flex: 1; }
+.nv-advanced-toggle { background: none; border: none; color: #2b6cf6; font-size: 13px; cursor: pointer; padding: 2px 0 8px; }
+.nv-advanced-box { border: 1px dashed var(--border, #e5e7eb); border-radius: 10px; padding: 12px 12px 0; margin-bottom: 12px; }
+.nv-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+/* 环境变量弹窗：表单内容与弹窗左右留出与顶栏一致的内边距（底部内边距交给 sticky 操作栏） */
+#env-form { padding: 16px 20px 0; }
+/* 弹窗底部操作栏：sticky 固定在弹窗底部（.modal 是滚动容器） */
+.nv-modal-footer {
+    position: sticky; bottom: 0; z-index: 5;
+    margin: 14px -20px 0; padding: 12px 20px;
+    background: var(--bg-elevated, #fff);
+    border-top: 1px solid var(--border, #e5e7eb);
+}
+.nv-hidden { display: none !important; }
+
+/* 加载层与表单提示（登录页已拆到独立的 /login 页面） */
+.nv-login-msg { min-height: 18px; font-size: 12.5px; color: #d84a3f; margin-bottom: 6px; }
+.nv-loading { position: fixed; inset: 0; background: var(--bg, #f0f2f5); display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center; z-index: 9500; color: var(--text-secondary, #8a9099); font-size: 13.5px; }
+
+/* 小白版隐藏的聊天页工具（这些元素保留给 app.js 用，但不显示） */
+body.novice-shell .topbar { display: none !important; }
+body.novice-shell #fileBrowser { display: none !important; }
+body.novice-shell #newSessionBtn { display: none !important; }
+body.novice-shell #newSessionForm { display: none !important; }
+body.novice-shell .sidebar-footer { display: none !important; }
+body.novice-shell #welcomeScreen ol { display: none !important; }
+body.novice-shell #welcomeScreen .assistant-cards { display: none !important; }
+body.novice-shell #welcomeScreen p { max-width: 460px; }
+</style>
+</head>
+<body class="novice-shell">
+<div id="app">
+    <aside class="sidebar" id="sidebar" aria-label="菜单与会话">
+        <nav class="nv-menu" aria-label="主导航">
+            <a href="#" id="nav-node" class="nv-menu-item active">🤖 智能开发</a>
+            <a href="#" id="nav-patch" class="nv-menu-item">🔎 补丁检索</a>
+        </nav>
+        <div class="nv-sep"></div>
+        <div class="nv-sessions-head">
+            <h2>会话</h2>
+            <div class="nv-sessions-actions">
+                <label class="nv-check-all"><input type="checkbox" id="sessionSelectAll">全选</label>
+                <button id="btn-delete-selected" class="nv-link-btn nv-danger" type="button" hidden>删除</button>
+            </div>
+        </div>
+        <!-- app.js 需要的隐藏元素（原生新建会话入口，小白版统一走「新建排查」） -->
+        <button id="newSessionBtn" type="button" style="display:none;">+</button>
+        <div id="newSessionForm" style="display:none;">
+            <select id="assistantSelectNew"></select>
+            <input type="text" id="cwdInput">
+            <select id="modelSelectNew"></select>
+            <button id="createSessionBtn" type="button">Create</button>
+            <button id="cancelSessionBtn" type="button">Cancel</button>
+        </div>
+        <div id="sessionList" class="session-list"></div>
+        <!-- app.js 需要的文件面板（小白版不显示） -->
+        <div id="fileBrowser" class="file-browser" style="display:none;">
+            <div id="fileBrowserResize" class="file-browser-resize"></div>
+            <div class="file-browser-header"><span id="fileBrowserPath" class="file-browser-path"></span></div>
+            <div id="fileBrowserContent" class="file-browser-content" style="display:none;"><div id="fileList" class="file-list"></div></div>
+        </div>
+        <div class="sidebar-footer" style="display:none;"><div class="assistant-status" id="assistantStatus"></div></div>
+        <div class="nv-user" id="nv-user"></div>
+        <div class="nv-side-foot">
+            <div class="nv-help-wrap">
+                <button id="btn-help" type="button" title="帮助" aria-haspopup="true" aria-expanded="false">❓ 帮助</button>
+                <div class="nv-help-menu nv-hidden" id="help-menu" role="menu">
+                    <button type="button" id="btn-help-manual" role="menuitem">📘 使用手册</button>
+                    <button type="button" id="btn-help-check" role="menuitem">🩺 环境检查</button>
+                </div>
+            </div>
+            <button id="themeToggle" class="theme-btn" type="button" title="切换主题">🌙 主题</button>
+            <div class="nv-help-wrap">
+                <button id="btn-settings" type="button" title="设置" aria-haspopup="true" aria-expanded="false">⚙️ 设置</button>
+                <div class="nv-help-menu nv-hidden" id="settings-menu" role="menu">
+                    <button type="button" id="btn-settings-logout" role="menuitem">🚪 退出登录</button>
+                    <button type="button" id="btn-settings-user" role="menuitem">👤 用户设置</button>
+                    <button type="button" id="btn-settings-update" role="menuitem">🔄 检查更新</button>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <main class="main">
+        <!-- app.js 需要的顶栏元素全部保留但隐藏（工具已去掉） -->
+        <header class="topbar" style="display:none;">
+            <button id="toggleSidebar" class="icon-btn" type="button">☰</button>
+            <span class="logo">⚡ CC-Web</span>
+            <select id="assistantSelector"></select>
+            <button id="switchAssistantBtn" type="button" style="display:none;"></button>
+            <select id="modelSelector"></select>
+            <span id="statusDisplay"></span>
+            <button id="toggleSplitView" class="icon-btn" type="button" style="display:none;"></button>
+            <select id="splitLayoutSelect" style="display:none;"></select>
+            <button id="addPanelBtn" class="icon-btn" type="button" style="display:none;"></button>
+            <button id="toggleSyncMode" class="sync-btn" type="button" style="display:none;"></button>
+        </header>
+
+        <!-- 视图 1：智能开发（聊天交互区） -->
+        <section id="nv-view-chat">
+            <div class="nv-bar">
+                <button class="nv-link-btn" id="noviceEnvBtn" type="button">⚙️ 产品环境变量</button>
+                <button class="nv-new-run" id="noviceNewRunBtn" type="button">＋ 新建排查</button>
+            </div>
+
+            <div class="welcome-screen" id="welcomeScreen">
+                <h1>⚡ CC-Web</h1>
+                <p>点右上角「＋ 新建排查」，选择产品环境并描述问题，AI 会开始排查；之后可以直接在下方输入框继续和它对话。</p>
+            </div>
+
+            <div class="single-view-container" id="singleViewContainer">
+                <div class="chat-container" id="chatContainer" role="log" style="display:none;">
+                    <div id="typingIndicator" class="typing-indicator" style="display:none;"><span class="assistant-name"></span> 正在思考…</div>
+                </div>
+                <div id="nodeReadonlyBanner" class="claude-history-banner" style="display:none;"></div>
+                <div id="serverReplayBanner" class="server-replay-banner" style="display:none;"></div>
+                <div class="input-area" id="inputArea" style="display:none;">
+                    <div class="nv-chat-files" id="chatFileList"></div>
+                    <div class="input-wrapper">
+                        <button id="chatAttachBtn" class="nv-attach-btn" type="button" title="添加图片或文件">📎</button>
+                        <input type="file" id="chatFiles" multiple style="display:none">
+                        <textarea id="messageInput" placeholder="输入消息，Enter 发送，Shift + Enter 换行（可粘贴图片）" rows="1"></textarea>
+                        <button id="sendBtn" class="send-btn" type="button">发送</button>
+                        <button id="stopBtn" class="stop-btn" type="button" style="display:none;">⏹ 停止</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="split-view-container" id="splitViewContainer" style="display:none;"><div class="split-grid" id="splitGrid"></div></div>
+        </section>
+
+        <!-- 视图 2：产品环境变量 -->
+        <section id="nv-view-env" class="nv-panel nv-hidden">
+            <div class="nv-panel-head">
+                <h1>产品环境变量</h1>
+                <div class="nv-head-actions">
+                    <button class="nv-link-btn" id="btn-env-back" type="button">← 返回</button>
+                    <button class="nv-primary-btn" id="btn-new-env" type="button">＋ 新增</button>
+                </div>
+            </div>
+            <div class="nv-hint">填好产品、版本和 home/war 路径就能使用智能开发；数据库连接、客开目录等点「高级设置」按需补充。</div>
+            <div id="env-list"></div>
+        </section>
+
+        <!-- 视图 3：环境检查 -->
+        <section id="nv-view-check" class="nv-panel nv-hidden">
+            <div class="nv-panel-head"><h1>环境检查</h1><button class="nv-link-btn" id="btn-envcheck-refresh" type="button">↻ 重新检查</button></div>
+            <div id="envcheck-list"></div>
+        </section>
+
+        <!-- 视图 4：补丁检索 -->
+        <section id="nv-view-patch" class="nv-panel nv-hidden">
+            <div class="nv-panel-head"><h1>补丁检索</h1><span class="nv-hint" id="patchSearchTotal" style="margin:0;"></span></div>
+            <div class="nv-search-row">
+                <input type="text" id="patchSearchInput" placeholder="搜索补丁名称、描述、类名或关键词">
+                <button class="nv-primary-btn" id="patchSearchBtn" type="button">搜索</button>
+            </div>
+            <div id="patchSearchList"></div>
+            <div class="nv-pager" id="patchSearchPager" style="display:none;">
+                <button class="nv-link-btn" id="patchSearchPrev" type="button">上一页</button>
+                <span id="patchSearchPageInfo"></span>
+                <button class="nv-link-btn" id="patchSearchNext" type="button">下一页</button>
+            </div>
+        </section>
+    </main>
+</div>
+
+<!-- 产品环境表单弹窗 -->
+<div class="modal-overlay nv-hidden" id="env-form-modal">
+    <div class="modal" style="width:620px;max-width:96vw;">
+        <div class="modal-header"><h3 id="env-form-title">产品环境</h3><button class="modal-close" id="env-form-close" type="button">×</button></div>
+        <form id="env-form">
+            <label class="nv-field"><span>产品名称<span class="req">*</span></span><select name="product_id" required></select></label>
+            <label class="nv-field"><span>版本号<span class="req">*</span></span><select name="version_id" required></select></label>
+            <label class="nv-field"><span>home / war 包地址<span class="req">*</span>（产品安装目录，用于编译）</span>
+                <div class="nv-path-row"><input type="text" name="package_path" id="env-form-home" placeholder="例：D:\nchome\FBIP8.2" required>
+                    <button type="button" class="nv-link-btn" data-folder-pick="env-form-home">📁</button></div>
+            </label>
+            <button type="button" class="nv-advanced-toggle" id="env-advanced-toggle">▸ 高级设置（选填）</button>
+            <div class="nv-advanced-box nv-hidden" id="env-advanced">
+                <label class="nv-field"><span>客开代码目录（有客开源码才填）</span>
+                    <div class="nv-path-row"><input type="text" name="code_directory" id="env-form-code" placeholder="例：D:\workspace\my-project">
+                        <button type="button" class="nv-link-btn" data-folder-pick="env-form-code">📁</button></div></label>
+                <label class="nv-field"><span>本地 JDK 路径（留空则 AI 在 home 下自动查找）</span>
+                    <div class="nv-path-row"><input type="text" name="local_jdk_path" id="env-form-jdk" placeholder="例：D:\jdk1.8.0_202">
+                        <button type="button" class="nv-link-btn" data-folder-pick="env-form-jdk">📁</button></div></label>
+                <label class="nv-field"><span>数据库连接（选填，只读查询用）</span>
+                    <input type="text" name="db_connection" placeholder="jdbc:… 或 ip:端口/库名"></label>
+                <label class="nv-field"><span>远程调试地址（选填）</span>
+                    <input type="text" name="debug_address" placeholder="例：10.0.0.5:8787"></label>
+                <label class="nv-field"><span>skill 库目录（选填）</span>
+                    <input type="text" name="local_skill_path" placeholder="本机 skill 库根目录"></label>
+            </div>
+            <!-- 底部操作栏：sticky 固定在弹窗底部，内容滚动时不跟着滚 -->
+            <div class="nv-modal-actions nv-modal-footer">
+                <button class="nv-link-btn" type="button" id="env-form-cancel">取消</button>
+                <button class="nv-primary-btn" type="submit">保存</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 错误弹窗（common.js patchShowError 依赖这些 id；app.js 的提示弹窗单独一套） -->
+<div class="modal-overlay nv-hidden" id="patchErrorModal">
+    <div class="modal" style="width:420px;max-width:96vw;">
+        <div class="modal-header"><h3 id="patchErrorTitle">操作失败</h3><button class="modal-close" id="patchErrorClose" type="button">×</button></div>
+        <p id="patchErrorMessage" style="padding:0 4px;white-space:pre-wrap;"></p>
+        <div class="modal-footer"><button class="nv-primary-btn" id="patchErrorConfirm" type="button">我知道了</button></div>
+    </div>
+</div>
+
+<!-- app.js 依赖的提示/确认弹窗 -->
+<div id="appNoticeModal" class="modal-overlay app-notice-overlay" role="alertdialog" aria-modal="true" aria-labelledby="appNoticeTitle" style="display:none;">
+    <div class="modal app-notice-modal">
+        <button id="appNoticeClose" class="patch-notice-close" type="button" aria-label="关闭">×</button>
+        <div class="patch-notice-icon" aria-hidden="true">!</div>
+        <h3 id="appNoticeTitle">操作提示</h3>
+        <p id="appNoticeMessage"></p>
+        <div class="modal-footer"><button id="appNoticeConfirm" class="btn-primary" type="button">我知道了</button></div>
+    </div>
+</div>
+<div id="appConfirmModal" class="modal-overlay app-notice-overlay" role="alertdialog" aria-modal="true" aria-labelledby="appConfirmTitle" style="display:none;">
+    <div class="modal app-notice-modal">
+        <h3 id="appConfirmTitle">确认操作</h3>
+        <p id="appConfirmMessage"></p>
+        <div class="modal-footer"><button id="appConfirmCancel" class="btn-cancel" type="button">取消</button><button id="appConfirmAccept" class="btn-primary" type="button">确认</button></div>
+    </div>
+</div>
+
+<!-- 用户设置弹窗 -->
+<div class="modal-overlay nv-hidden" id="user-settings-modal">
+    <div class="modal" style="width:460px;max-width:96vw;">
+        <div class="modal-header"><h3>用户设置</h3><button class="modal-close" id="user-settings-close" type="button">×</button></div>
+        <div class="nv-user-panel">
+            <h4>个人信息</h4>
+            <dl class="nv-profile" id="user-profile"><dt>状态</dt><dd>正在加载…</dd></dl>
+            <form id="change-password-form">
+                <h4>修改密码</h4>
+                <label class="nv-field"><span>当前密码</span><input type="password" name="current_password" autocomplete="current-password" required></label>
+                <label class="nv-field"><span>新密码（至少 8 位，需包含字母和数字）</span><input type="password" name="new_password" autocomplete="new-password" minlength="8" required></label>
+                <label class="nv-field"><span>确认新密码</span><input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required></label>
+                <div class="nv-login-msg" id="change-password-msg"></div>
+                <div class="nv-modal-actions">
+                    <button class="nv-link-btn" type="button" id="user-settings-cancel">取消</button>
+                    <button class="nv-primary-btn" type="submit">修改密码</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 修改会话名称弹窗 -->
+<div class="modal-overlay nv-hidden" id="rename-session-modal">
+    <div class="modal" style="width:420px;max-width:96vw;">
+        <div class="modal-header"><h3>修改会话名称</h3><button class="modal-close" id="rename-session-close" type="button">×</button></div>
+        <div class="nv-user-panel">
+            <label class="nv-field"><span>会话名称（最多 100 个字符）</span>
+                <input type="text" id="rename-session-input" maxlength="100" placeholder="输入新的会话名称"></label>
+            <div class="nv-login-msg" id="rename-session-msg"></div>
+            <div class="nv-modal-actions">
+                <button class="nv-link-btn" type="button" id="rename-session-cancel">取消</button>
+                <button class="nv-primary-btn" type="button" id="rename-session-save">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 补丁详情弹窗 -->
+<div class="modal-overlay nv-hidden" id="patch-detail-modal">
+    <div class="modal" style="width:640px;max-width:96vw;">
+        <div class="modal-header"><h3>补丁详情</h3><button class="modal-close" id="patch-detail-close" type="button">×</button></div>
+        <div class="nv-user-panel">
+            <dl class="nv-profile" id="patch-detail-body"><dt>状态</dt><dd>正在加载…</dd></dl>
+            <h4>分析结果</h4>
+            <pre class="nv-code" id="patch-detail-result">—</pre>
+            <div class="nv-modal-actions">
+                <button class="nv-primary-btn" id="patch-detail-download" type="button">下载补丁包</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 检查更新 / 下载进度弹窗 -->
+<div class="modal-overlay nv-hidden" id="update-modal">
+    <div class="modal" style="width:420px;max-width:96vw;">
+        <div class="modal-header"><h3>更新 cc-web</h3><button class="modal-close" id="update-modal-close" type="button">×</button></div>
+        <div class="nv-user-panel">
+            <p id="update-message" style="margin:0;line-height:1.7;">正在准备…</p>
+            <div class="nv-progress" id="update-progress" style="display:none;"><span></span><em></em></div>
+        </div>
+        <div class="modal-footer"><button id="update-modal-ok" class="nv-primary-btn" type="button" hidden>知道了</button></div>
+    </div>
+</div>
+
+<script src="/folderpick.js"></script>
+<script src="/common.js"></script>
+<script src="/node_core.js"></script>
+<script src="/prompts_novice.js"></script>
+<script src="/app.js"></script>
+<script src="/chat_attachments.js"></script>
+<script src="/novice.js"></script>
+<script src="/novice_chat.js"></script>
+</body>
+</html>

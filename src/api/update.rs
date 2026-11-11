@@ -48,12 +48,21 @@ const PLATFORM: &str = "macos-x64";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const PLATFORM: &str = "";
 
-/// 版本号哨兵：`CCWEB-VERSION:<版本>`。
+/// 版本号哨兵：`CCWEB-VERSION:<版本>`（开发版）/ `CCWEB-VERSION:novice-<版本>`（小白版）。
 ///
 /// 发布时服务器靠它确认"这个二进制确实是用这个版本号编译出来的"——直接去二进制里找裸版本号
 /// 会误判（exe 里本来就有别的依赖的版本串，比如某个 crate 的 `1.0.1`），必须用这个唯一前缀。
 /// 它随 `/api/version` 返回，保证不会被优化掉、确实留在二进制里。
+#[cfg(feature = "novice")]
+pub const VERSION_MARKER: &str = concat!("CCWEB-VERSION:novice-", env!("CARGO_PKG_VERSION"));
+#[cfg(not(feature = "novice"))]
 pub const VERSION_MARKER: &str = concat!("CCWEB-VERSION:", env!("CARGO_PKG_VERSION"));
+
+/// 本机的 edition 标识（发给 patch_search 的升级接口，用于选择正确的升级通道）
+#[cfg(feature = "novice")]
+pub const EDITION: &str = "novice";
+#[cfg(not(feature = "novice"))]
+pub const EDITION: &str = "dev";
 
 /// 本机 exe 路径（自更新的目标就是它）
 fn current_exe() -> Result<PathBuf, String> {
@@ -89,6 +98,8 @@ fn exe_meta() -> Result<serde_json::Value, String> {
         // 放在返回里同时保证它不会被编译器优化掉（确实留在二进制中）。
         "marker": VERSION_MARKER,
         "build_unix": env!("CCWEB_BUILD_UNIX"),
+        // 本机版本（dev / novice）：升级通道按它选择
+        "edition": EDITION,
         // 本机平台键（windows / macos-arm64 / macos-x64；其它平台为空串）：
         // 前端拿它给"没有发布本平台版本"之类的提示带上平台名，用户不用猜
         "platform": PLATFORM,
@@ -115,10 +126,12 @@ fn fetch_remote(server_url: &str, auth_token: &str) -> Result<Option<serde_json:
     if PLATFORM.is_empty() {
         return Err("该平台暂不提供 cc-web 自动更新，请手动替换程序".to_string());
     }
+    // edition 参数：dev（缺省）走原有通道，novice 走 novice/ 子目录通道
     let url = format!(
-        "{}/api/ccweb/latest?platform={}",
+        "{}/api/ccweb/latest?platform={}&edition={}",
         server_url.trim_end_matches('/'),
-        PLATFORM
+        PLATFORM,
+        EDITION
     );
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -549,11 +562,13 @@ fn apply_blocking(
         .build()
         .map_err(|error| format!("创建下载客户端失败：{error}"))?;
     // 地址里带上版本号：下载期间管理员即使把"最新版本"改了，也拿的是刚检查到的那个版本
+    // edition 参数确保从正确的通道（dev/novice）下载
     let url = format!(
-        "{}/api/ccweb/download/{}/{}",
+        "{}/api/ccweb/download/{}/{}?edition={}",
         server_url.trim_end_matches('/'),
         remote_version,
-        PLATFORM
+        PLATFORM,
+        EDITION
     );
     let mut response = client
         .get(&url)

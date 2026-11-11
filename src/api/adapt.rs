@@ -371,6 +371,7 @@ pub async fn start(data: actix_web::web::Data<AppState>, body: actix_web::web::J
             created_at: now,
             updated_at: now,
             history_context: None,
+            name: None,
             agent_session_id: None,
             history_already_sent: false,
         };

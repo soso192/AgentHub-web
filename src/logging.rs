@@ -26,11 +26,11 @@ use chrono::Local;
 /// 全局日志文件句柄
 static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
 
-/// 获取日志文件目录（~/.cc-web/logs/）
+/// 获取日志文件目录（~/.cc-web/logs/，小白版 ~/.cc-web-novice/logs/）
 fn get_log_dir() -> PathBuf {
     let log_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".cc-web")
+        .join(crate::DATA_DIR_NAME)
         .join("logs");
     fs::create_dir_all(&log_dir).ok();
     log_dir

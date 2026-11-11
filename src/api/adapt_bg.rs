@@ -73,7 +73,7 @@ impl AdaptRun {
 
 fn adapt_file_path() -> Option<std::path::PathBuf> {
     let home = dirs::home_dir()?;
-    Some(home.join(".cc-web").join("adapt_runs.json"))
+    Some(home.join(crate::DATA_DIR_NAME).join("adapt_runs.json"))
 }
 
 pub fn save_adapt_runs(data: &AppState) {

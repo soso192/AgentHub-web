@@ -343,6 +343,7 @@ pub async fn new_session(
         created_at: now,
         updated_at: now,
         history_context: None,
+        name: None,
         agent_session_id: req.resume_session_id.clone(),
         history_already_sent: false,
     };
@@ -517,6 +518,10 @@ pub async fn start_prompt(
             Some(h) => h,
             None => {
                 log::error!("[start_prompt] assistant not found: {}", assistant_name);
+                // 早退必须清掉第 512 行已置位的 streaming 标记，否则该会话永久卡在「执行中」
+                data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                data_clone2.streaming_state.write().unwrap().remove(&session_id_for_save);
+                data_clone2.running_pids.write().unwrap().remove(&session_id_for_cleanup);
                 return;
             }
         };
@@ -922,7 +927,12 @@ pub async fn switch_assistant(
     tokio::spawn(async move {
         let handle = match new_handle_for_stream {
             Some(h) => h,
-            None => return,
+            None => {
+                // 早退必须清掉上面已置位的 streaming 标记，否则该会话永久卡在「执行中」
+                data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
+                data_clone.streaming_state.write().unwrap().remove(&session_id_for_save);
+                return;
+            }
         };
 
         // stream_session runs in a blocking thread (it reads CLI stdout line by line)
