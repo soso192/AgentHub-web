@@ -9,27 +9,63 @@ on:
 jobs:
   build:
     strategy:
+      # 一个平台/版本失败不影响其它组合继续构建（跨平台问题更容易定位）
+      fail-fast: false
       matrix:
         include:
+          # ── 开发版（默认 feature）──
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            edition: dev
+            features: ''
             artifact: cc-web.exe
             archive: cc-web-windows-x64.zip
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            edition: dev
+            features: ''
             artifact: cc-web
             archive: cc-web-linux-x64.tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
+            edition: dev
+            features: ''
             artifact: cc-web
             archive: cc-web-macos-arm64.tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
+            edition: dev
+            features: ''
             artifact: cc-web
             archive: cc-web-macos-x64.tar.gz
+          # ── 小白版（--features novice）──
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            edition: novice
+            features: '--features novice'
+            artifact: cc-web-novice.exe
+            archive: cc-web-novice-windows-x64.zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            edition: novice
+            features: '--features novice'
+            artifact: cc-web-novice
+            archive: cc-web-novice-linux-x64.tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            edition: novice
+            features: '--features novice'
+            artifact: cc-web-novice
+            archive: cc-web-novice-macos-arm64.tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            edition: novice
+            features: '--features novice'
+            artifact: cc-web-novice
+            archive: cc-web-novice-macos-x64.tar.gz
 
     runs-on: ${{ matrix.os }}
-    name: Build (${{ matrix.target }})
+    name: Build (${{ matrix.target }}, ${{ matrix.edition }})
 
     steps:
       - uses: actions/checkout@v4
@@ -40,12 +76,23 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
+
+      # cargo 产物固定叫 cc-web(.exe)，按版本改名后再打包
+      - name: Rename artifact (Unix)
+        if: runner.os != 'Windows'
+        run: cp "target/${{ matrix.target }}/release/cc-web" "target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+
+      - name: Rename artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item "target\${{ matrix.target }}\release\cc-web.exe" "target\${{ matrix.target }}\release\${{ matrix.artifact }}"
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
+          chmod +x ${{ matrix.artifact }}
           tar czf ../../../${{ matrix.archive }} ${{ matrix.artifact }}
           cd ../../..
 
