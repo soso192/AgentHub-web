@@ -848,7 +848,7 @@ async fn handle_event(cdp: &Arc<CdpClient>, event: Value) {
                 return;
             }
             let url = request.get("url").and_then(|value| value.as_str()).unwrap_or("").to_string();
-            // 默认只收 .do 接口（小白排查的目标是 NC 后端 action）
+            // 默认只收 .do 接口（实施版排查的目标是 NC 后端 action）
             if !url.to_lowercase().contains(".do") {
                 return;
             }

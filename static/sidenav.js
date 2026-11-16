@@ -60,9 +60,9 @@
         return new URLSearchParams(location.search).get('tab') || '';
     }
 
-    // ── 小白版固定菜单（与开发版共用这一份文件，按 /api/version 的 edition 切换）──
-    // 小白版菜单写死在客户端：智能开发（= 开发版完整页面）/ 聊天 / 产品环境变量 / 环境检查。
-    // 后两项在 /novice.html（小白版的轻量页），智能开发/聊天是独立页面。
+    // ── 实施版固定菜单（与开发版共用这一份文件，按 /api/version 的 edition 切换）──
+    // 实施版菜单写死在客户端：智能开发（= 开发版完整页面）/ 聊天 / 产品环境变量 / 环境检查。
+    // 后两项在 /novice.html（实施版的轻量页），智能开发/聊天是独立页面。
     const NOVICE_ITEMS = [
         { key: 'node', label: '智能开发', href: '/patches.html?tab=node', icon: ITEMS[0].icon },
         { key: 'chat', label: '聊天', href: '/chat.html', icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>' },
@@ -86,7 +86,7 @@
         ).join('');
     }
 
-    // 取 exe 版本：小白版 → 用固定菜单并停用「按账号菜单权限渲染」
+    // 取 exe 版本：实施版 → 用固定菜单并停用「按账号菜单权限渲染」
     async function loadEdition() {
         try {
             const response = await fetch('/api/version');
@@ -109,7 +109,7 @@
     }
 
     function applyVisibility(user) {
-        // 小白版：固定菜单，不走账号菜单权限
+        // 实施版：固定菜单，不走账号菜单权限
         if (noviceEdition) return;
         const isAdmin = Boolean(user && user.role === 'admin');
         const keys = user && Array.isArray(user.menus) ? user.menus : null;
@@ -247,7 +247,7 @@
     // 一律隐藏等 /api/auth/me → 管理员「菜单慢慢补齐」像登录慢。缓存让两边首帧都对。
     applyVisibility(loadCachedUser() || null);
     loadCodeSearchConfig();   // 异步取源码搜索地址，拿到后单独刷新该菜单项显隐
-    loadEdition();            // 小白版：拿到 edition 后换成固定菜单
+    loadEdition();            // 实施版：拿到 edition 后换成固定菜单
     bindToggle();
     // 等 patches.js（在本文件之后加载）把共享鉴权链挂到 window 再取用户：
     // 有共享链就复用（省掉 patch-config + auth/me 各一次），没有才自己发请求

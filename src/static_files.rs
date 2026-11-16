@@ -1,73 +1,35 @@
+//! 内嵌前端静态资源。
+//!
+//! 2026-11 起前端整体迁移到 React（frontend/，Vite 构建）。构建产物固定文件名输出到
+//! `static/dist/`：`index.html`、`app.js`、`app.css`，由 include_str! 编进 exe，保持单文件分发。
+//!
+//! 路由策略：
+//! - 所有页面路径（含 /login、/chat.html、/patches.html、/novice.html 及运行详情页）
+//!   都返回同一个 SPA 外壳，由 React Router 按 pathname 渲染对应页面；
+//! - 开发版与实施版共用同一套前端，运行时通过 `GET /api/version` 的 edition 字段区分行为；
+//! - 旧版原生页面文件仍保留在 static/ 目录，便于对照，但不再被服务。
+
 use actix_web::{HttpRequest, HttpResponse, http::header};
 
-// ── 开发版静态文件 ──
-#[cfg(not(feature = "implCon"))]
-const INDEX_HTML: &str = include_str!("../static/index.html");
-#[cfg(not(feature = "implCon"))]
-const STYLE_CSS: &str = include_str!("../static/style.css");
-#[cfg(not(feature = "implCon"))]
-const APP_JS: &str = include_str!("../static/app.js");
-#[cfg(not(feature = "implCon"))]
-const PATCHES_HTML: &str = include_str!("../static/patches.html");
-#[cfg(not(feature = "implCon"))]
-const PATCHES_JS: &str = include_str!("../static/patches.js");
-#[cfg(not(feature = "implCon"))]
-const COMMON_JS: &str = include_str!("../static/common.js");
-#[cfg(not(feature = "implCon"))]
-const NODE_CORE_JS: &str = include_str!("../static/node_core.js");
-// 小白版的内置提示词：开发版不调用，但 patches.html / index.html 两版共用一份、统一加载（缺失会 404）
-#[cfg(not(feature = "implCon"))]
-const PROMPTS_NOVICE_JS: &str = include_str!("../static/prompts_novice.js");
-// 小白版聊天页增强：开发版加载后自动 no-op（edition 判断），但 index.html 两版共用必须能取到
-#[cfg(not(feature = "implCon"))]
-const NOVICE_CHAT_JS: &str = include_str!("../static/novice_chat.js");
-// 聊天输入框附件（两版共用：📎 上传图片/文件）
-#[cfg(not(feature = "implCon"))]
-const CHAT_ATTACHMENTS_JS: &str = include_str!("../static/chat_attachments.js");
-#[cfg(not(feature = "implCon"))]
-const SIDENAV_JS: &str = include_str!("../static/sidenav.js");
-#[cfg(not(feature = "implCon"))]
-const COPYBOX_JS: &str = include_str!("../static/copybox.js");
-#[cfg(not(feature = "implCon"))]
-const FOLDERPICK_JS: &str = include_str!("../static/folderpick.js");
-#[cfg(not(feature = "implCon"))]
-const WORKFLOW_RUN_HTML: &str = include_str!("../static/workflow_run.html");
-#[cfg(not(feature = "implCon"))]
-const NODE_RUN_HTML: &str = include_str!("../static/node_run.html");
-#[cfg(not(feature = "implCon"))]
-const ADAPT_RUN_HTML: &str = include_str!("../static/adapt_run.html");
-#[cfg(not(feature = "implCon"))]
-const SERVER_REPLAY_HTML: &str = include_str!("../static/server_replay.html");
+const INDEX_HTML: &str = include_str!("../static/dist/index.html");
+const APP_JS: &str = include_str!("../static/dist/app.js");
+const APP_CSS: &str = include_str!("../static/dist/app.css");
 
-// ── 小白版静态文件 ──
-// 2026-11-10 起「智能开发」与「聊天」合并进**统一外壳**（novice.html）：
-// 左侧 = 菜单（智能开发/产品环境变量/环境检查）+ 会话列表；右侧 = 内容区。
-// 智能开发视图复用 app.js 的聊天实现（聊天页的工具/资源管理器已去掉）。
-// 独立的智能开发列表页（patches.html/patches.js）不再提供。
-#[cfg(feature = "implCon")]
-const NOVICE_HTML: &str = include_str!("../static/novice.html");
-#[cfg(feature = "implCon")]
-const NOVICE_LOGIN_HTML: &str = include_str!("../static/novice_login.html");
-#[cfg(feature = "implCon")]
-const NOVICE_LOGIN_JS: &str = include_str!("../static/novice_login.js");
-#[cfg(feature = "implCon")]
-const APP_JS: &str = include_str!("../static/app.js");
-#[cfg(feature = "implCon")]
-const STYLE_CSS: &str = include_str!("../static/style.css");
-#[cfg(feature = "implCon")]
-const FOLDERPICK_JS: &str = include_str!("../static/folderpick.js");
-#[cfg(feature = "implCon")]
-const COMMON_JS: &str = include_str!("../static/common.js");
-#[cfg(feature = "implCon")]
-const NODE_CORE_JS: &str = include_str!("../static/node_core.js");
-#[cfg(feature = "implCon")]
-const PROMPTS_NOVICE_JS: &str = include_str!("../static/prompts_novice.js");
-#[cfg(feature = "implCon")]
-const NOVICE_JS: &str = include_str!("../static/novice.js");
-#[cfg(feature = "implCon")]
-const NOVICE_CHAT_JS: &str = include_str!("../static/novice_chat.js");
-#[cfg(feature = "implCon")]
-const CHAT_ATTACHMENTS_JS: &str = include_str!("../static/chat_attachments.js");
+/// 所有由 React Router 处理的页面路径。
+const SPA_ROUTES: &[&str] = &[
+    "/",
+    "/index.html",
+    "/chat.html",
+    "/patches.html",
+    "/novice.html",
+    "/login",
+    "/login.html",
+    "/help",
+    "/node_run.html",
+    "/adapt_run.html",
+    "/workflow_run.html",
+    "/server_replay.html",
+];
 
 /// Generate ETag based on content hash for cache validation
 fn generate_etag(content: &str) -> String {
@@ -81,49 +43,13 @@ fn generate_etag(content: &str) -> String {
 pub async fn serve(req: HttpRequest) -> HttpResponse {
     let path = req.path();
 
-    #[cfg(feature = "implCon")]
-    let (content, content_type) = match path {
-        // 小白版：根路径 = 统一外壳（菜单 + 会话 + 内容区，三个菜单项都是页内视图切换）
-        "/" | "/chat.html" | "/index.html" | "/novice.html" => (NOVICE_HTML, "text/html; charset=utf-8"),
-        // 独立登录页：未登录访问主界面会整页跳到这里，刷新不会闪出主界面
-        "/login" | "/login.html" => (NOVICE_LOGIN_HTML, "text/html; charset=utf-8"),
-        "/novice_login.js" => (NOVICE_LOGIN_JS, "application/javascript; charset=utf-8"),
-        "/style.css" => (STYLE_CSS, "text/css; charset=utf-8"),
-        "/app.js" => (APP_JS, "application/javascript; charset=utf-8"),
-        "/folderpick.js" => (FOLDERPICK_JS, "application/javascript; charset=utf-8"),
-        "/common.js" => (COMMON_JS, "application/javascript; charset=utf-8"),
-        "/node_core.js" => (NODE_CORE_JS, "application/javascript; charset=utf-8"),
-        "/prompts_novice.js" => (PROMPTS_NOVICE_JS, "application/javascript; charset=utf-8"),
-        "/novice.js" => (NOVICE_JS, "application/javascript; charset=utf-8"),
-        "/novice_chat.js" => (NOVICE_CHAT_JS, "application/javascript; charset=utf-8"),
-        "/chat_attachments.js" => (CHAT_ATTACHMENTS_JS, "application/javascript; charset=utf-8"),
-        _ => {
-            return HttpResponse::NotFound().body("Not Found");
-        }
-    };
-
-    #[cfg(not(feature = "implCon"))]
-    let (content, content_type) = match path {
-        // 根路径落到补丁中心 SPA（默认「智能开发」页签）；聊天页改用 /chat.html（/index.html 保留兼容）
-        "/" | "/patches.html" => (PATCHES_HTML, "text/html; charset=utf-8"),
-        "/chat.html" | "/index.html" => (INDEX_HTML, "text/html; charset=utf-8"),
-        "/style.css" => (STYLE_CSS, "text/css; charset=utf-8"),
-        "/app.js" => (APP_JS, "application/javascript; charset=utf-8"),
-        "/patches.js" => (PATCHES_JS, "application/javascript; charset=utf-8"),
-        "/common.js" => (COMMON_JS, "application/javascript; charset=utf-8"),
-        "/node_core.js" => (NODE_CORE_JS, "application/javascript; charset=utf-8"),
-        "/prompts_novice.js" => (PROMPTS_NOVICE_JS, "application/javascript; charset=utf-8"),
-        "/novice_chat.js" => (NOVICE_CHAT_JS, "application/javascript; charset=utf-8"),
-        "/chat_attachments.js" => (CHAT_ATTACHMENTS_JS, "application/javascript; charset=utf-8"),
-        "/sidenav.js" => (SIDENAV_JS, "application/javascript; charset=utf-8"),
-        "/copybox.js" => (COPYBOX_JS, "application/javascript; charset=utf-8"),
-        "/folderpick.js" => (FOLDERPICK_JS, "application/javascript; charset=utf-8"),
-        "/workflow_run.html" => (WORKFLOW_RUN_HTML, "text/html; charset=utf-8"),
-        "/node_run.html" => (NODE_RUN_HTML, "text/html; charset=utf-8"),
-        "/adapt_run.html" => (ADAPT_RUN_HTML, "text/html; charset=utf-8"),
-        "/server_replay.html" => (SERVER_REPLAY_HTML, "text/html; charset=utf-8"),
-        _ => {
-            return HttpResponse::NotFound().body("Not Found");
+    let (content, content_type) = if SPA_ROUTES.contains(&path) {
+        (INDEX_HTML, "text/html; charset=utf-8")
+    } else {
+        match path {
+            "/app.js" => (APP_JS, "application/javascript; charset=utf-8"),
+            "/app.css" => (APP_CSS, "text/css; charset=utf-8"),
+            _ => return HttpResponse::NotFound().body("Not Found"),
         }
     };
 

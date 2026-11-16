@@ -5,9 +5,9 @@ edition = "2021"
 description = "Claude Code Web Interface - A web-based UI for Claude Code CLI"
 
 [features]
-# 小白版：cargo build --release --features implCon
+# 实施版：cargo build --release --features implCon
 # 区别：端口 3031（仅本机）、数据目录 ~/.cc-web-novice/、裁剪路由、不同前端页面、升级通道带 novice 标识、
-#       接口录制模块（CDP，需要 WebSocket 客户端依赖——只在小白版编进来，开发版 exe 不带）
+#       接口录制模块（CDP，需要 WebSocket 客户端依赖——只在实施版编进来，开发版 exe 不带）
 implCon = ["dep:tokio-tungstenite"]
 
 [dependencies]

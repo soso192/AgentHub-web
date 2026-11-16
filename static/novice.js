@@ -1,5 +1,5 @@
 // ============================================================
-//  novice.js - 小白版「产品环境变量 / 环境检查」页
+//  novice.js - 实施版「产品环境变量 / 环境检查」页
 //  依赖（先加载）：common.js、folderpick.js
 //
 //  智能开发/聊天不在本页：它们是独立页面（与开发版同一份实现，
@@ -662,8 +662,12 @@ async function noviceCheckUpdate() {
         const remote = data.remote || null;
         const mine = local.version || '';
         const platform = novicePlatformLabel(local.platform);
+        if (data.shell_managed) {
+            patchShowError(`本机是桌面版（cc-web ${mine}），不支持单独更新 cc-web；请安装新版桌面应用。`, '检查更新');
+            return;
+        }
         if (!data.update_available) {
-            if (!remote) patchShowError(`本机当前版本 ${mine}。补丁中心还没有发布小白版新版本。`, '检查更新');
+            if (!remote) patchShowError(`本机当前版本 ${mine}。补丁中心还没有发布实施版新版本。`, '检查更新');
             else if (remote.has_package === false) patchShowError(`本机当前版本 ${mine}；最新版本 ${remote.version} 暂无 ${platform} 的安装包，请联系管理员。`, '检查更新');
             else patchShowError(`本机版本 ${mine} 与服务器上的 ${remote.version} 一致，已是最新。`, '检查更新');
             return;
@@ -763,7 +767,7 @@ async function noviceDownloadManual() {
         if (response.status === 404) {
             let detail = '';
             try { detail = (await response.json()).detail || ''; } catch {}
-            throw new Error(detail || '服务器上还没有小白版帮助文档，请联系管理员');
+            throw new Error(detail || '服务器上还没有实施版帮助文档，请联系管理员');
         }
         if (response.status === 401) { patchHandleUnauthorized(); throw new Error('请先登录'); }
         if (!response.ok) throw new Error(`下载失败（HTTP ${response.status}）`);
@@ -771,7 +775,7 @@ async function noviceDownloadManual() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'cc-web小白版使用说明.docx';
+        a.download = 'cc-web实施版使用说明.docx';
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -888,6 +892,8 @@ function noviceBindEvents() {
     el('change-password-form').onsubmit = noviceChangePassword;
     el('update-modal-close').onclick = () => el('update-modal').classList.add('nv-hidden');
     el('update-modal-ok').onclick = () => el('update-modal').classList.add('nv-hidden');
+    el('btn-envcheck-back').onclick = () => noviceSetView('node');
+    el('btn-patch-back').onclick = () => noviceSetView('node');
     el('btn-envcheck-refresh').onclick = () => noviceRunEnvCheck();
     // 登录在独立页面 /login 完成（见 novice_login.js），这里不再有登录弹窗
     // 产品环境

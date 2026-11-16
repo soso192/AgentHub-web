@@ -1,5 +1,5 @@
 use actix_web::{web, App, HttpServer};
-// 小白版不装 CORS 中间件（见 HttpServer::new 里的说明），该 crate 只在开发版用到
+// 实施版不装 CORS 中间件（见 HttpServer::new 里的说明），该 crate 只在开发版用到
 #[cfg(not(feature = "implCon"))]
 use actix_cors::Cors;
 use std::sync::RwLock;
@@ -11,7 +11,7 @@ mod models;
 mod static_files;
 mod logging;
 mod claude_history;
-// 接口录制（CDP）：只在小白版编译（依赖 WebSocket 客户端，开发版 exe 不带）
+// 接口录制（CDP）：只在实施版编译（依赖 WebSocket 客户端，开发版 exe 不带）
 #[cfg(feature = "implCon")]
 mod recorder;
 
@@ -63,7 +63,7 @@ pub struct AppState {
     pub adapt_runs: RwLock<std::collections::HashMap<String, api::adapt_bg::AdaptRun>>,
 }
 
-/// `~/.cc-web`（或小白版 `~/.cc-web-novice`）数据目录（不存在则创建）。
+/// `~/.cc-web`（或实施版 `~/.cc-web-novice`）数据目录（不存在则创建）。
 pub fn cc_web_dir() -> std::path::PathBuf {
     let data_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -186,7 +186,7 @@ pub fn save_node_runs_to_disk_async(data: &AppState) {
 
 // ── 自动打开浏览器（双击 cc-web.exe / start.bat 启动后直达 Web 界面） ──
 /// 监听地址与本地访问地址（编译期内嵌写死，按版本区分）
-/// 小白版 2026-11-09 起改为 0.0.0.0（允许局域网访问）；CORS 仍是关闭的，
+/// 实施版 2026-11-09 起改为 0.0.0.0（允许局域网访问）；CORS 仍是关闭的，
 /// 跨源网页读不到接口响应，但局域网机器可以直接打开本机页面使用。
 #[cfg(feature = "implCon")]
 const BIND_ADDR: &str = "0.0.0.0:3031";
@@ -345,10 +345,10 @@ async fn main() -> std::io::Result<()> {
             .app_data(data.clone())
             // 补丁包上传走 multipart：放宽请求体上限（默认偏小）
             .app_data(web::PayloadConfig::new(500 * 1024 * 1024));
-        // 开发版保持宽松 CORS（沿用现行为）。小白版不装 CORS 中间件 = 不发任何
+        // 开发版保持宽松 CORS（沿用现行为）。实施版不装 CORS 中间件 = 不发任何
         // Access-Control-Allow-Origin：页面本身由本进程同源服务，浏览器禁止一切
-        // 跨源页面读 cc-web 接口（小白版监听 0.0.0.0:3031，局域网可达，但没有 CORS
-        // 响应头时网页脚本读不到响应体，`curl` 这类非浏览器客户端不受此限制——小白版
+        // 跨源页面读 cc-web 接口（实施版监听 0.0.0.0:3031，局域网可达，但没有 CORS
+        // 响应头时网页脚本读不到响应体，`curl` 这类非浏览器客户端不受此限制——实施版
         // 接口本身没有鉴权，部署在可信局域网内是前提）。
         #[cfg(not(feature = "implCon"))]
         let app = app.wrap(
@@ -382,11 +382,12 @@ async fn main() -> std::io::Result<()> {
             // 原始字节/定位文件：必须在 /api/files/{path:.*} 之前注册（raw/reveal 是更具体的前缀）
             .route("/api/files/raw/{path:.*}", web::get().to(api::files::read_file_raw))
             .route("/api/files/reveal", web::post().to(api::files::reveal_file))
+            .route("/api/files/open-folder", web::post().to(api::files::open_folder))
             // 在本机弹系统原生「选择文件夹」对话框，选中路径回填输入框（见 folderpick.js）
             .route("/api/pick-folder", web::get().to(api::files::pick_folder))
             ;
 
-        // ── 开发版专属路由：补丁适配 + 智能分析（小白版不注册）──
+        // ── 开发版专属路由：补丁适配 + 智能分析（实施版不注册）──
         #[cfg(not(feature = "implCon"))]
         let app = app
             .route("/api/adapt/upload", web::post().to(api::adapt::upload))
@@ -405,14 +406,12 @@ async fn main() -> std::io::Result<()> {
             .route("/api/local-claude/{execution_id}/cancel", web::post().to(api::local_claude::cancel))
             ;
 
-        // ── 小白版专属路由：接口录制（CDP）──
+        // ── 实施版专属路由：接口录制（CDP）──
         #[cfg(feature = "implCon")]
         let app = app
             .route("/api/recorder/open", web::post().to(recorder::open))
             .route("/api/recorder/status", web::get().to(recorder::status))
             .route("/api/recorder/close", web::post().to(recorder::close))
-            // 新建排查表单里的问题图片/附件（保存到本次运行目录，AI 用 Read 查看）
-            .route("/api/node/problem-image", web::post().to(api::node_runs::save_problem_image))
             ;
 
         // ── 更多共享路由 ──
@@ -422,9 +421,12 @@ async fn main() -> std::io::Result<()> {
             .route("/api/node/runs", web::get().to(api::node_runs::list_runs))
             .route("/api/node/runs/{id}", web::put().to(api::node_runs::put_run))
             .route("/api/node/runs/{id}", web::delete().to(api::node_runs::delete_run))
-            // 建运行工作目录（小白版：暂存/产物目录都在 <数据目录>/temp/node/<runId> 下）
+            .route("/api/node/runs/{id}/ensure-dir", web::post().to(api::node_runs::ensure_dir))
+            // 建运行工作目录（实施版：暂存/产物目录都在 <数据目录>/temp/node/<runId> 下）
             .route("/api/node/workspace", web::post().to(api::node_runs::create_workspace))
-            // 环境自检（小白版环境检查页；开发版也可调）
+            // 智能开发/排查表单的问题附件与日志附件（两版共用，写到 temp/node/<runId>/images）
+            .route("/api/node/problem-image", web::post().to(api::node_runs::save_problem_image))
+            // 环境自检（实施版环境检查页；开发版也可调）
             .route("/api/env-check", web::get().to(api::env_check::env_check))
             // 调试 API：返回所有会话的实时状态快照
             .route("/api/debug/state", web::get().to(debug_state))

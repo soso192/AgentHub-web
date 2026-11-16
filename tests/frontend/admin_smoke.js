@@ -68,9 +68,9 @@ check('dev 变量下拉不含片段专属变量', !nodePromptVarOptions('phase1'
 check('dev 阶段数=3', NODE_PROMPT_STAGES_BY_EDITION.dev.length === 3);
 check('novice 含 3 个片段阶段', NODE_PROMPT_STAGES_BY_EDITION.novice.filter(x => x[0].startsWith('seg_')).length === 3);
 
-// 3. 小白默认模板
+// 3. 实施版默认模板
 const nt = NODE_PROMPT_NOVICE_DEFAULT_TEMPLATES;
-check('小白默认含 6 个阶段', ['phase1', 'phase2', 'retry', 'seg_code_dir', 'seg_db', 'seg_debug'].every(k => nt[k] && nt[k].trim()));
+check('实施版默认含 6 个阶段', ['phase1', 'phase2', 'retry', 'seg_code_dir', 'seg_db', 'seg_debug'].every(k => nt[k] && nt[k].trim()));
 check('phase1 带两个锚点', nt.phase1.includes('{{env_extra}}') && nt.phase1.includes('{{constraints_extra}}'));
 check('开发版默认模板未变', !!NODE_PROMPT_DEFAULT_TEMPLATES.phase1);
 check('开发版默认不含 env_extra', !NODE_PROMPT_DEFAULT_TEMPLATES.phase1.includes('{{env_extra}}'));

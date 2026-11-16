@@ -215,13 +215,19 @@ pub(crate) fn spawn_event_saver(
                             if let Some(text) = event.get("content").and_then(|c| c.as_str()) {
                                 final_result = text.to_string();
                             }
-                            // Final save and exit
+                            // 一次 CLI 运行可能产生多个 result（后台任务通知等会先收尾一次），
+                            // 这里只保存，不退出；真正的结束以进程退出后发的 stream_end 为准。
                             save_event_progress(&data, &session_id, &content_blocks, &final_result, &assistant_name);
-                            break;
                         }
                         "error" => {
-                            // Save what we have and exit
+                            // 同样不退出：等 stream_end / 通道关闭时再做最终保存，
+                            // 避免错误之后还有输出时被丢掉。
                             save_event_progress(&data, &session_id, &content_blocks, &final_result, &assistant_name);
+                        }
+                        "stream_end" => {
+                            // 进程退出后的终态：最终保存，并清掉流式缓存，避免刷新时还看到占位符。
+                            save_event_progress(&data, &session_id, &content_blocks, &final_result, &assistant_name);
+                            data.streaming_state.write().unwrap().remove(&session_id);
                             break;
                         }
                         _ => {}
@@ -237,7 +243,13 @@ pub(crate) fn spawn_event_saver(
                     log::warn!("[saver] lagged: dropped {} events for session={}", n, session_id);
                     continue;
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Closed) => {
+                    // 没有收到 stream_end 通道就关闭了（老路径/异常退出）：也做一次最终保存，
+                    // 并把流式缓存清掉，避免会话永久显示 (streaming...)。
+                    save_event_progress(&data, &session_id, &content_blocks, &final_result, &assistant_name);
+                    data.streaming_state.write().unwrap().remove(&session_id);
+                    break;
+                }
             }
         }
     })
@@ -522,6 +534,10 @@ pub async fn start_prompt(
                 data_clone2.streaming_sessions.write().unwrap().remove(&session_id_for_save);
                 data_clone2.streaming_state.write().unwrap().remove(&session_id_for_save);
                 data_clone2.running_pids.write().unwrap().remove(&session_id_for_cleanup);
+                crate::ai::streaming::send_event(
+                    tx.as_ref(),
+                    serde_json::json!({"type": "stream_end"}),
+                );
                 return;
             }
         };
@@ -530,10 +546,11 @@ pub async fn start_prompt(
         // Clone data for PID callback
         let data_for_pid = data_clone2.clone();
         let session_id_for_pid = session_id_clone.clone();
-        // Clone data for result callback
-        let data_for_result = data_clone2.clone();
         let session_id_for_result = session_id_clone.clone();
-        
+        // stream_session 会把 tx move 进 blocking 闭包，这里先留一个克隆，
+        // 等进程真正退出后再补发 stream_end。
+        let tx_for_end = tx.clone();
+
         let result = tokio::task::spawn_blocking(move || {
             // Lock ONLY this assistant — other assistants are free to operate
             let assistant = handle.read().unwrap();
@@ -545,28 +562,15 @@ pub async fn start_prompt(
                 data_for_pid.running_pids.write().unwrap().insert(session_id_for_pid.clone(), pid);
             });
             
-            // Create result callback to clean up streaming_sessions immediately when result is sent
-            // Note: Only clean up streaming_sessions, NOT events_tx channel.
-            // The events_tx channel needs to stay alive until the SSE stream ends.
+            // result 不再代表整个运行结束（一次运行可能有多个 result）。
+            // 这里只记日志，真正的 streaming 状态在进程退出、发出 stream_end 后清理。
             let on_result_callback = Box::new(move || {
-                log::debug!("[start_prompt] on_result_callback called for session={}", session_id_for_result);
-                
-                // Clean up streaming_sessions
-                {
-                    let mut streaming = data_for_result.streaming_sessions.write().unwrap();
-                    let existed = streaming.remove(&session_id_for_result);
-                    log::debug!("[start_prompt] on_result_callback: streaming_sessions.remove returned {:?}", existed);
-                }
-                
-                // Clean up streaming_state
-                {
-                    let mut state = data_for_result.streaming_state.write().unwrap();
-                    state.remove(&session_id_for_result);
-                }
-                
-                log::debug!("[start_prompt] on_result_callback: cleanup complete for session={}", session_id_for_result);
+                log::debug!(
+                    "[start_prompt] on_result_callback called for session={} (keep streaming until stream_end)",
+                    session_id_for_result
+                );
             });
-            
+
             assistant.stream_session(
                 &session_id_clone,
                 &cwd,
@@ -578,6 +582,13 @@ pub async fn start_prompt(
                 Some(on_result_callback),
             )
         }).await;
+
+        // 进程真正退出后才发终态：前端/落盘器都以 stream_end 作为本轮结束，
+        // 不再把中途的 result 当成整个运行结束。
+        crate::ai::streaming::send_event(
+            tx_for_end.as_ref(),
+            serde_json::json!({"type": "stream_end"}),
+        );
 
         match result {
             Ok(stream_result) => {
@@ -865,11 +876,15 @@ pub async fn switch_assistant(
                                 if let Some(text) = event.get("content").and_then(|c| c.as_str()) {
                                     final_result = text.to_string();
                                 }
+                                // 同 start_prompt：result 可能中途出现，不在这里退出。
                                 save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
-                                break;
                             }
                             "error" => {
                                 save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                            }
+                            "stream_end" => {
+                                save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                                saver_data.streaming_state.write().unwrap().remove(&saver_sid);
                                 break;
                             }
                             _ => {}
@@ -884,7 +899,11 @@ pub async fn switch_assistant(
                         log::warn!("[saver:switch] lagged: dropped {} events for session={}", n, saver_sid);
                         continue;
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        save_event_progress(&saver_data, &saver_sid, &content_blocks, &final_result, &saver_assistant);
+                        saver_data.streaming_state.write().unwrap().remove(&saver_sid);
+                        break;
+                    }
                 }
             }
         });
@@ -931,6 +950,10 @@ pub async fn switch_assistant(
                 // 早退必须清掉上面已置位的 streaming 标记，否则该会话永久卡在「执行中」
                 data_clone.streaming_sessions.write().unwrap().remove(&session_id_for_save);
                 data_clone.streaming_state.write().unwrap().remove(&session_id_for_save);
+                crate::ai::streaming::send_event(
+                    Some(&tx),
+                    serde_json::json!({"type": "stream_end"}),
+                );
                 return;
             }
         };
@@ -939,9 +962,8 @@ pub async fn switch_assistant(
         // Clone data for PID callback
         let data_for_pid = data_clone.clone();
         let session_id_for_pid = session_id_clone.clone();
-        // Clone data for result callback
-        let data_for_result = data_clone.clone();
         let session_id_for_result = session_id_clone.clone();
+        let tx_for_end = tx.clone();
         let result = tokio::task::spawn_blocking(move || {
             let assistant = handle.read().unwrap();
             // Create PID callback to store PID immediately when process spawns
@@ -949,13 +971,12 @@ pub async fn switch_assistant(
                 log::debug!("[switch] PID callback: storing pid={} for session={}", pid, session_id_for_pid);
                 data_for_pid.running_pids.write().unwrap().insert(session_id_for_pid.clone(), pid);
             });
-            // Create result callback to clean up streaming_sessions immediately when result is sent
-            // Note: Only clean up streaming_sessions, NOT events_tx channel.
-            // The events_tx channel needs to stay alive until the SSE stream ends.
+            // result 不再代表整个运行结束；streaming 状态等进程退出、发出 stream_end 后清理。
             let on_result_callback = Box::new(move || {
-                log::debug!("[switch] on_result_callback: cleaning up streaming_sessions for session={}", session_id_for_result);
-                data_for_result.streaming_sessions.write().unwrap().remove(&session_id_for_result);
-                data_for_result.streaming_state.write().unwrap().remove(&session_id_for_result);
+                log::debug!(
+                    "[switch] on_result_callback: session={} (keep streaming until stream_end)",
+                    session_id_for_result
+                );
             });
             assistant.stream_session(
                 &session_id_clone,
@@ -968,6 +989,12 @@ pub async fn switch_assistant(
                 Some(on_result_callback),
             )
         }).await;
+
+        // 进程退出后才发终态，前端以 stream_end 作为本轮结束。
+        crate::ai::streaming::send_event(
+            Some(&tx_for_end),
+            serde_json::json!({"type": "stream_end"}),
+        );
 
         // ── Cleanup after streaming completes ──────────────────────────
         match result {

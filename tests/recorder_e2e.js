@@ -1,7 +1,7 @@
 // 接口录制端到端测试：node tests/recorder_e2e.js
 //
 // 流程：起一个假的 patch_search（提供产品环境 + 测试页 + .do 接口）→ 临时把
-// target/release/patch_servers.json 指向它 → 启动小白版 cc-web → 调 /api/recorder/open
+// target/release/patch_servers.json 指向它 → 启动实施版 cc-web → 调 /api/recorder/open
 // → 测试页里的脚本自动"点"悬浮按钮（直接写 sessionStorage）并发出两条 .do 请求
 // （一条 200、一条 500，带 Authorization 头与 password 字段）→ 停止后断言导出 JSON：
 // 接口齐全、报错接口有响应体、凭据已脱敏。
@@ -92,7 +92,7 @@ function ccweb(method, apiPath, body, headers = {}) {
         if (fs.existsSync(CONFIG_FILE)) configBackup = fs.readFileSync(CONFIG_FILE);
         fs.writeFileSync(CONFIG_FILE, JSON.stringify({ patch_search_servers: [`http://127.0.0.1:${FAKE_PORT}`], code_search_url: '' }));
 
-        // 3. 启动 cc-web（小白版）
+        // 3. 启动 cc-web（实施版）
         ccwebProc = spawn(EXE, [], { cwd: path.join(ROOT, 'target', 'release'), stdio: 'ignore' });
         let up = false;
         for (let i = 0; i < 40 && !up; i += 1) {

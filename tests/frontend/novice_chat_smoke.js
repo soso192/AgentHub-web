@@ -1,4 +1,4 @@
-// 小白版统一外壳（novice_chat.js 部分）冒烟测试：node tests/frontend/novice_chat_smoke.js
+// 实施版统一外壳（novice_chat.js 部分）冒烟测试：node tests/frontend/novice_chat_smoke.js
 // 用 DOM 桩 + fetch 桩验证：新建排查按钮挂接、表单构建、提交链路（建目录→建会话→发一次阶段一提示词）
 const fs = require('fs');
 const path = require('path');

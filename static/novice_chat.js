@@ -1,10 +1,10 @@
 // ============================================================
-//  novice_chat.js - 小白版聊天页增强（把「智能开发」合并进聊天页）
+//  novice_chat.js - 实施版聊天页增强（把「智能开发」合并进聊天页）
 //  依赖（先加载）：folderpick.js、common.js、node_core.js、prompts_novice.js、app.js
 //
 //  开发版加载本文件时直接 no-op（edition !== 'novice'），页面行为完全不变。
 //
-//  小白版行为：
+//  实施版行为：
 //   - 左侧「会话」标题改为「智能开发」；标题栏加「🔍 新建排查」按钮（原来的 + 仍是普通新建会话）
 //   - 新建排查 = 填表单（产品环境 / 问题描述 / 触发项+录制 / 日志文件）→ 建运行目录 →
 //     建 claude 会话（cwd=运行目录）→ 直接选中该会话 → **只发一次阶段一提示词**；
@@ -107,6 +107,7 @@
         #noviceRunModal input[type=text],#noviceRunModal textarea,#noviceRunModal select{width:100%;padding:8px 11px;border:1px solid var(--border,#e0e4e9);border-radius:8px;font-size:14px;background:var(--card,#fff);color:inherit;box-sizing:border-box}
         #noviceRunModal textarea{resize:vertical}
         #noviceRunModal .nrm-req{color:#d84a3f}
+        #noviceRunModal .nrm-optional{color:#8a9099;font-weight:400}
         #noviceRunModal .nrm-row{display:flex;gap:6px}
         #noviceRunModal .nrm-row input{flex:1}
         #noviceRunModal .nrm-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
@@ -132,7 +133,7 @@
         <div id="noviceRunModal">
             <div class="nrm-box">
                 <button class="nrm-close" id="noviceRunClose" type="button">×</button>
-                <h3>新建排查</h3>
+                <h3>创建任务</h3>
                 <label><span>产品环境 <b class="nrm-req">*</b></span><select id="noviceRunEnv"></select></label>
                 <label><span>问题描述 <b class="nrm-req">*</b></span>
                     <textarea id="noviceRunDesc" rows="4"></textarea></label>
@@ -141,7 +142,7 @@
                     <input type="file" id="noviceRunImages" multiple style="display:none">
                 </div>
                 <div id="noviceImageList" class="nrm-images"></div>
-                <label><span>录制页面地址 <b class="nrm-req">*</b></span>
+                <label><span>录制页面地址 <span class="nrm-optional">（选填）</span></span>
                     <div class="nrm-row">
                         <input type="text" id="noviceRunUrl">
                         <button type="button" id="noviceRunRecord">● 录制</button>
@@ -151,7 +152,7 @@
                 <div class="nrm-error" id="noviceRunError" style="display:none"></div>
                 <div class="nrm-actions">
                     <button type="button" id="noviceRunCancel">取消</button>
-                    <button type="button" class="primary" id="noviceRunSubmit">开始排查</button>
+                    <button type="button" class="primary" id="noviceRunSubmit">开始任务</button>
                 </div>
             </div>
         </div>`;
@@ -432,8 +433,9 @@
         const recordUrl = String(el('noviceRunUrl').value || '').trim();
         if (!env) { showRunError('请选择产品环境', 'noviceRunEnv'); return; }
         if (!desc && !S.images.length) { showRunError('请填写问题描述，或添加图片/文件附件', 'noviceRunDesc'); return; }
-        if (!recordUrl) { showRunError('请填写「录制页面地址」', 'noviceRunUrl'); return; }
-        if (!/^https?:\/\//i.test(recordUrl)) { showRunError('「录制页面地址」必须是 http/https 地址', 'noviceRunUrl'); return; }
+        if (recordUrl && !/^https?:\/\//i.test(recordUrl)) {
+            showRunError('「录制页面地址」必须是 http/https 地址，或留空', 'noviceRunUrl'); return;
+        }
         S.busy = true;
         el('noviceRunSubmit').disabled = true;
         el('noviceRunSubmit').textContent = '正在创建…';
@@ -525,11 +527,11 @@
             }
             connectSSE(created.sessionId, prompt);
             if (typeof updateSendButtonState === 'function') updateSendButtonState();
-            showNotice('排查已开始：AI 正在分析，之后可以直接在下方输入框继续追问。');
+            showNotice('任务已开始：AI 正在分析，之后可以直接在下方输入框继续追问。');
         } finally {
             S.busy = false;
             el('noviceRunSubmit').disabled = false;
-            el('noviceRunSubmit').textContent = '开始排查';
+            el('noviceRunSubmit').textContent = '开始任务';
         }
     }
 

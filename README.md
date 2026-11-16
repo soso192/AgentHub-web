@@ -183,9 +183,10 @@ AI CLI Process → stdout → 事件解析 → broadcast channel
 ### 前置条件
 
 1. **Rust**（编译用，或直接用预编译的 `cc-web.exe`）
-2. **Claude Code CLI**：`npm install -g @anthropic-ai/claude-code`
-3. **Pi Agent**（可选）：`npm install -g @earendil-works/pi-coding-agent`
-4. **Codex**（可选）：`npm install -g @openai/codex`
+2. **Node.js**（仅从源码编译前端时需要；Vite 4 兼容 Node 14.18+，推荐 18/20）
+3. **Claude Code CLI**：`npm install -g @anthropic-ai/claude-code`
+4. **Pi Agent**（可选）：`npm install -g @earendil-works/pi-coding-agent`
+5. **Codex**（可选）：`npm install -g @openai/codex`
 
 ### 运行
 
@@ -193,7 +194,8 @@ AI CLI Process → stdout → 事件解析 → broadcast channel
 # 直接运行预编译版本
 ./cc-web.exe
 
-# 或从源码编译
+# 或从源码编译（前端产物已提交到 static/dist/，可跳过第一步）
+cd frontend && npm install && npm run build && cd ..
 cargo build --release
 ./target/release/cc-web.exe
 
@@ -281,11 +283,20 @@ src/
 │   ├── sessions.rs      # 会话 CRUD
 │   ├── models.rs        # 模型/助手列表
 │   └── files.rs         # 文件浏览 API
+frontend/                # React + TypeScript + Tailwind 前端
+├── src/
+│   ├── pages/           # 聊天、补丁中心、实施版外壳、运行详情、登录
+│   ├── components/      # 会话、消息流、文件浏览、通用 UI、补丁页签
+│   ├── lib/             # api.ts（cc-web）/ patch.ts（补丁中心）/ 类型 / 工具
+│   └── store/           # 聊天流式状态机、节点运行、登录、版本
 static/
-├── index.html           # 页面结构
-├── app.js               # 前端逻辑（SSE、分屏、队列、主题）
-└── style.css            # 样式（CSS 变量、暗色主题、响应式）
+├── dist/                # Vite 构建产物（固定文件名，被 include_str! 内嵌）
+├── index.html           # 旧版原生页面（保留对照，不再被服务）
+├── app.js
+└── style.css
 ```
+
+> 前端开发与构建说明见 [`frontend/README.md`](frontend/README.md)。
 
 ---
 

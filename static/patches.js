@@ -40,7 +40,7 @@ async function patchLoadConfig() {
     const message = '无法连接补丁中心：cc-web 未运行或 /api/patch-config 接口异常，请稍后重试。';
     let servers = [];
     let codeSearchUrl = '';
-    // 当前 exe 的版本（dev / novice）：小白版与开发版共用这一套页面，
+    // 当前 exe 的版本（dev / novice）：实施版与开发版共用这一套页面，
     // 差异只有「新建表单」「菜单裁剪」「提示词 edition」等几处，全部按这个标记分支。
     // 取不到时按开发版处理（不改变开发版行为）。
     patchState.edition = 'dev';
@@ -118,8 +118,8 @@ function applyMenuVisibility(user, isAdmin) {
     // 版本发布：前端专属的管理员页签（与 menus / sessions 同款，不进服务器菜单配置表）
     const releaseTab = document.querySelector('.patch-tab[data-tab="release"]');
     if (releaseTab) releaseTab.hidden = !isAdmin;
-    // 小白版：菜单写死在客户端——只留「智能开发」页签（与开发版完全一致的 UI），
-    // 管理员项也一律隐藏（小白版没有管理功能）。产品环境变量/环境检查在 /novice.html。
+    // 实施版：菜单写死在客户端——只留「智能开发」页签（与开发版完全一致的 UI），
+    // 管理员项也一律隐藏（实施版没有管理功能）。产品环境变量/环境检查在 /novice.html。
     if (patchState.edition === 'novice') {
         PATCH_MENU_KEYS.forEach(key => {
             const tab = document.querySelector(`.patch-tab[data-tab="${key}"]`);
@@ -330,7 +330,7 @@ function patchSetAuthenticated(user) {
     // 默认落在第一个可见菜单（智能开发）；菜单被隐藏时顺延到下一个可见项
     const fallbackTab = PATCH_MENU_KEYS.find(isTabVisible) || PATCH_MENU_KEYS[0];
     if (userChanged || !authenticated || !isTabVisible(activeTab)) patchSwitchTab(fallbackTab);
-    // 小白版首次启动：自动打开环境检查页（确认 claude 等依赖可用），只跳一次
+    // 实施版首次启动：自动打开环境检查页（确认 claude 等依赖可用），只跳一次
     // （跑完检查会写 cc-web-novice-envcheck-done；与 /novice.html 共用同一个标记）
     if (authenticated && patchState.edition === 'novice' && !patchState.noviceEnvCheckRedirected
         && !localStorage.getItem('cc-web-novice-envcheck-done')) {
@@ -663,7 +663,7 @@ async function patchHelpDownload() {
         let response = null;
         for (let attempt = 0; attempt < servers.length; attempt += 1) {
             const base = servers[(start + attempt) % servers.length].replace(/\/+$/, '');
-            // 小白版取自己的帮助文档（novice/userManual.docx），开发版不传 edition 保持原行为
+            // 实施版取自己的帮助文档（novice/userManual.docx），开发版不传 edition 保持原行为
             const manualUrl = patchState.edition === 'novice' ? `${base}/api/ccweb/manual?edition=novice` : `${base}/api/ccweb/manual`;
             urlEl.textContent = manualUrl;
             try {
@@ -747,10 +747,10 @@ async function patchHelpDownload() {
    见 patch_search 的 routes/ccweb_update.py：**服务器自己写进发布目录**，
    所以只要"浏览器能打开本页"就能发版，不需要 U 盘 / 共享盘 / 本地工具。
    只更新选了文件的平台（可以今天只发 Windows，明天补 macOS）。
-   开发版与小白版是两条独立通道（edition=dev/novice），各自维护最新版本。 */
+   开发版与实施版是两条独立通道（edition=dev/novice），各自维护最新版本。 */
 // 当前查看/发布的通道（列表、设为最新、发布表单都按它操作）
 patchState.admin.releaseEdition = 'dev';
-function releaseEditionLabel(edition) { return edition === 'novice' ? '小白版' : '开发版'; }
+function releaseEditionLabel(edition) { return edition === 'novice' ? '实施版' : '开发版'; }
 
 function releaseSwitchEdition(edition) {
     if (patchState.admin.releaseEdition === edition) return;
@@ -2073,7 +2073,7 @@ function patchSyncTabUrl(tab) {
 }
 
 function patchSwitchTab(tab) {
-    // 小白版只有「智能开发」页签；其余键（来自地址栏 ?tab= 或菜单点击）一律忽略
+    // 实施版只有「智能开发」页签；其余键（来自地址栏 ?tab= 或菜单点击）一律忽略
     if (patchState.edition === 'novice' && tab !== 'node') tab = 'node';
     const prevTab = document.querySelector('.patch-tab.active')?.dataset.tab;
     document.querySelectorAll('.patch-tab').forEach(button => {
@@ -2566,9 +2566,9 @@ function renderAdminTemplateTable() {
 }
 
 /* ── 智能开发提示词（问题解决节点）配置管理 ── */
-// 当前管理的版本（dev=开发版 / novice=小白版）：列表、新增、编辑、载入默认都按它操作
+// 当前管理的版本（dev=开发版 / novice=实施版）：列表、新增、编辑、载入默认都按它操作
 patchState.admin.npEdition = 'dev';
-function npEditionLabel(edition) { return edition === 'novice' ? '小白版' : '开发版'; }
+function npEditionLabel(edition) { return edition === 'novice' ? '实施版' : '开发版'; }
 
 function npMessage(text, error = false) {
     const element = document.getElementById('patchNodePromptMessage');
@@ -2597,7 +2597,7 @@ async function loadNodePrompts() {
     renderNodePromptTable();
 }
 
-// 版本切换（开发版/小白版）：点亮按钮 + 重新拉列表；打开着的表单弹窗直接关掉（跨版本内容不通用）
+// 版本切换（开发版/实施版）：点亮按钮 + 重新拉列表；打开着的表单弹窗直接关掉（跨版本内容不通用）
 function npSwitchEdition(edition) {
     if (patchState.admin.npEdition === edition) return;
     patchState.admin.npEdition = edition;
@@ -2644,7 +2644,7 @@ function openNodePromptForm(data = {}) {
     const stage = data.stage || 'phase1';
     form.querySelector('[name="product_name"]').value = data.product_name || '';
     form.querySelector('[name="version_scope"]').value = data.version_scope || '*';
-    // 阶段选项按版本重建：小白版多三个片段类阶段
+    // 阶段选项按版本重建：实施版多三个片段类阶段
     const stageSelect = form.querySelector('[name="stage"]');
     stageSelect.innerHTML = (NODE_PROMPT_STAGES_BY_EDITION[edition] || NODE_PROMPT_STAGES_BY_EDITION.dev)
         .map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
@@ -2677,7 +2677,7 @@ function npInsertVariable() {
 function npLoadBuiltin() {
     const stage = nodePromptFormStage();
     const edition = patchState.admin.npEdition || 'dev';
-    // 开发版用现版内置；小白版用带 {{env_extra}}/{{constraints_extra}} 锚点的小白默认模板
+    // 开发版用现版内置；实施版用带 {{env_extra}}/{{constraints_extra}} 锚点的实施版默认模板
     const builtin = (edition === 'novice' ? NODE_PROMPT_NOVICE_DEFAULT_TEMPLATES : NODE_PROMPT_DEFAULT_TEMPLATES)[stage];
     if (!builtin) return;
     document.getElementById('patchNodePromptForm').querySelector('[name="content"]').value = builtin;
@@ -3232,7 +3232,7 @@ async function loadProblemRuns(opts = {}) {
             }
         }
         localRuns = localRuns.filter(run => String(run.user_id) === String(currentUserId));
-        // 小白版只看本版本跑的 run（开发版放的 run 是开发人员的工作记录，不进小白列表）
+        // 实施版只看本版本跑的 run（开发版放的 run 是开发人员的工作记录，不进实施版列表）
         if (patchState.edition === 'novice') {
             localRuns = localRuns.filter(run => run.edition === 'novice');
         }
@@ -3577,9 +3577,9 @@ function patchNodePhaseTwoPrompt(run) {
 // 每个 stage 可插入的占位符清单（管理员「插入变量」下拉用）
 // editions：不写=两个版本都可选；['novice']=只在小百版出现（片段锚点、录制地址等）
 const NODE_PROMPT_VARIABLES = [
-    { key: 'env_extra', label: '【小白】环境补充段锚点（运行期拼入）', stages: ['phase1', 'phase2', 'retry'], editions: ['novice'] },
-    { key: 'constraints_extra', label: '【小白】额外约束段锚点（运行期拼入）', stages: ['phase1', 'phase2', 'retry'], editions: ['novice'] },
-    { key: 'record_url', label: '【小白】录制页面地址', stages: ['phase1'], editions: ['novice'] },
+    { key: 'env_extra', label: '【实施】环境补充段锚点（运行期拼入）', stages: ['phase1', 'phase2', 'retry'], editions: ['novice'] },
+    { key: 'constraints_extra', label: '【实施】额外约束段锚点（运行期拼入）', stages: ['phase1', 'phase2', 'retry'], editions: ['novice'] },
+    { key: 'record_url', label: '【实施】录制页面地址', stages: ['phase1'], editions: ['novice'] },
     { key: 'product_name', label: '产品名', stages: ['phase1', 'phase2', 'retry', 'seg_code_dir', 'seg_db', 'seg_debug'] },
     { key: 'product_version', label: '产品版本', stages: ['phase1', 'phase2', 'retry', 'seg_code_dir', 'seg_db', 'seg_debug'] },
     { key: 'mcp_root', label: 'MCP root(产品小写-版本去点，如 fbip-82)', stages: ['phase1', 'retry'] },
@@ -3810,7 +3810,7 @@ path 写相对该 root 的包级路径（如 nc/impl/tb），禁止根级/全树
 不要反编译 jar 包：客开工程找不到就用 MCP 找标品源码，源码也没有就说明「产品无此源码」，不要再找。`,
 };
 
-// 小白版内置默认模板（管理页「载入内置默认」/seed 的起点）：
+// 实施版内置默认模板（管理页「载入内置默认」/seed 的起点）：
 // 与 prompts_novice.js 的运行期内置默认同构——{{env_extra}} / {{constraints_extra}} 两个锚点
 // 分别接「环境补充段」和「额外约束段」（条件段由运行期按 env_snapshot 拼好传进来）；
 // 片段类阶段（seg_*）是这些条件段的文案本身，配了就用配置、没配用代码内置文字。
@@ -3890,7 +3890,7 @@ const NODE_PROMPT_NOVICE_DEFAULT_TEMPLATES = {
     seg_debug: `远程调试地址：{{debug_address}}。远程调试只做线程级观察（看线程栈、锁等待、运行状态），需要断点时用可恢复的临时断点，看完立即移除，不要长时间阻塞业务线程。`,
 };
 
-// 小白版片段类阶段的示例环境值（编辑器「预览渲染」用）：所有条件字段都给上，能看到完整拼接效果
+// 实施版片段类阶段的示例环境值（编辑器「预览渲染」用）：所有条件字段都给上，能看到完整拼接效果
 function npPreviewSampleValues(edition, stage) {
     const sampleRun = {
         id: 'preview-run',
@@ -4098,21 +4098,21 @@ async function openRunSession(localRunId, step) {
 
 // ── 新建 run ──
 // 新建表单按版本切换布局：开发版保持现状（触发项必填、贴日志、必填补丁输出路径）；
-// 小白版只有 问题描述* / 产品环境* / 触发项(选填+录制按钮) / 日志文件(上传)。
+// 实施版只有 问题描述* / 产品环境* / 触发项(选填+录制按钮) / 日志文件(上传)。
 function patchApplyNodeFormEdition() {
     const isNovice = patchState.edition === 'novice';
     const form = document.getElementById('patchNodeRunForm');
     if (!form) return;
     form.querySelectorAll('[data-dev-only]').forEach(field => { field.hidden = isNovice; });
     // 隐藏的必填控件会让浏览器提交校验直接失败（"invalid form control ... is not focusable"），
-    // 小白版运行时把「补丁输出路径」的 required 摘掉（开发版必须恢复）
+    // 实施版运行时把「补丁输出路径」的 required 摘掉（开发版必须恢复）
     const outPathInput = form.querySelector('[name="patch_output_path"]');
     if (outPathInput) outPathInput.required = !isNovice;
     const logFileField = document.getElementById('patchNodeLogFileField');
     if (logFileField) logFileField.hidden = !isNovice;
     const recordBtn = document.getElementById('patchNodeRecordBtn');
     if (recordBtn) recordBtn.hidden = !isNovice;
-    // 环境摘要行（客开目录/home/JDK）小白版不显示
+    // 环境摘要行（客开目录/home/JDK）实施版不显示
     const envHint = document.getElementById('patchNodeEnvHint');
     if (envHint) envHint.hidden = isNovice;
     const triggerStar = document.getElementById('patchNodeTriggerStar');
@@ -4125,9 +4125,9 @@ function patchApplyNodeFormEdition() {
             : '触发该问题/需求的 URL 或入口类，如：http://10.4.122.21:8080/nccloud/?billid=xxx 或 xxxLoginAction';
     }
     const title = document.getElementById('patchNodeFormTitle');
-    if (title) title.textContent = isNovice ? '新建排查' : '新建智能开发';
+    if (title) title.textContent = isNovice ? '创建任务' : '新建智能开发';
     const submitBtn = document.querySelector('button[type="submit"][form="patchNodeRunForm"]');
-    if (submitBtn) submitBtn.textContent = isNovice ? '开始排查' : '开始执行';
+    if (submitBtn) submitBtn.textContent = isNovice ? '开始任务' : '开始执行';
     const logFileInput = document.getElementById('patchNodeRunLogFile');
     const logFileName = document.getElementById('patchNodeRunLogFileName');
     if (logFileInput) logFileInput.value = '';
@@ -4163,7 +4163,7 @@ async function patchNodeOpenForm() {
 function patchNodeEnvHint() {
     const form = document.getElementById('patchNodeRunForm');
     const hint = document.getElementById('patchNodeEnvHint');
-    // 小白版不显示这行环境摘要（客开目录/JDK 对小白是多余信息）；
+    // 实施版不显示这行环境摘要（客开目录/JDK 对实施版是多余信息）；
     // 改为同步「录制」按钮状态：没选环境或该环境没配录制地址时置灰
     if (patchState.edition === 'novice') {
         hint.textContent = '';
@@ -4184,7 +4184,7 @@ function patchNodeEnvHint() {
     hint.textContent = `客开代码目录：${env.code_directory || '—'}　|　home/war：${env.package_path || '—'}　|　JDK：${jdk}`;
 }
 
-// 小白版新建排查：run 结构、会话 cwd、提示词与开发版不同。
+// 实施版新建排查：run 结构、会话 cwd、提示词与开发版不同。
 //   - 没有客开工程：claude 的工作目录 = cc-web 自己的 <数据目录>/temp/node/<runId>（后端建好）
 //   - 「补丁输出路径」不用填，产物就落在上述运行目录（文件白名单本来就放行 temp）
 //   - 触发项选填；日志以文件上传（UTF-8/GBK 自动识别，超 1MB 截断）
@@ -4293,7 +4293,7 @@ async function patchNodeStartRunNovice(form, values, problemDesc) {
     await loadProblemRuns();
     const live = patchNodeLiveRun(run);
     try {
-        // cwd 用运行工作目录：小白没有客开工程，claude 在这里工作、产物也在这里
+        // cwd 用运行工作目录：实施版没有客开工程，claude 在这里工作、产物也在这里
         const created = await patchNodeCcWeb('/api/agent/new', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -4324,7 +4324,7 @@ async function patchNodeStartRun(event) {
     document.getElementById('patchNodeMessage').textContent = '';
     const problemDesc = String(values.problem_desc || '').trim();
     if (!problemDesc) { patchShowError('问题/需求描述为必填项', '智能开发创建失败'); form.problem_desc.focus(); return; }
-    // 小白版：表单/校验/run 结构都与开发版不同（目录在 cc-web temp 下、提示词按 novice 解析）
+    // 实施版：表单/校验/run 结构都与开发版不同（目录在 cc-web temp 下、提示词按 novice 解析）
     if (patchState.edition === 'novice') {
         await patchNodeStartRunNovice(form, values, problemDesc);
         return;
@@ -4485,7 +4485,7 @@ async function patchNodeSolved(run) {
     // 已解决/未解决等状态变化后重新拉取列表，让状态列即时更新（不再依赖手动刷新按钮）
     await loadProblemRuns({ skipReconcile: true });
     // 阶段二复用同一个 cc-web 会话 → 同一个 claude 会话（上下文延续），cwd 也没变。
-    // 小白版走 prompts_novice.js（edition=novice 解析 + 条件段锚点），开发版沿用原拼接。
+    // 实施版走 prompts_novice.js（edition=novice 解析 + 条件段锚点），开发版沿用原拼接。
     const mergePrompt = patchState.edition === 'novice'
         ? await noviceBuildPrompt(run, 'phase2')
         : await nodeResolveStagePrompt(run, 'phase2', () => patchNodePhaseTwoPrompt(run));
@@ -4530,7 +4530,7 @@ function patchNodeUnsolved(run) {
     document.getElementById('patchNodeRerunFile').value = '';
     document.getElementById('patchNodeRerunNote').value = '';
     document.getElementById('patchNodeRerunSql').value = '';
-    // 重新录制入口：只在小白版出现（开发版没有录制流程）
+    // 重新录制入口：只在实施版出现（开发版没有录制流程）
     const recordField = document.getElementById('patchNodeRerunRecordField');
     if (recordField) recordField.hidden = patchState.edition !== 'novice';
     patchNodeRerunRecordPath = '';
@@ -4756,7 +4756,7 @@ async function patchNodeUnsolvedConfirm() {
     const noteText = (document.getElementById('patchNodeRerunNote').value || '').trim();
     const sqlText = (document.getElementById('patchNodeRerunSql').value || '').trim();
     if (patchState.edition === 'novice') {
-        // 小白版：edition=novice 解析 + 条件段锚点；日志/补充说明/重新录制的接口数据作为输入载荷传进去
+        // 实施版：edition=novice 解析 + 条件段锚点；日志/补充说明/重新录制的接口数据作为输入载荷传进去
         let noviceNote = noteText;
         if (sqlText) noviceNote += `${noviceNote ? '\n\n' : ''}【用户提供的 SQL 结果集】\n${sqlText}`;
         prompt = await noviceBuildPrompt(run, 'retry', { note: noviceNote, logText: content, recordPath: patchNodeRerunRecordPath });
@@ -4937,7 +4937,7 @@ function patchBindEvents() {
     document.getElementById('patchNodePromptSeed').onclick = () => seedNodePrompts();
     document.getElementById('patchNodePromptClose').onclick = () => { document.getElementById('patchNodePromptModal').hidden = true; };
     document.getElementById('patchNodePromptCancel').onclick = () => { document.getElementById('patchNodePromptModal').hidden = true; };
-    // 版本切换（开发版/小白版）：点哪个就切换管理对象
+    // 版本切换（开发版/实施版）：点哪个就切换管理对象
     document.getElementById('patchNpEditionToggle').addEventListener('click', event => {
         const btn = event.target.closest('[data-np-edition]');
         if (btn) npSwitchEdition(btn.dataset.npEdition);
@@ -4987,7 +4987,7 @@ function patchBindEvents() {
     // ── 智能开发节点（方案文档第二十章）──
     document.getElementById('patchNewNodeRun').onclick = () => patchNodeOpenForm().catch(error => patchShowError(error.message, '智能开发打开失败'));
     document.getElementById('patchNodeRunForm').onsubmit = event => patchNodeStartRun(event).catch(error => patchShowError(error.message, '智能开发启动失败'));
-    // 小白版专属控件：录制（打开录制面板）+ 日志文件选择回显
+    // 实施版专属控件：录制（打开录制面板）+ 日志文件选择回显
     document.getElementById('patchNodeRecordBtn').onclick = () => patchRecordOpen('form');
     document.getElementById('patchNodeRerunRecordBtn').onclick = () => patchRecordOpen('rerun');
     document.getElementById('patchRecordClose').onclick = () => patchRecordClosePanel();
@@ -5349,7 +5349,7 @@ function patchBindEvents() {
     // 版本发布（管理员）：刷新现状 + 提交上传 + 选中文件后显示文件名与大小
     document.getElementById('patchReleaseRefresh').onclick = () => loadReleaseInfo();
     document.getElementById('patchReleaseNew').onclick = () => openReleaseModal();
-    // 通道切换（开发版/小白版）：列表与「设为最新」都按当前通道
+    // 通道切换（开发版/实施版）：列表与「设为最新」都按当前通道
     document.getElementById('patchReleaseEditionToggle').addEventListener('click', event => {
         const btn = event.target.closest('[data-release-edition]');
         if (btn) releaseSwitchEdition(btn.dataset.releaseEdition);

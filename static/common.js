@@ -1,5 +1,5 @@
 // ============================================================
-//  common.js - 开发版与小白版共用的通用工具函数
+//  common.js - 开发版与实施版共用的通用工具函数
 //  包含：登录/token、patchRequest、分页、转义、错误弹框
 // ============================================================
 
@@ -72,6 +72,9 @@ function patchShowError(message, title = '操作失败') {
     const msgEl = document.getElementById('patchErrorMessage');
     if (titleEl) titleEl.textContent = title;
     if (msgEl) msgEl.textContent = message || '发生未知错误，请稍后重试。';
+    // 实施版的弹窗用 class="nv-hidden" 控制显隐（display:none !important），
+    // 只清 hidden 属性会继续被它盖住，表现为「点了没反应」
+    modal.classList.remove('nv-hidden');
     modal.hidden = false;
     requestAnimationFrame(() => {
         const confirm = document.getElementById('patchErrorConfirm');

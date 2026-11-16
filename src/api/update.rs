@@ -48,7 +48,7 @@ const PLATFORM: &str = "macos-x64";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const PLATFORM: &str = "";
 
-/// 版本号哨兵：`CCWEB-VERSION:<版本>`（开发版）/ `CCWEB-VERSION:novice-<版本>`（小白版）。
+/// 版本号哨兵：`CCWEB-VERSION:<版本>`（开发版）/ `CCWEB-VERSION:novice-<版本>`（实施版）。
 ///
 /// 发布时服务器靠它确认"这个二进制确实是用这个版本号编译出来的"——直接去二进制里找裸版本号
 /// 会误判（exe 里本来就有别的依赖的版本串，比如某个 crate 的 `1.0.1`），必须用这个唯一前缀。
@@ -63,6 +63,14 @@ pub const VERSION_MARKER: &str = concat!("CCWEB-VERSION:", env!("CARGO_PKG_VERSI
 pub const EDITION: &str = "novice";
 #[cfg(not(feature = "implCon"))]
 pub const EDITION: &str = "dev";
+
+/// 是否由桌面壳（Electron）拉起。壳版统一升级整个安装包，
+/// 内核自更新必须关掉——macOS 上替换 .app 里的二进制会破坏签名。
+fn shell_managed() -> bool {
+    ["CC_WEB_SHELL", "CC_WEB_DISABLE_UPDATE"]
+        .iter()
+        .any(|key| std::env::var(key).map(|value| value == "1").unwrap_or(false))
+}
 
 /// 本机 exe 路径（自更新的目标就是它）
 fn current_exe() -> Result<PathBuf, String> {
@@ -157,6 +165,17 @@ fn fetch_remote(server_url: &str, auth_token: &str) -> Result<Option<serde_json:
 pub async fn check(body: web::Json<UpdateRequest>) -> HttpResponse {
     if body.server_url.trim().is_empty() || body.auth_token.trim().is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "success": false, "error": "缺少补丁中心地址或凭据" }));
+    }
+    // 桌面壳版：前端据此提示"请升级整个桌面应用"，不再走下载/自替换流程
+    if shell_managed() {
+        return HttpResponse::Ok().json(serde_json::json!({
+            "success": true,
+            "data": {
+                "shell_managed": true,
+                "update_available": false,
+                "local": exe_meta().ok(),
+            }
+        }));
     }
     let server_url = body.server_url.clone();
     let auth_token = body.auth_token.clone();
@@ -489,6 +508,12 @@ pub async fn apply(body: web::Json<UpdateRequest>) -> HttpResponse {
 
     if body.server_url.trim().is_empty() || body.auth_token.trim().is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "success": false, "error": "缺少补丁中心地址或凭据" }));
+    }
+    if shell_managed() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "error": "桌面版不支持单独更新 cc-web，请下载并安装新版桌面应用"
+        }));
     }
     if UPDATING.swap(true, Ordering::SeqCst) {
         return HttpResponse::Conflict().json(serde_json::json!({ "success": false, "error": "更新正在进行中" }));

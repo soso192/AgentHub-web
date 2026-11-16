@@ -11,8 +11,8 @@ pub struct RevealRequest {
     pub path: Option<String>,
 }
 
-// ── 小白版专属：/api/files/* 路径白名单 ──
-// 小白版只放行 cc-web 自己的 temp/recordings 目录，以及本机运行清单里登记过的目录
+// ── 实施版专属：/api/files/* 路径白名单 ──
+// 实施版只放行 cc-web 自己的 temp/recordings 目录，以及本机运行清单里登记过的目录
 // （暂存/产物/home/客开/JDK）。开发版不编译这段——开发者本来就要浏览任意路径。
 #[cfg(feature = "implCon")]
 fn path_under(canonical: &std::path::Path, root_str: &str) -> bool {
@@ -66,7 +66,7 @@ fn ensure_path_allowed(path_str: &str, data: &web::Data<crate::AppState>) -> Res
     }
     Err(HttpResponse::Forbidden().json(serde_json::json!({
         "success": false,
-        "error": "小白版仅能访问运行工作目录、补丁输出目录和产品环境登记的 home/客开目录"
+        "error": "实施版仅能访问运行工作目录、补丁输出目录和产品环境登记的 home/客开目录"
     })))
 }
 
@@ -431,6 +431,56 @@ pub async fn reveal_file(body: web::Json<RevealRequest>, data: web::Data<crate::
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
             "success": false,
             "error": format!("Failed to open file manager: {}", e)
+        })),
+    }
+}
+
+/// 在系统文件管理器里打开一个目录（目录不存在则先创建，兼容旧运行记录）。
+pub async fn open_folder(body: web::Json<RevealRequest>, data: web::Data<crate::AppState>) -> HttpResponse {
+    #[cfg(feature = "implCon")]
+    if let Err(resp) = ensure_path_allowed(body.path.as_deref().unwrap_or(""), &data) {
+        return resp;
+    }
+    #[cfg(not(feature = "implCon"))]
+    let _ = &data;
+
+    let folder = body.path.as_deref().unwrap_or("").trim();
+    if folder.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "error": "Folder path is required"
+        }));
+    }
+    let path = std::path::Path::new(folder);
+    if path.exists() && !path.is_dir() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "error": "Path is not a folder"
+        }));
+    }
+    if !path.exists() {
+        if let Err(e) = std::fs::create_dir_all(path) {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false,
+                "error": format!("创建产物目录失败: {e}")
+            }));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer")
+        .arg(folder.replace('/', "\\"))
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(folder).spawn();
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let result = std::process::Command::new("xdg-open").arg(folder).spawn();
+
+    match result {
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "success": false,
+            "error": format!("Failed to open folder: {}", e)
         })),
     }
 }

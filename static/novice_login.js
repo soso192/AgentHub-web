@@ -1,5 +1,5 @@
 // ============================================================
-//  novice_login.js - 小白版独立登录页（/login）
+//  novice_login.js - 实施版独立登录页（/login）
 //  依赖（先加载）：common.js（patchLogin / patchRequest / patchToken）
 //  登录成功后整页跳到主界面 "/"；主界面发现没有 token 时也会整页跳回这里，
 //  所以刷新登录页不会先闪出主界面。

@@ -1,4 +1,4 @@
-// 小白版前端冒烟测试（DOM 桩）：node novice_smoke.js
+// 实施版前端冒烟测试（DOM 桩）：node novice_smoke.js
 // 覆盖：novice.js 的环境页渲染 + prompts_novice.js 的提示词拼接
 const fs = require('fs');
 const path = require('path');

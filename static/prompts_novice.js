@@ -1,10 +1,10 @@
 // ============================================================
-//  prompts_novice.js - 小白版智能开发提示词
+//  prompts_novice.js - 实施版智能开发提示词
 //  依赖：common.js、node_core.js（先加载）
 //
-//  流程（与待办清单「小白版提示词动态拼接」一致）：
+//  流程（与待办清单「实施版提示词动态拼接」一致）：
 //    1. nodeFetchResolvedPrompts(run)（run.edition='novice' → 自动带 edition=novice，
-//       只在小白版模板内降级，不回落开发版模板）
+//       只在实施版模板内降级，不回落开发版模板）
 //    2. 管理员配了模板 → renderNodeTemplate 渲染 {{var}}，再插 {{env_extra}}/{{constraints_extra}}
 //       两个锚点（模板没写锚点就追加到末尾）
 //    3. 没配模板 → 内置默认函数（同样拼好条件段）
@@ -25,15 +25,73 @@ function noviceMaskDbPassword(text) {
     return out;
 }
 
+/* ── FBIP Skills 固定前置段 ──
+   FBIP 所有版本和 NC/NCC 客开版本共用同一套 skill。
+   提示词最前面要求 Claude 先读 skill、按 L1→L2→L3 路由，再开始分析。 */
+function noviceFbipSkillGuide(env) {
+    const dir = String(env.local_skill_path || '').trim().replace(/[\\/]+$/, '');
+    const where = dir
+        ? `skill 库位置：优先使用产品环境里配置的「本机 skill 地址」：${dir}（技能在 ${dir}/.claude/skills 下；找不到 fbip-* 时回落到安装目录的 fbip_claude_skills_V82）`
+        : [
+            'skill 库位置：产品环境里登记了 skill 路径时以它为准；未登记时按顺序查找：',
+            '  ① 从本次运行目录向上找到包含 cc-web.exe 的安装目录，其下的 `fbip_claude_skills_V82`（或 `fbip_claude_skills_V*`）；',
+            '  ② 用户目录 `~/.claude/skills` 下的 `fbip-*` 技能。',
+            '  找到库根后，技能在 `<库根>/.claude/skills` 下。',
+        ].join('\n');
+    return [
+        '【开始前必读：FBIP Skills 知识库】',
+        '解决问题之前，先读下面这套 skill，再动手分析；不要跳过这一步直接看代码或猜结论。',
+        where,
+        '适用范围：FBIP 所有版本，以及 NC / NCC 客开版本。NC 问题同样使用这套 skill（按业务模块映射到对应域），不要因为不是 FBIP 就跳过。',
+        '阅读顺序：',
+        '0. 入口判定：本任务是实施现场问题（通常没有 JIRA 单号），优先从 `fbip-problem-solver` 进入；如果用户给了 JIRA 单号，则走 `fbip-jira-solver`。',
+        '1. 先读 skill 库根目录的 `fbip-skills-guide.md` 和 `AGENTS.md`（没有就读 `README.md` 的「Skill 路由体系」），了解入口、强制规则与输出要求；',
+        '2. 用 `fbip-skill-router` 做 L1 路由，确定业务域（如 erm/gl/arap/cmp/am/fa/aim/epmp/arcp/invoice/ssc/vtax/wf/ufoe/tm/fct/leaseme/ewm/pd/mdd/other），再读对应的 `fbip-<域>-router`（L2），最后读命中的 1~3 个 L3 `SKILL.md`；',
+        '3. 用 skill 里的业务链路、数据模型（表/字段/表间关系）、问题模式和排查路径指导本次分析，并在结论里注明参考了哪些 skill。',
+        '读取方式：直接用 Read / Glob 按上面的路径读 `SKILL.md`；skill 库不在用户级 `~/.claude/skills` 时，Skill 工具可能看不到它，不要因为 Skill 列表里没有就跳过。',
+        '约束：skill 库只读，不要修改；目录不存在或没有对应域时，如实说明「未找到对应 skill」，按现有证据继续分析，禁止编造 skill 内容。',
+    ].join('\n');
+}
+
+/* ── 问题类型判断 + SQL 规范 ──
+   实施版很多问题是配置/基础数据错误，不需要改代码；先判断类型，配置类优先用 SQL 修。 */
+function noviceProblemTypeGuide(env, run) {
+    const turnDir = String(run.turn_dir || '').replace(/[\\/]+$/, '');
+    const lines = [
+        '【重要：先判断问题类型，不是所有问题都需要改代码】',
+        '动手改代码或生成补丁前，先判断属于哪一类，并把判断依据写进结论：',
+        '1. 配置/数据类（优先）：产品参数、基础数据、权限、流程/审批、编码规则、单据模板、打印/预警、后台/定时任务等配置缺失或不正确。这类问题通常不需要改代码，应通过执行数据库 SQL 修正配置或数据。',
+        '2. 代码缺陷类：确认是程序逻辑错误，且配置/SQL 无法解决时，才修改代码、生成补丁。',
+        '两类都可能时，先验证成本低、可回滚的配置/SQL 方案；配置方案无效，再走代码修复。',
+        '',
+        '【SQL 规范】',
+        '- 写 SQL 前先用 skill 里的数据模型确认表名、字段、表间关系，再配合 SELECT / SHOW / DESC 查现状，不要猜表名和字段。',
+        '- 变更 SQL 必须成组给出：① 查询现状 SQL；② 变更 SQL（WHERE 条件精确，禁止无条件 UPDATE/DELETE）；③ 影响行数预估（先用同条件 SELECT COUNT(*)）；④ 备份/记录原值 SQL；⑤ 回滚 SQL。',
+        '- 多条变更用事务包起来（BEGIN/COMMIT，异常 ROLLBACK），并说明锁和影响范围。',
+        '- 只读查询可以直接执行；写操作（INSERT/UPDATE/DELETE/DDL）必须先说明影响并把脚本交给用户确认；只有用户明确授权在当前环境执行时才执行，执行前先备份原值。',
+        `- SQL 写入 ${turnDir ? turnDir + '/aisql.sql' : '<本次运行目录>/aisql.sql'}，配置/数据方案写入 ${turnDir ? turnDir + '/方案.txt' : '<本次运行目录>/方案.txt'}；结论里写明问题类型、依据、执行或待执行的 SQL、影响范围与回滚方式。`,
+        '- 任何回复和文件里都不要输出明文数据库口令。',
+    ];
+    if (!String(env.db_connection || '').trim()) {
+        lines.push('- 本次未登记数据库连接：只交付 SQL 脚本供用户执行，不要假设自己能连库。');
+    }
+    return lines.join('\n');
+}
+
 /* ── 条件段：信息段（{{env_extra}}）与约束段（{{constraints_extra}}）──
    每段独立：环境快照里有对应字段才拼。resolved 是 /resolve 的 seg_* 模板，
    模板内的 {{var}} 在这里先用变量字典渲染；db_connection 的值统一用**掩码后**的版本，
    防止管理员模板里的 {{db_connection}} 把明文口令带进会话存档。 */
 
-async function noviceSegments(run, resolvedSegs) {
+async function noviceSegments(run, resolvedSegs, stage) {
     const env = run.env_snapshot || {};
     const envLines = [];
     const constraintLines = [];
+    // 分析/重试阶段最前面固定加：先读 FBIP Skills，再判断配置类还是代码类问题
+    if (stage !== 'phase2') {
+        envLines.push(noviceFbipSkillGuide(env));
+        constraintLines.push(noviceProblemTypeGuide(env, run));
+    }
     // 片段模板渲染用变量字典（db_connection 用掩码版，防明文口令进会话存档）
     const segValues = buildNodePromptValues(run, {
         db_connection: noviceMaskDbPassword(env.db_connection || ''),
@@ -43,19 +101,19 @@ async function noviceSegments(run, resolvedSegs) {
         ? renderNodeTemplate(String(own), segValues)
         : null;
 
-    // 客开代码目录：有才拼（小白多数没有；有就按「只读参考工程结构」处理）
+    // 客开代码目录：有才拼（实施版多数没有；有就按「只读参考工程结构」处理）
     const codeDir = String(env.code_directory || '').trim();
     if (codeDir) {
         envLines.push(segText(resolvedSegs && resolvedSegs.seg_code_dir)
             || `客开工程路径：${codeDir}（**只读参考**：先用 Glob/Read 看工程结构、找同类既有文件的写法，不要改动工程里的任何文件；你的改动只写暂存目录。收尾时对它执行一次 git status 确认没有误改）`);
     }
 
-    // 数据库连接：信息段给掩码连接串，约束段给「只读」
+    // 数据库连接：信息段给掩码连接串，约束段给「排查只读、配置类修正可出脚本」
     const dbConn = String(env.db_connection || '').trim();
     if (dbConn) {
         envLines.push(`数据库连接：${noviceMaskDbPassword(dbConn)}`);
         constraintLines.push(segText(resolvedSegs && resolvedSegs.seg_db)
-            || '数据库只允许查询（SELECT / SHOW / EXPLAIN），禁止 INSERT / UPDATE / DELETE / DROP / ALTER / TRUNCATE 等任何写操作和 DDL；查不到需要的数据就说明缺什么，不要尝试建表改表。');
+            || '数据库使用规范：排查/分析阶段以查询为主（SELECT / SHOW / DESC / EXPLAIN）；确认是配置/数据类问题需要修正时，按【SQL 规范】生成 INSERT / UPDATE / DELETE / DDL 变更脚本——WHERE 条件精确、先预估影响行数、附备份/原值与回滚 SQL、多条变更用事务包裹，并先把脚本交给用户确认，未经用户明确授权不要直接执行写操作。');
     }
 
     // 远程调试地址：信息段给地址，约束段给「线程级调试」
@@ -140,7 +198,7 @@ function noviceApplySegments(prompt, segments) {
     return out;
 }
 
-/* ── 内置默认提示词（函数式：与开发版 patchNodePhaseOnePrompt 同级的小白简化版）── */
+/* ── 内置默认提示词（函数式：与开发版 patchNodePhaseOnePrompt 同级的实施版简化版）── */
 
 function noviceBuiltinPhaseOne(run, segments) {
     const env = run.env_snapshot || {};
@@ -163,6 +221,8 @@ function noviceBuiltinPhaseOne(run, segments) {
         segments.env.join('\n') || '（无）',
         '',
         '【任务】',
+        '0. 先读【环境补充】里的 FBIP Skills 说明，按 L1→L2→L3 路由命中对应 skill；再判断问题类型：',
+        '   配置/数据类优先用 SQL 解决（产出 aisql.sql 与 方案.txt），确认是代码缺陷才进入下面的代码修复流程。',
         '1. 结合产品源码定位问题根因，先给出简短分析；证据不足时如实说明还缺什么信息。可行的方案有多个时，',
         '   **你自己挑一个最合适的往下做**，不要停下来等用户选；在结论里写一句你选了哪个、为什么。',
         '2. 动手前先用 java-compiler-mcp skill（编译补丁必做）：用 Skill 工具调用 `java-compiler-mcp`，',
@@ -247,7 +307,7 @@ function noviceBuiltinRetry(run, segments, note, logText) {
 
 /* ── 统一入口 ──
    stage ∈ phase1 / phase2 / retry。
-   优先用管理员在小白版下配置的模板（含 seg_* 片段模板），渲染 {{var}} 并插锚点；
+   优先用管理员在实施版下配置的模板（含 seg_* 片段模板），渲染 {{var}} 并插锚点；
    没配置走内置默认函数。返回最终提示词文本。
    retry 载荷：{ note, logText, recordPath }——最后一项是重跑前重新录制的接口 JSON 路径，
    作为「本次新录制的现场」追加到提示词末尾（含接口摘要与 find_action 要求）。 */
@@ -258,7 +318,7 @@ async function noviceBuildPrompt(run, stage, retryPayload) {
         ? Object.assign({}, run, { problem_desc: '（用户没有填写文字描述，问题现象见附带的问题图片/文件）' })
         : run;
     const resolved = await nodeFetchResolvedPrompts(promptRun).catch(() => null);
-    const segs = await noviceSegments(promptRun, resolved);
+    const segs = await noviceSegments(promptRun, resolved, stage);
     const segments = { env: segs.env, constraints: segs.constraints };
     let prompt;
     if (resolved && resolved[stage] && String(resolved[stage]).trim()) {

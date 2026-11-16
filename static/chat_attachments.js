@@ -1,5 +1,5 @@
 // ============================================================
-//  chat_attachments.js - 聊天输入框附件（开发版 / 小白版共用）
+//  chat_attachments.js - 聊天输入框附件（开发版 / 实施版共用）
 //  依赖：app.js（sendMessage / currentSessionId / messageInput）、common.js 可选
 //
 //  行为：

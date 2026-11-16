@@ -1,5 +1,5 @@
 // ============================================================
-//  node_core.js - 开发版与小白版共用的智能开发核心逻辑
+//  node_core.js - 开发版与实施版共用的智能开发核心逻辑
 //  包含：cc-web 同源接口、run 本地读写、SSE（先 connected 再 start）、
 //        事件处理、收尾判定、上报、会话存档、提示词模板解析
 //
@@ -19,7 +19,7 @@
 //       - report(run)                 一轮结束后的结论展示（fire-and-forget 上报）
 //
 //  edition 约定：run.edition === 'novice' 时——
-//    - /resolve 请求带 edition=novice（只在小白版模板内降级）
+//    - /resolve 请求带 edition=novice（只在实施版模板内降级）
 //    - 上报 problem-runs 时带 client_edition='novice'
 // ============================================================
 
@@ -219,7 +219,7 @@ function buildNodePromptValues(run, extra) {
 }
 
 // 取一次运行各阶段的已解析模板（服务器降级解析 + 本机缓存），失败置空走内置默认。
-// 小白版 run（run.edition==='novice'）带 edition=novice，只在小白版模板内降级，不回落开发版。
+// 实施版 run（run.edition==='novice'）带 edition=novice，只在实施版模板内降级，不回落开发版。
 async function nodeFetchResolvedPrompts(run) {
     if (run && run.nodePrompts) return run.nodePrompts;
     if (run && run.nodePrompts === null) return null;

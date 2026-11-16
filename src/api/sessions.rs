@@ -45,8 +45,12 @@ pub async fn get_session(
         // Build messages array, potentially with streaming state injected
         let mut messages = session.messages.clone();
         
-        // Check if there's active streaming state for this session
+        // Check if there's active streaming state for this session.
+        // 必须同时确认会话仍在执行：result 之后可能残留一份 streaming_state，
+        // 如果只看缓存，刷新时会一直显示 "(streaming...)"。
+        let is_streaming = data.streaming_sessions.read().unwrap().contains(&session_id);
         let streaming_state = data.streaming_state.read().unwrap();
+        if is_streaming {
         if let Some(state) = streaming_state.get(&session_id) {
             // If the last message is from assistant, update it with streaming state
             if let Some(last_msg) = messages.last_mut() {
@@ -81,7 +85,8 @@ pub async fn get_session(
                 }
             }
         }
-        
+        }
+
         HttpResponse::Ok().json(serde_json::json!({
             "sessionId": session.id,
             "assistant": session.assistant,

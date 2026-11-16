@@ -4,7 +4,30 @@ echo.
 
 set PATH=%USERPROFILE%\.cargo\bin;%PATH%
 
-echo [1/2] Building dev edition...
+echo [1/3] Building React frontend...
+pushd frontend
+if not exist node_modules (
+    call npm install --no-audit --no-fund
+    if %ERRORLEVEL% NEQ 0 (
+        echo.
+        echo Frontend dependency install failed!
+        popd
+        pause
+        exit /b 1
+    )
+)
+call npm run build
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo Frontend build failed!
+    popd
+    pause
+    exit /b 1
+)
+popd
+
+echo.
+echo [2/3] Building dev edition...
 cargo build --release
 
 if %ERRORLEVEL% NEQ 0 (
@@ -18,7 +41,7 @@ copy /Y target\release\cc-web.exe cc-web-dev.exe
 echo     -> cc-web-dev.exe
 
 echo.
-echo [2/2] Building implCon edition...
+echo [3/3] Building implCon edition...
 cargo build --release --features implCon
 
 if %ERRORLEVEL% NEQ 0 (

@@ -82,6 +82,80 @@ pub async fn put_run(id: web::Path<String>, body: web::Json<Value>, data: web::D
     ok(Value::Null)
 }
 
+#[derive(Deserialize)]
+pub struct EnsureDirRequest {
+    pub path: Option<String>,
+}
+
+/// 词法规范化路径（处理 `.` / `..`），不要求路径已存在。
+fn normalize_lexical(path: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for comp in std::path::Path::new(path).components() {
+        match comp {
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    Some(out)
+}
+
+/// 只允许在该 run 自己登记的目录下建目录，避免接口被用来在任意位置创建文件夹。
+fn path_under_run(path: &str, run: &Value) -> bool {
+    let Some(target) = normalize_lexical(path) else {
+        return false;
+    };
+    ["out_dir", "step_dir", "turn_dir", "stage_dir"]
+        .iter()
+        .filter_map(|key| run.get(*key).and_then(|v| v.as_str()))
+        .filter(|root| !root.trim().is_empty())
+        .filter_map(normalize_lexical)
+        .any(|root| target.starts_with(root))
+}
+
+/// POST /api/node/runs/{id}/ensure-dir —— 会话开始前创建本步的产物目录（幂等）。
+///
+/// 放在运行清单接口里而不是通用的 /api/files，是为了只允许在该 run 自己的目录下创建。
+pub async fn ensure_dir(
+    id: web::Path<String>,
+    body: web::Json<EnsureDirRequest>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
+    let id = id.into_inner();
+    let path = body.path.as_deref().unwrap_or("").trim().to_string();
+    if path.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "success": false,
+            "error": "path is required"
+        }));
+    }
+    let run = data.node_runs.read().unwrap().get(&id).cloned();
+    let Some(run) = run else {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "success": false,
+            "error": "运行记录不存在"
+        }));
+    };
+    if !path_under_run(&path, &run) {
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "success": false,
+            "error": "只能在该运行自己的产物目录下创建文件夹"
+        }));
+    }
+    match std::fs::create_dir_all(&path) {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "success": true, "path": path })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "success": false,
+            "error": format!("创建产物目录失败: {e}")
+        })),
+    }
+}
+
 /// DELETE /api/node/runs/{id} —— 从清单移除。
 ///
 /// **不删**补丁输出目录里的产物，也**不删** cc-web 会话：产物是用户资产，
@@ -101,7 +175,7 @@ pub struct WorkspaceRequest {
 
 /// POST /api/node/workspace —— 在 `<数据目录>/temp/node/<run_id>/` 下建本次运行的工作目录（幂等）。
 ///
-/// 小白版没有客开工程概念，暂存目录（stage_dir）/产物目录全部落在 cc-web 自己的
+/// 实施版没有客开工程概念，暂存目录（stage_dir）/产物目录全部落在 cc-web 自己的
 /// temp 下，由后端建好并返回绝对路径，前端写进 run 对象。开发版暂不使用
 /// （其暂存目录在用户自填的补丁输出目录下，由 claude 自己建）。
 ///
@@ -115,7 +189,9 @@ pub async fn create_workspace(body: web::Json<WorkspaceRequest>, _data: web::Dat
         }));
     }
     let dir = crate::cc_web_temp_dir().join("node").join(&run_id);
-    match std::fs::create_dir_all(&dir) {
+    // 聊天页「打开产物所在位置」指向 step01；提前建好，避免点击时目录还不存在。
+    let step_dir = dir.join("step01");
+    match std::fs::create_dir_all(&step_dir) {
         Ok(()) => HttpResponse::Ok().json(serde_json::json!({
             "success": true,
             "path": dir.to_string_lossy(),
