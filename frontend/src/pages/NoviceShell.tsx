@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { hasAuthSession } from '../lib/api';
 import { AppShell, SidebarToggle, type NavItem } from '../components/layout/AppShell';
+import { EmbeddedBrowserButton } from '../components/browser/EmbeddedBrowser';
 import { ChatPanel } from '../components/chat/ChatPanel';
 import { NewSessionMenu } from '../components/chat/NewSessionMenu';
 import { NewSessionDialog } from '../components/chat/SessionList';
@@ -155,6 +156,7 @@ export function NoviceShell({ initialView }: { initialView?: string }) {
             返回
           </Button>
         )}
+        <EmbeddedBrowserButton />
         {loggedIn ? (
           <div className="flex items-center gap-1.5 rounded-lg border border-line bg-surface-2 px-2 py-1">
             <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent-soft text-[10px] font-bold text-accent">

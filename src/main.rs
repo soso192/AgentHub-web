@@ -404,6 +404,8 @@ async fn main() -> std::io::Result<()> {
             .route("/api/adapt/runs/{id}/delete", web::post().to(api::adapt::delete_run))
             .route("/api/local-claude/execute", web::post().to(api::local_claude::execute))
             .route("/api/local-claude/{execution_id}/cancel", web::post().to(api::local_claude::cancel))
+            // 智能分析 local_temp 步骤：在 cc-web 安装目录的 temp 下创建临时工作目录
+            .route("/api/workflows/local-temp", web::post().to(api::local_claude::workflow_temp))
             ;
 
         // ── 实施版专属路由：接口录制（CDP）──

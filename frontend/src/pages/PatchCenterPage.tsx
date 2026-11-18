@@ -9,6 +9,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { AppShell, SidebarToggle, type NavItem } from '../components/layout/AppShell';
+import { EmbeddedBrowserButton } from '../components/browser/EmbeddedBrowser';
 import { Button, Spinner } from '../components/ui';
 import { useToast } from '../components/ui/toast';
 import { api, getPatchServers, hasAuthSession } from '../lib/api';
@@ -33,7 +34,11 @@ import { SmartTab } from '../components/patches/SmartTab';
 import { AdaptTab } from '../components/patches/AdaptTab';
 import { NodeTab } from '../components/patches/NodeTab';
 import type { PatchRow } from '../lib/types';
-import { buildDevTabs } from '../lib/devTabs';
+import {
+  buildDevTabs,
+  readCachedCodeSearchUrl,
+  rememberCodeSearchUrl,
+} from '../lib/devTabs';
 
 export function PatchCenterPage() {
   const navigate = useNavigate();
@@ -44,7 +49,10 @@ export function PatchCenterPage() {
   const { user, checking, restore, logout } = useAuthStore();
   const [restoring, setRestoring] = useState(false);
   const [apiStatus, setApiStatus] = useState<'unknown' | 'ok' | 'fail' | 'missing'>('unknown');
-  const [codeSearchUrl, setCodeSearchUrl] = useState('');
+  // 先用上次缓存渲染，配置回来后再校准：避免「源码搜索」菜单项刷新时先隐藏再出现。
+  const [codeSearchUrl, setCodeSearchUrl] = useState<string | null>(() =>
+    readCachedCodeSearchUrl()
+  );
   const [usage, setUsage] = useState<Record<string, number> | null>(null);
   const [updateInfo, setUpdateInfo] = useState<Record<string, unknown> | null>(null);
   const [dismissed, setDismissed] = useState(false);
@@ -68,7 +76,9 @@ export function PatchCenterPage() {
     api
       .patchConfig()
       .then((config) => {
-        setCodeSearchUrl(config.code_search_url || '');
+        const url = config.code_search_url || '';
+        rememberCodeSearchUrl(url);
+        setCodeSearchUrl(url);
         setApiStatus(config.patch_search_servers?.length ? 'ok' : 'missing');
       })
       .catch(() => setApiStatus('fail'));
@@ -282,6 +292,7 @@ export function PatchCenterPage() {
         >
           {apiStatus === 'ok' ? '已连接' : apiStatus === 'missing' ? '配置缺失' : apiStatus === 'fail' ? '连接失败' : '连接中'}
         </span>
+        <EmbeddedBrowserButton />
         <div className="flex items-center gap-1.5 rounded-lg border border-line bg-surface-2 px-2 py-1">
           <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent-soft text-[10px] font-bold text-accent">
             {(user.display_name || user.username || 'U').slice(0, 1)}
@@ -361,7 +372,7 @@ export function PatchCenterPage() {
           <AdaptTab preset={adaptPreset} onPresetConsumed={() => setAdaptPreset(null)} />
         )}
         {activeTab?.key === 'smart' && <SmartTab />}
-        {activeTab?.key === 'codesearch' && <CodeSearchTab url={codeSearchUrl} />}
+        {activeTab?.key === 'codesearch' && <CodeSearchTab url={codeSearchUrl || ''} />}
         {activeTab?.key === 'directory' && <DirectoriesTab admin={admin} />}
         {activeTab?.key === 'project_env' && <ProjectEnvTab />}
         {activeTab?.key === 'flow' && <AdminConfigTab kind="flow" />}

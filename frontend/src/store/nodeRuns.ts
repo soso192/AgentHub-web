@@ -9,6 +9,7 @@ import {
   noviceProblemTypeGuide,
 } from '../lib/novicePrompt';
 import { patchApi } from '../lib/patch';
+import { firstChars } from '../lib/utils';
 import type { ProjectEnv, StreamEvent } from '../lib/types';
 import { useAuthStore } from './auth';
 import { useChatStore } from './chat';
@@ -586,6 +587,11 @@ export const useNodeStore = create<NodeState>((set, get) => {
         }
         const withSession = update(id, { session_id: created.sessionId });
         await persist(withSession);
+        // 智能开发的会话名称取问题描述前 10 个字。
+        const sessionName = firstChars(options.problem_desc, 10);
+        if (sessionName) {
+          await api.sessions.rename(created.sessionId, sessionName).catch(() => {});
+        }
         let prompt = await resolvePrompt(withSession || run, 'phase1');
         const attachmentLines = [...problemPaths, ...logPaths];
         if (attachmentLines.length) {

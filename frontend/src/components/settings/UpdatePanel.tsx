@@ -23,6 +23,14 @@ interface UpdateData {
   remote?: RemoteInfo | null;
 }
 
+interface ShellCheckResult {
+  ok: boolean;
+  updateAvailable?: boolean;
+  current?: string;
+  version?: string;
+  message?: string;
+}
+
 export function UpdatePanel({ currentVersion }: { currentVersion?: string }) {
   const toast = useToast();
   const [checking, setChecking] = useState(false);
@@ -45,6 +53,27 @@ export function UpdatePanel({ currentVersion }: { currentVersion?: string }) {
     setChecking(true);
     setProgress('');
     try {
+      // 桌面壳里优先走 Electron 的整包更新器：真正的下载/安装由壳负责，
+      // cc-web 自己不要替换 cc-web.exe（macOS 上还会破坏签名）。
+      const shellBridge = (
+        window as unknown as {
+          ccwebShell?: { checkForUpdates?: () => Promise<ShellCheckResult> };
+        }
+      ).ccwebShell;
+      if (shellBridge?.checkForUpdates) {
+        const result = await shellBridge.checkForUpdates();
+        if (!result?.ok) {
+          toast.error(result?.message || '检查更新失败');
+          return;
+        }
+        if (result.updateAvailable) {
+          setProgress(`发现新版本 v${result.version || '—'}，请在弹出的窗口中选择`);
+        } else {
+          toast.success(`当前已是最新版本（v${result.current || currentVersion || '—'}）`);
+        }
+        return;
+      }
+
       const { servers, token } = await freshAuth();
       if (!servers.length) {
         toast.error('补丁中心地址未配置');

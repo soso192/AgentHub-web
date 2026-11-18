@@ -4,6 +4,7 @@ import { api } from '../../lib/api';
 import { novicePreflight } from '../../lib/novicePrompt';
 import { patchApi } from '../../lib/patch';
 import type { ProjectEnv } from '../../lib/types';
+import { firstChars } from '../../lib/utils';
 import { useChatStore } from '../../store/chat';
 import { useNodeStore, type LocalNodeRun } from '../../store/nodeRuns';
 import { useProjectEnvs } from '../patches/hooks';
@@ -97,7 +98,7 @@ export function NewTaskDialog({
   onStarted?: (sessionId: string) => void;
 }) {
   const toast = useToast();
-  const { envs } = useProjectEnvs();
+  const { envs, reload: reloadEnvs } = useProjectEnvs();
   const createSession = useChatStore((state) => state.createSession);
   const sendMessage = useChatStore((state) => state.sendMessage);
   const registerExternal = useNodeStore((state) => state.registerExternal);
@@ -114,9 +115,20 @@ export function NewTaskDialog({
 
   const env: ProjectEnv | undefined = envs.find((item) => String(item.id) === envId);
 
+  // 弹窗常驻在页面里，首次挂载后不会再请求环境列表；每次打开都重新拉一次，
+  // 否则刚在「产品环境」里新增的环境不会出现在下拉框里。
   useEffect(() => {
     if (!open) return;
-    setEnvId((current) => current || String(envs[0]?.id || ''));
+    void reloadEnvs();
+  }, [open, reloadEnvs]);
+
+  useEffect(() => {
+    if (!open) return;
+    setEnvId((current) =>
+      current && envs.some((item) => String(item.id) === current)
+        ? current
+        : String(envs[0]?.id || '')
+    );
   }, [open, envs]);
 
   useEffect(() => {
@@ -273,7 +285,9 @@ export function NewTaskDialog({
         `${novicePreflight(pseudo.env_snapshot, turnDir)}\n\n${buildPrompt(pseudo, template)}`;
 
       const sessionId = await createSession({ cwd: workspace, assistant: 'claude' });
-      const name = (problem.trim() || `排查任务 ${new Date().toLocaleString('zh-CN')}`).slice(0, 40);
+      // 会话名称取问题描述的前 10 个字；没有描述时退回带时间的默认名称。
+      const name =
+        firstChars(problem.trim(), 10) || `排查任务 ${new Date().toLocaleString('zh-CN')}`;
       await api.sessions.rename(sessionId, name).catch(() => {});
 
       // 登记为智能开发运行（本机清单 + problem_run），供左侧按项目分组、打开产物和统计使用。

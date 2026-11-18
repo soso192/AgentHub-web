@@ -11,7 +11,7 @@
 
     "patch_source": {
       "type": "http",
-      "url": "http://fast9.shenzhuo.vip:36665/mcp",
+      "url": "http://10.13.51.67:40002/mcp",
       "headers": { "Authorization": "Bearer <token>" }
     }
   }

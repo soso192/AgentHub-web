@@ -14,6 +14,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import { AppShell, SidebarToggle, type NavItem } from '../components/layout/AppShell';
+import { EmbeddedBrowserButton } from '../components/browser/EmbeddedBrowser';
 import { ChatPanel } from '../components/chat/ChatPanel';
 import { SplitView } from '../components/chat/SplitView';
 import { NewSessionDialog } from '../components/chat/SessionList';
@@ -29,7 +30,11 @@ import {
 import { cn } from '../lib/utils';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, hasAuthSession } from '../lib/api';
-import { buildDevTabs } from '../lib/devTabs';
+import {
+  buildDevTabs,
+  readCachedCodeSearchUrl,
+  rememberCodeSearchUrl,
+} from '../lib/devTabs';
 import { useAppStore } from '../store/app';
 import { useAuthStore } from '../store/auth';
 import { MessageList } from '../components/chat/MessageList';
@@ -117,12 +122,19 @@ export function ChatPage() {
   const loggedIn = Boolean(authUser) || hasAuthSession();
   const admin = /admin|super/i.test(String(authUser?.role || ''));
   const menus = Array.isArray(authUser?.menus) ? authUser!.menus : null;
-  const [codeSearchUrl, setCodeSearchUrl] = useState('');
+  // 先用上次缓存渲染，配置回来后再校准：避免「源码搜索」菜单项刷新时先隐藏再出现。
+  const [codeSearchUrl, setCodeSearchUrl] = useState<string | null>(() =>
+    readCachedCodeSearchUrl()
+  );
 
   useEffect(() => {
     api
       .patchConfig()
-      .then((config) => setCodeSearchUrl(config.code_search_url || ''))
+      .then((config) => {
+        const url = config.code_search_url || '';
+        rememberCodeSearchUrl(url);
+        setCodeSearchUrl(url);
+      })
       .catch(() => {});
   }, []);
 
@@ -221,6 +233,7 @@ export function ChatPage() {
             onNewSession={() => setNewOpen(true)}
             onNewTask={() => navigate('/?tab=node&new=1')}
           />
+          <EmbeddedBrowserButton />
           {loggedIn && edition !== 'novice' && (
             <Button
               size="sm"

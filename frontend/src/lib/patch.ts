@@ -297,8 +297,10 @@ export const patchApi = {
         step_order: number;
         execution_token: string;
         prompt: string;
-        cwd: string;
-        output_dir?: string;
+        cwd: string | null;
+        cwd_mode?: 'temp' | 'reuse' | 'fixed' | string;
+        continue_session_id?: string | null;
+        output_dir?: string | null;
       };
     }>(`/api/workflows/runs/${runId}/steps/${step}/claim-local`, { method: 'POST' }),
 
@@ -324,6 +326,8 @@ export const patchApi = {
       ccweb_session_id?: string | null;
       conclusion?: string | null;
       summary?: string | null;
+      cwd?: string | null;
+      output_dir?: string | null;
     }
   ) =>
     patchRequest<Record<string, unknown>>(`/api/workflows/runs/${runId}/steps/${step}/local-result`, {
@@ -341,6 +345,8 @@ export const patchApi = {
       ccweb_session_id?: string | null;
       conclusion?: string | null;
       summary?: string | null;
+      cwd?: string | null;
+      output_dir?: string | null;
     }
   ) =>
     patchRequest<Record<string, unknown> | null>(
@@ -545,7 +551,7 @@ export async function downloadManual(edition: 'dev' | 'novice'): Promise<{
     blob: await response.blob(),
     filename: filenameFromDisposition(
       response.headers.get('Content-Disposition'),
-      'CC-Web使用手册.docx'
+      '智能开发平台使用手册.docx'
     ),
   };
 }

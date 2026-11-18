@@ -1,6 +1,6 @@
 {
   "patch_search_servers": [
-    "http://127.0.0.1:13587"
+    "http://10.4.122.39:40010"
   ],
-  "code_search_url": "http://10.4.122.21:8000"
+  "code_search_url": "http://10.13.51.67:40001"
 }

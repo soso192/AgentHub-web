@@ -25,6 +25,26 @@ export interface DevTabDef {
   visible: boolean;
 }
 
+const CODE_SEARCH_CACHE_KEY = 'cc-web-code-search-url';
+
+/** 上次取到的源码搜索地址；null 表示还没有取到过，不能当成“未配置”。 */
+export function readCachedCodeSearchUrl(): string | null {
+  try {
+    const value = localStorage.getItem(CODE_SEARCH_CACHE_KEY);
+    return value === null ? null : value;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberCodeSearchUrl(url: string): void {
+  try {
+    localStorage.setItem(CODE_SEARCH_CACHE_KEY, url);
+  } catch {
+    /* localStorage 不可用时只影响下次首屏，不影响功能 */
+  }
+}
+
 /**
  * 开发版工作台菜单定义。
  * 补丁中心主页面顶部页签与聊天页左侧「工作台」共用这份配置，
@@ -39,7 +59,8 @@ export function buildDevTabs({
   edition: string;
   admin: boolean;
   menus: string[] | null;
-  codeSearchUrl: string;
+  /** null = 配置尚未返回；此时先按“已配置”显示，避免菜单项刷新时闪动。 */
+  codeSearchUrl: string | null;
 }): DevTabDef[] {
   const can = (key: string) => !menus || menus.includes(key);
 
@@ -69,7 +90,8 @@ export function buildDevTabs({
       key: 'codesearch',
       label: '源码搜索',
       icon: <Code2 size={14} />,
-      visible: Boolean(codeSearchUrl),
+      // 配置还没回来（null）时先显示；回来后若确实没配再隐藏。
+      visible: codeSearchUrl === null || Boolean(codeSearchUrl),
     },
     {
       key: 'directory',

@@ -98,11 +98,9 @@ function SettingsDialog({
         items={[
           { key: 'appearance', label: '外观' },
           ...(edition === 'novice' && loggedIn
-            ? [
-                { key: 'project-env', label: '产品环境' },
-                { key: 'env-check', label: '环境检查' },
-              ]
+            ? [{ key: 'project-env', label: '产品环境' }]
             : []),
+          { key: 'env-check', label: '环境检查' },
           { key: 'about', label: '关于' },
         ]}
         value={tab}
@@ -111,7 +109,7 @@ function SettingsDialog({
       />
       {tab === 'project-env' && edition === 'novice' && loggedIn ? (
         <ProjectEnvTab />
-      ) : tab === 'env-check' && edition === 'novice' && loggedIn ? (
+      ) : tab === 'env-check' ? (
         <EnvCheckView embedded />
       ) : tab === 'appearance' ? (
         <div className="space-y-4">
@@ -160,7 +158,7 @@ function SettingsDialog({
               <Zap size={22} />
             </div>
             <div>
-              <div className="text-[14px] font-semibold text-ink">CC-Web</div>
+              <div className="text-[14px] font-semibold text-ink">智能开发平台</div>
               <div className="text-[11.5px] text-ink-3">
                 版本 {version?.version || '—'} · {edition === 'novice' ? '实施版' : '开发版'}
               </div>
@@ -238,15 +236,15 @@ export function AppShell({
 
   // 首次登录 /?settings=check 直接打开设置里的环境检查
   useEffect(() => {
-    if (edition === 'novice' && loggedIn && searchParams.get('settings') === 'check') {
+    if (loggedIn && searchParams.get('settings') === 'check') {
       setSettingsTab('env-check');
       setSettingsOpen(true);
     }
-  }, [edition, loggedIn, searchParams]);
+  }, [loggedIn, searchParams]);
 
-  // 未登录时环境相关页签不可用，自动回到外观
+  // 未登录时产品环境页签不可用，自动回到外观；环境检查不依赖登录，保持可用
   useEffect(() => {
-    if (!loggedIn && (settingsTab === 'project-env' || settingsTab === 'env-check')) {
+    if (!loggedIn && settingsTab === 'project-env') {
       setSettingsTab('appearance');
     }
   }, [loggedIn, settingsTab]);
@@ -322,7 +320,7 @@ export function AppShell({
               <Zap size={17} />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-[14px] font-semibold tracking-tight text-ink">CC-Web</div>
+              <div className="text-[14px] font-semibold tracking-tight text-ink">智能开发平台</div>
               <div className="text-[10px] text-ink-3">
                 {edition === 'novice' ? '实施版' : 'AI 编程工作台'} · v{version?.version || '—'}
               </div>

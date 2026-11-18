@@ -29,6 +29,7 @@ const TARGETS = [
 const DIRECTORY_MODES = [
   { value: 'fixed', label: '固定目录' },
   { value: 'by_product', label: '按产品' },
+  { value: 'local_temp', label: '本地临时目录（MCP）' },
 ];
 const RUNTIME_CATEGORIES = [
   { value: 'source', label: '源码' },

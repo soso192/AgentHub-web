@@ -1,1 +1,30 @@
+# Rust 构建产物
 /target
+
+# 前端依赖与构建缓存
+/frontend/node_modules/
+/frontend/.vite/
+/frontend/dist/
+
+# 运行日志与临时文件
+/logs/
+*.log
+*.tmp
+*.bak
+*.swp
+
+# 本地调试截图 / 临时图片
+/chat_logout_*.png
+/sidebar*.png
+/workbench_*.png
+/tmp_ai_img/
+/切换助手.gif
+/notes/auth-session.txt
+
+# 旧版小白版二进制（已由 implCon 取代）
+/cc-web-novice.exe
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+desktop.ini

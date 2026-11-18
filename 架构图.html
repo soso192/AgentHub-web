@@ -56,6 +56,8 @@
   <div class="sub">
     cc-web（每台开发机一份，Rust） + patch_search（服务器 A，FastAPI + MySQL） ·
     文档日期 2026-10-09
+    <br>
+    2026-11-17：patch_search 端口改为 40010；patch_source MCP（13589）已下线，图中该部分仅作历史参考。
   </div>
 
   <h2>一、部署拓扑</h2>
@@ -96,7 +98,7 @@
     <div class="zone-title">② 服务器 A（管理员维护；标品源码只有这一份）</div>
     <div class="row">
       <div class="card">
-        <h3>patch_search <span class="tag">:13587</span></h3>
+        <h3>patch_search <span class="tag">:40010</span></h3>
         <ul>
           <li>FastAPI + aiomysql；全部接口 JWT 鉴权</li>
           <li>补丁库（上传/检索/详情/下载）、管理员批量分析（claude 子进程，可配并发）</li>

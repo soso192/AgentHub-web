@@ -3,6 +3,10 @@
 > 版本：2026-10-09。本文是系统的**全貌参考**：系统是什么、每个菜单干什么、数据库有哪些表、怎么部署、哪些机制和坑重要。
 > 历史设计决策的详细推演（含代码注释里引用的"第十八章/第二十章/20.5"等章节）备份在
 > `changelog/patch_search_实现方案-历史设计备份.md`。
+>
+> 2026-11-17 更新：patch_search 服务端口改为 **40010**；随 patch_search 同进程启动的
+> patch_source MCP（13589）已下线并从代码/配置中删除。本文中涉及该 MCP 的段落仅作历史参考；
+> 客户端自带的 `java_compiler_mcp`（stdio）不受影响。
 
 ---
 
@@ -14,7 +18,7 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 ```
 每台开发机（每台各装一份）                 服务器 A（管理员维护）              数据库
 ┌────────────────────────────┐          ┌──────────────────────────┐     ┌──────────────┐
-│ cc-web.exe (Rust) :3030    │  HTTP    │ patch_search :13587      │────▶│ MySQL        │
+│ cc-web.exe (Rust) :3030    │  HTTP    │ patch_search :40010      │────▶│ MySQL        │
 │  ├ 聊天页 /chat.html       │ ───────▶ │  补丁库/字典/流程/账本    │     │ 10.4.122.21  │
 │  ├ 补丁中心 15 个页签      │  摘要上报 │ patch_source MCP :13589  │     │ /patch       │
 │  ├ claude CLI（每消息一进程│          │  （标品源码只读检索）     │     └──────────────┘
@@ -28,7 +32,7 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 | 进程 | 语言/框架 | 端口 | 部署位置 |
 |---|---|---|---|
 | cc-web.exe | Rust + Actix-Web（单文件，静态资源 `include_str!` 内嵌） | 3030 | **每台开发机** |
-| patch_search | Python FastAPI + aiomysql（可打包 exe） | 13587 | 服务器 A |
+| patch_search | Python FastAPI + aiomysql（可打包 exe） | 40010 | 服务器 A |
 | patch_source MCP | 随 patch_search 起的第二个监听（官方 MCP SDK） | 13589 | 服务器 A |
 | java_compiler_mcp | Python（PyInstaller，stdio） | 无（子进程） | 每台开发机 |
 
@@ -243,7 +247,7 @@ copy /Y target\release\cc-web.exe D:\project\cc-web-dist\cc-web.exe
 conda activate patch
 cd D:\project\patch_search
 $env:PATCH_SEARCH_JWT_SECRET = "长度≥32的随机串"
-python -m uvicorn app.main:app --host 0.0.0.0 --port 13587
+python -m uvicorn app.main:app --host 0.0.0.0 --port 40010
 ```
 
 ### 7.4 patch_search：打包与服务器部署

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Eye, EyeOff, Loader2, Lock, User, Zap } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/app';
@@ -26,32 +26,38 @@ export function LoginPage() {
   });
 
   const next = new URLSearchParams(location.search).get('next') || '/';
+  // 实施版/开发版各自记录一次“首次登录环境检查”；两个版本端口不同，
+  // localStorage 本来就隔离，这里分开命名只是为了语义清楚。
+  const envCheckDoneKey =
+    edition === 'novice' ? 'cc-web-novice-envcheck-done' : 'cc-web-dev-envcheck-done';
+  const navigatedRef = useRef(false);
+
+  const navigateAfterAuth = () => {
+    if (navigatedRef.current) return;
+    navigatedRef.current = true;
+    try {
+      if (!localStorage.getItem(envCheckDoneKey)) {
+        localStorage.setItem(envCheckDoneKey, '1');
+        navigate('/?settings=check', { replace: true });
+        return;
+      }
+    } catch {
+      /* localStorage 不可用时按已检查处理 */
+    }
+    if (next !== '/login') navigate(next, { replace: true });
+  };
 
   useEffect(() => {
     restore()
       .then((result) => {
-        if (result) {
-          if (edition === 'novice' && !localStorage.getItem('cc-web-novice-envcheck-done')) {
-            localStorage.setItem('cc-web-novice-envcheck-done', '1');
-            navigate('/?settings=check', { replace: true });
-          } else if (next !== '/login') {
-            navigate(next, { replace: true });
-          }
-        }
+        if (result) navigateAfterAuth();
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (user) {
-      if (edition === 'novice' && !localStorage.getItem('cc-web-novice-envcheck-done')) {
-        localStorage.setItem('cc-web-novice-envcheck-done', '1');
-        navigate('/?settings=check', { replace: true });
-      } else {
-        navigate(next, { replace: true });
-      }
-    }
+    if (user) navigateAfterAuth();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
@@ -78,7 +84,7 @@ export function LoginPage() {
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-[var(--accent)] to-[#a78bfa] text-white shadow-[0_10px_30px_rgba(124,140,255,.35)]">
             <Zap size={24} />
           </div>
-          <div className="text-[19px] font-semibold tracking-tight text-ink">CC-Web</div>
+          <div className="text-[19px] font-semibold tracking-tight text-ink">智能开发平台</div>
           <div className="mt-1 text-[12.5px] text-ink-3">
             {edition === 'novice' ? '实施版 · 登录后开始排查' : 'AI 编程工作台'}
           </div>
@@ -172,7 +178,7 @@ export function LoginPage() {
         </div>
 
         <div className="border-t border-line bg-surface-2/60 px-7 py-3 text-center text-[10.5px] text-ink-3">
-          登录凭据由补丁中心校验 · CC-Web v{version?.version || '—'}
+          登录凭据由补丁中心校验 · 智能开发平台 v{version?.version || '—'}
         </div>
       </div>
 

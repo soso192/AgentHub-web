@@ -26,9 +26,9 @@ export function HelpPage() {
       <div className="scroll-area flex-1 p-5">
         <div className="mx-auto max-w-3xl space-y-4">
           <div className="panel p-5">
-            <h1 className="text-[18px] font-semibold text-ink">CC-Web 使用说明</h1>
+            <h1 className="text-[18px] font-semibold text-ink">智能开发平台使用说明</h1>
             <p className="mt-2 text-[13px] leading-6 text-ink-2">
-              CC-Web 是一个本地 Web 工作台，把 Claude Code、Pi Agent、Codex 等 AI 编程助手统一在一个界面里。
+              智能开发平台是一个本地 Web 工作台，把 Claude Code、Pi Agent、Codex 等 AI 编程助手统一在一个界面里。
               左侧管理会话与文件，右侧进行对话或智能开发。
             </p>
             <div className="mt-4 flex flex-wrap gap-2">

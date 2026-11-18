@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle2, RefreshCw, XCircle } from 'lucide-react';
 import { api } from '../../lib/api';
-import { useProjectEnvs } from '../patches/hooks';
 import { Button, Spinner } from '../ui';
 import { useToast } from '../ui/toast';
 
@@ -15,21 +14,17 @@ interface CheckItem {
 
 export function EnvCheckView({ embedded = false }: { embedded?: boolean }) {
   const toast = useToast();
-  const { envs } = useProjectEnvs();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{
     claude: CheckItem;
     python: CheckItem;
-    java: CheckItem;
     git_bash: CheckItem;
-    home_jdk: CheckItem;
   } | null>(null);
 
   const run = async () => {
     setLoading(true);
-    const home = envs.find((env) => env.package_path)?.package_path;
     try {
-      const data = await api.envCheck(home);
+      const data = await api.envCheck();
       if (!data.success) throw new Error('检查失败');
       setResult(data);
     } catch (error) {
@@ -48,14 +43,7 @@ export function EnvCheckView({ embedded = false }: { embedded?: boolean }) {
     ? [
         { key: 'claude', title: 'Claude Code CLI', item: result.claude },
         { key: 'python', title: 'Python', item: result.python },
-        { key: 'java', title: 'Java 运行时', item: result.java },
         { key: 'git_bash', title: 'Git Bash / Bash', item: result.git_bash },
-        {
-          key: 'home_jdk',
-          title: '产品 home 下的 JDK',
-          item: result.home_jdk,
-          hint: '只在产品环境登记了 home/war 目录时检查',
-        },
       ]
     : [];
 
@@ -65,7 +53,7 @@ export function EnvCheckView({ embedded = false }: { embedded?: boolean }) {
         <div>
           {!embedded && <h1 className="text-[18px] font-semibold text-ink">环境检查</h1>}
           <p className={embedded ? 'text-[12px] text-ink-3' : 'mt-1 text-[12.5px] text-ink-3'}>
-            检查本机运行智能开发所需的 Claude、Python、Java、Git Bash 等依赖。
+            检查本机运行智能开发所需的 Claude、Python、Git Bash 等依赖。
           </p>
         </div>
         <Button icon={<RefreshCw size={14} />} loading={loading} onClick={run}>

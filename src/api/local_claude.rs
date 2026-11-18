@@ -178,3 +178,42 @@ pub async fn execute(data: web::Data<AppState>, body: web::Json<LocalClaudeReque
 pub async fn cancel(_data: web::Data<AppState>, _path: web::Path<String>) -> HttpResponse {
     HttpResponse::NotImplemented().json(serde_json::json!({"success": false, "error": "cancellation is not implemented for this execution"}))
 }
+
+#[derive(Debug, Deserialize)]
+pub struct WorkflowTempRequest {
+    pub run_id: String,
+    pub step_order: u32,
+}
+
+/// 为「标品代码分析」这类本地步骤创建临时工作目录。
+///
+/// 位置：`<cc-web.exe 所在目录>/temp/workflow/<run_id>/step<N>`。
+/// 该目录同时作为 claude 的 cwd 和产物目录；重新执行同一步时会先清空，避免旧产物混入。
+pub async fn workflow_temp(body: web::Json<WorkflowTempRequest>) -> HttpResponse {
+    if body.step_order == 0 {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"success": false, "error": "step_order is required"}));
+    }
+    let run = sanitize_filename(body.run_id.trim());
+    if run.is_empty() || run.len() > 96 {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"success": false, "error": "invalid run_id"}));
+    }
+
+    let dir = crate::cc_web_temp_dir()
+        .join("workflow")
+        .join(run)
+        .join(format!("step{}", body.step_order));
+    // 同一步重跑时清空旧产物；其他步骤/其他 run 不受影响。
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        log::warn!("[workflow-temp] 创建临时目录失败：{}", error);
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"success": false, "error": "create temp directory failed"}));
+    }
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "path": dir.to_string_lossy(),
+    }))
+}

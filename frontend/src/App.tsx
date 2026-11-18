@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AlertTriangle, Zap } from 'lucide-react';
 import { ToastProvider } from './components/ui/toast';
+import { EmbeddedBrowserHost } from './components/browser/EmbeddedBrowser';
 import { hasAuthSession } from './lib/api';
 import { useAppStore } from './store/app';
 import { ChatPage } from './pages/ChatPage';
@@ -20,7 +21,7 @@ function LoadingScreen() {
       <div className="flex h-12 w-12 animate-pulse items-center justify-center rounded-2xl bg-gradient-to-br from-[var(--accent)] to-[#a78bfa] text-white shadow-[0_10px_30px_rgba(124,140,255,.35)]">
         <Zap size={24} />
       </div>
-      <div className="text-[12.5px] text-ink-3">正在启动 CC-Web…</div>
+      <div className="text-[12.5px] text-ink-3">正在启动智能开发平台…</div>
     </div>
   );
 }
@@ -29,7 +30,7 @@ function ErrorScreen({ message }: { message: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
       <AlertTriangle size={30} className="text-danger" />
-      <div className="text-[15px] font-semibold text-ink">无法连接 CC-Web 后端</div>
+      <div className="text-[15px] font-semibold text-ink">无法连接智能开发平台后端</div>
       <div className="max-w-md text-[12.5px] leading-6 text-ink-3">{message}</div>
       <button
         type="button"
@@ -114,6 +115,7 @@ export default function App() {
         <Route path="/help" element={<HelpPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <EmbeddedBrowserHost />
     </ToastProvider>
   );
 }

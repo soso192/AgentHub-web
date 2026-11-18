@@ -20,7 +20,7 @@ export function getInitialTheme(): Theme {
   } catch {
     /* ignore */
   }
-  return 'dark';
+  return 'light';
 }
 
 const initialTheme = getInitialTheme();

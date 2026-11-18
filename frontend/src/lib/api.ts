@@ -173,6 +173,13 @@ export const api = {
       `/api/pick-folder${start ? `?start=${encodeURIComponent(start)}` : ''}`
     ),
 
+  /** local_temp 工作流步骤：在 cc-web 安装目录的 temp 下创建/重置临时目录。 */
+  workflowTemp: (runId: string, stepOrder: number) =>
+    request<{ success: boolean; path: string; error?: string }>('/api/workflows/local-temp', {
+      method: 'POST',
+      body: JSON.stringify({ run_id: runId, step_order: stepOrder }),
+    }),
+
   chatAttachment: (sessionId: string, form: FormData, name?: string) =>
     request<{ success: boolean; path?: string; paths?: string[]; error?: string }>(
       `/api/chat/attachment?session_id=${encodeURIComponent(sessionId)}${

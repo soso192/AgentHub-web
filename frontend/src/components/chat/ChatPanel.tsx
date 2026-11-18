@@ -10,8 +10,10 @@ import {
 import { api } from '../../lib/api';
 import { assistantLabel, cn } from '../../lib/utils';
 import { useAppStore } from '../../store/app';
+import { useBrowserStore } from '../../store/browser';
 import { useChatStore } from '../../store/chat';
 import { useNodeStore, type LocalNodeRun } from '../../store/nodeRuns';
+import { useWorkflowSessionStore } from '../../store/workflowSessions';
 import { Button, Input, Select, Spinner, Tooltip } from '../ui';
 import { useToast } from '../ui/toast';
 import { Composer } from './Composer';
@@ -74,6 +76,17 @@ export function ChatPanel({
     : undefined;
   // 当前会话对应的智能开发任务（开发版/实施版都算），用于「打开产物所在位置」。
   const taskRun = sessionId ? nodeRuns.find((run) => run.session_id === sessionId) : undefined;
+  // 智能分析（workflow）的本地步骤没有 node run，产物目录由执行器登记在这里。
+  const workflowArtifactDir = useWorkflowSessionStore((state) =>
+    sessionId ? state.artifacts[sessionId]?.dir || '' : ''
+  );
+  // 顶栏内置浏览器的默认地址：优先调试地址，其次录制页面，最后触发入口。
+  const setBrowserDefaultUrl = useBrowserStore((state) => state.setDefaultUrl);
+  useEffect(() => {
+    const env = (taskRun?.env_snapshot || {}) as Record<string, unknown>;
+    const url = String(env.debug_address || env.record_url || taskRun?.trigger_url || '').trim();
+    setBrowserDefaultUrl(url);
+  }, [taskRun, setBrowserDefaultUrl]);
   const runArtifactDir = String(
     taskRun?.turn_dir || taskRun?.step_dir || taskRun?.out_dir || ''
   ).trim();
@@ -85,7 +98,7 @@ export function ChatPanel({
     if (!/\/temp\/node\/[^/]+$/i.test(normalized)) return '';
     return `${normalized}/step01`;
   })();
-  const artifactDir = runArtifactDir || noviceTaskDir;
+  const artifactDir = runArtifactDir || workflowArtifactDir || noviceTaskDir;
   const nodeStreaming = useNodeStore((state) =>
     deviceRun ? Boolean(state.streaming[deviceRun.id]) : false
   );

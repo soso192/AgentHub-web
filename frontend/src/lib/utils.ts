@@ -50,6 +50,13 @@ export function truncate(text: string, max = 48): string {
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
 }
 
+/** 取文本前 N 个字（按 Unicode 码点计算），用于会话名称。 */
+export function firstChars(text: string, max = 10): string {
+  if (!text) return '';
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return Array.from(clean).slice(0, max).join('');
+}
+
 export function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

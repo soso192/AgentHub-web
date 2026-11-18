@@ -1,7 +1,6 @@
 {
   "patch_search_servers": [
-	"http://fast9.shenzhuo.vip:22664",
-	"http://fast9.shenzhuo.vip:64097"
+    "http://10.4.122.39:40010"
   ],
-  "code_search_url": "http://ofqnkoct.shenzhuo.vip:49252"
+  "code_search_url": "http://10.13.51.67:40001"
 }
