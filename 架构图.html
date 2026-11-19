@@ -78,7 +78,7 @@
       <div class="card">
         <h3>本机状态与工具</h3>
         <ul>
-          <li><code>~/.cc-web/</code>：<code>sessions.json</code>（会话）、<code>node_runs.json</code>（智能开发清单）、<code>adapt_runs.json</code>（适配记录）、<code>logs/</code></li>
+          <li><code>~/.cc-web-dev/</code>：<code>sessions.json</code>（会话）、<code>node_runs.json</code>（智能开发清单）、<code>adapt_runs.json</code>（适配记录）、<code>logs/</code></li>
           <li><code>~/.claude/settings.json</code>：模型网关凭证（模型下拉的来源）</li>
           <li><code>~/.claude/skills/</code>：<code>java-compiler-mcp</code>、<code>diff-report</code></li>
           <li>分发包里的 <code>mcp-servers.json</code>：java_compiler_mcp（stdio）+ patch_source（http）</li>
@@ -104,7 +104,7 @@
           <li>补丁库（上传/检索/详情/下载）、管理员批量分析（claude 子进程，可配并发）</li>
           <li>流程引擎：流程/提示词/模板 → 运行（本地步骤靠 execution_token 认领）</li>
           <li>三类只写账本：<code>problem_run</code>、<code>problem_run_session</code>、<code>patch_adapt_run/item</code></li>
-          <li>产品/版本字典（逻辑删除）、产品环境变量（按人隔离）</li>
+          <li>产品/版本字典（逻辑删除）、项目环境（按人隔离）</li>
           <li>发版：<code>data/ccweb-update/&lt;版本号&gt;/&lt;平台&gt;/</code> + <code>latest.json</code></li>
         </ul>
       </div>
@@ -120,7 +120,7 @@
       <div class="card">
         <h3>MySQL <span class="tag">10.4.122.21/patch</span></h3>
         <ul>
-          <li>18 张表（<b>无外键约束</b>，引用关系由应用层维护）：补丁库 / 用户与菜单权限 / 产品版本字典 / 流程引擎（6 张） / 产品环境变量 / 三类账本</li>
+          <li>18 张表（<b>无外键约束</b>，引用关系由应用层维护）：补丁库 / 用户与菜单权限 / 产品版本字典 / 流程引擎（6 张） / 项目环境 / 三类账本</li>
           <li>本机开发机上没有 mysql 客户端；迁移用 patch 环境的 python + pymysql 跑</li>
         </ul>
       </div>
@@ -146,7 +146,7 @@
   <div class="flow">
     <h3>② 智能开发（问题解决节点）—— 两阶段同一 claude 会话</h3>
     <ol>
-      <li>新建：填问题描述 / 触发 URL / 选产品环境变量 / 补丁输出路径 → cc-web 建会话（cwd = 客开工程根）</li>
+      <li>新建：填问题描述 / 触发 URL / 选项目环境 / 补丁输出路径 → cc-web 建会话（cwd = 客开工程根）</li>
       <li><b>阶段一</b>：claude 只读分析客开工程 + 用 patch_source 查标品 → 改动只写 <code>&lt;输出目录&gt;\step01\work</code>；走 java-compiler-mcp 打补丁 zip、生成 diff-report 对比报告</li>
       <li>用户在详情页判定「已解决 / 未解决」；未解决可补日志重跑（step02、step03…）</li>
       <li><b>阶段二</b>：把暂存目录同步回客开工程、打<b>去日志的干净补丁</b>（成败以 <code>合并说明.md</code> 首行判定）</li>
@@ -158,7 +158,7 @@
     <h3>③ 补丁适配 —— 逐个补丁合并进客开工程</h3>
     <ol>
       <li>入口：适配页签拖入多个补丁；或「普通检索」列表点「适配」（cc-web 直连补丁中心下载，带进度条）</li>
-      <li>填每个补丁的问题描述 + 选产品环境变量（自动带出客开工程目录）→ 检查 git 状态并强确认</li>
+      <li>填每个补丁的问题描述 + 选项目环境（自动带出客开工程目录）→ 检查 git 状态并强确认</li>
       <li>cc-web 后台线程串行跑：每轮 = 一条提示词 → claude 合并（对照物只有"补丁源码 vs 客开工程源码"）</li>
       <li>每个补丁跑完停在「待确认」→ 详情页点「继续下一步 / 一键跑完剩余 / 重试失败 / 中止」</li>
       <li>记录在本机 <code>adapt_runs.json</code> + 服务器 <code>patch_adapt_run/item</code>；「查看会话」可在聊天页实时围观（只读）</li>
@@ -195,8 +195,8 @@
       <tr><td>MCP 配置（java_compiler_mcp / patch_source）</td><td>分发包 <code>mcp-servers.json</code></td><td>改文件 + 重启（start.bat 设 <code>CC_WEB_MCP_CONFIG</code> 指向它）</td></tr>
       <tr><td>patch_search 配置</td><td>服务器上 <code>config.yaml</code>（端口/库路径/MCP roots/发布目录）</td><td>改文件 + 重启服务</td></tr>
       <tr><td>JWT 密钥</td><td>环境变量 <code>PATCH_SEARCH_JWT_SECRET</code>（≥32 字符）</td><td>服务器环境变量</td></tr>
-      <tr><td>本机清单</td><td><code>~/.cc-web/{sessions,node_runs,adapt_runs}.json</code></td><td>cc-web 自己维护</td></tr>
-      <tr><td>cc-web 日志</td><td><code>~/.cc-web/logs/cc-web-&lt;日期&gt;.log</code></td><td>—</td></tr>
+      <tr><td>本机清单</td><td><code>~/.cc-web-dev/{sessions,node_runs,adapt_runs}.json</code></td><td>cc-web 自己维护</td></tr>
+      <tr><td>cc-web 日志</td><td><code>~/.cc-web-dev/logs/cc-web-&lt;日期&gt;.log</code></td><td>—</td></tr>
       <tr><td>适配补丁解压目录</td><td><code>&lt;cc-web目录&gt;\temp\adapt\&lt;runId&gt;\&lt;seq&gt;\</code></td><td>—</td></tr>
     </tbody>
   </table>

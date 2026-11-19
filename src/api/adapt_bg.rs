@@ -1,7 +1,7 @@
 //! 补丁适配：后台执行器。
 //!
 //! 点击「开始适配」后由 cc-web 进程在独立线程串行跑完所有补丁，浏览器可随时关闭。
-//! 每个补丁跑完立即上报 patch_search（跨机器可查），并落盘 ~/.cc-web/adapt_runs.json。
+//! 每个补丁跑完立即上报 patch_search（跨机器可查），并落盘 ~/.cc-web-dev/adapt_runs.json。
 //!
 //! 架构：std::thread + 单线程 tokio runtime（允许 !Send 的 RwLockReadGuard 跨 .await）。
 
@@ -55,7 +55,10 @@ pub struct AdaptItem {
 
 impl AdaptRun {
     pub fn counts(&self) -> (u32, u32, u32, u32) {
-        let mut done = 0; let mut conflict = 0; let mut nosource = 0; let mut failed = 0;
+        let mut done = 0;
+        let mut conflict = 0;
+        let mut nosource = 0;
+        let mut failed = 0;
         for item in &self.items {
             match item.status.as_str() {
                 "done" => done += 1,
@@ -77,7 +80,9 @@ fn adapt_file_path() -> Option<std::path::PathBuf> {
 }
 
 pub fn save_adapt_runs(data: &AppState) {
-    let Some(path) = adapt_file_path() else { return };
+    let Some(path) = adapt_file_path() else {
+        return;
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -88,9 +93,15 @@ pub fn save_adapt_runs(data: &AppState) {
 }
 
 pub fn load_adapt_runs(data: &AppState) {
-    let Some(path) = adapt_file_path() else { return };
-    let Ok(content) = std::fs::read_to_string(&path) else { return };
-    let Ok(map) = serde_json::from_str::<HashMap<String, AdaptRun>>(&content) else { return };
+    let Some(path) = adapt_file_path() else {
+        return;
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(map) = serde_json::from_str::<HashMap<String, AdaptRun>>(&content) else {
+        return;
+    };
     let mut map = map;
     for run in map.values_mut() {
         if run.status == "running" {
@@ -161,11 +172,14 @@ async fn run_session_turn(
 
     let mut text = String::new();
     let mut new_sid: Option<String> = None;
-    let mut outcome: Result<(String, Option<String>), String> = Err("会话结束但没有返回结果".to_string());
+    let mut outcome: Result<(String, Option<String>), String> =
+        Err("会话结束但没有返回结果".to_string());
     loop {
         match rx.recv().await {
             Ok(message) => {
-                let Ok(event) = serde_json::from_str::<serde_json::Value>(&message) else { continue };
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&message) else {
+                    continue;
+                };
                 match event.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                     "start" => {
                         if let Some(sid) = event.get("agentSessionId").and_then(|v| v.as_str()) {
@@ -178,12 +192,27 @@ async fn run_session_turn(
                         }
                     }
                     "result" => {
-                        let content = event.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
-                        outcome = Ok((if content.is_empty() { text.clone() } else { content }, new_sid.clone()));
+                        let content = event
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        outcome = Ok((
+                            if content.is_empty() {
+                                text.clone()
+                            } else {
+                                content
+                            },
+                            new_sid.clone(),
+                        ));
                         break;
                     }
                     "error" => {
-                        outcome = Err(event.get("message").and_then(|m| m.as_str()).unwrap_or("执行出错").to_string());
+                        outcome = Err(event
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("执行出错")
+                            .to_string());
                         break;
                     }
                     _ => {}
@@ -216,7 +245,11 @@ fn read_output_files(dir: &str) -> (Option<String>, Option<String>) {
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 let trimmed = content.trim().to_string();
-                if trimmed.is_empty() { None } else { Some(trimmed) }
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
             }
             Err(_) => None,
         }
@@ -246,9 +279,13 @@ fn pick_field(text: &str, label: &str) -> Option<String> {
                 break;
             }
         }
-        if content_start.is_some() { break; }
+        if content_start.is_some() {
+            break;
+        }
     }
-    let Some((start_line, first_line)) = content_start else { return None };
+    let Some((start_line, first_line)) = content_start else {
+        return None;
+    };
 
     // 从下一行开始，读到遇到另一个标签或结束
     let mut lines: Vec<String> = Vec::new();
@@ -259,15 +296,22 @@ fn pick_field(text: &str, label: &str) -> Option<String> {
         let trimmed = line.trim_start();
         let is_next_label = LABELS.iter().any(|other| {
             *other != label && {
-                trimmed.starts_with(&format!("{}:", other)) || trimmed.starts_with(&format!("{}：", other))
+                trimmed.starts_with(&format!("{}:", other))
+                    || trimmed.starts_with(&format!("{}：", other))
             }
         });
-        if is_next_label { break; }
+        if is_next_label {
+            break;
+        }
         lines.push(line.to_string());
     }
 
     let result = lines.join("\n").trim().to_string();
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 pub fn parse_result(text: &str) -> (String, Option<String>, Option<String>, Option<String>) {
@@ -281,7 +325,12 @@ pub fn parse_result(text: &str) -> (String, Option<String>, Option<String>, Opti
     } else {
         "failed"
     };
-    (status.to_string(), pick_field(text, "改动文件"), pick_field(text, "冲突详情"), pick_field(text, "说明"))
+    (
+        status.to_string(),
+        pick_field(text, "改动文件"),
+        pick_field(text, "冲突详情"),
+        pick_field(text, "说明"),
+    )
 }
 
 // ── 上报 patch_search（blocking HTTP）──
@@ -294,7 +343,10 @@ fn hostname() -> String {
 
 fn report_run(run: &AdaptRun) {
     let (done, conflict, nosource, failed) = run.counts();
-    let url = format!("{}/api/patch-adapt/runs", run.server_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/patch-adapt/runs",
+        run.server_url.trim_end_matches('/')
+    );
     let body = serde_json::json!({
         "local_run_id": run.id,
         "product_name": if run.product_name.is_empty() { None } else { Some(&run.product_name) },
@@ -370,7 +422,10 @@ pub fn spawn_adaptation(data: std::sync::Arc<AppState>, run_id: String) {
     std::thread::Builder::new()
         .name(format!("adapt-{}", &run_id[..8.min(run_id.len())]))
         .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
                 Ok(rt) => rt,
                 Err(e) => {
                     log::error!("[adapt] 创建 runtime 失败: {}", e);
@@ -401,7 +456,13 @@ async fn run_adaptation_loop(data: std::sync::Arc<AppState>, run_id: String) {
     let (session_id_for_init, patch_count, is_first_entry) = {
         let runs = data.adapt_runs.read().unwrap();
         runs.get(&run_id)
-            .map(|r| (r.session_id.clone(), r.items.len(), r.items.iter().all(|i| i.status == "pending")))
+            .map(|r| {
+                (
+                    r.session_id.clone(),
+                    r.items.len(),
+                    r.items.iter().all(|i| i.status == "pending"),
+                )
+            })
             .unwrap_or((String::new(), 0, false))
     };
     if !session_id_for_init.is_empty() {
@@ -413,7 +474,10 @@ async fn run_adaptation_loop(data: std::sync::Arc<AppState>, run_id: String) {
             if !channels.contains_key(&session_id_for_init) {
                 let (tx, _) = tokio::sync::broadcast::channel::<String>(1024);
                 channels.insert(session_id_for_init.clone(), tx);
-                log::info!("[adapt] 会话事件通道已补建（cc-web 重启后继续）: {}", session_id_for_init);
+                log::info!(
+                    "[adapt] 会话事件通道已补建（cc-web 重启后继续）: {}",
+                    session_id_for_init
+                );
             }
         }
         if is_first_entry {
@@ -428,7 +492,10 @@ async fn run_adaptation_loop(data: std::sync::Arc<AppState>, run_id: String) {
         // （/api/sessions 的 isStreaming 来自这张表），侧边栏的 LIVE 标志也跟着亮。
         // 顺带让 start_prompt 的并发守卫挡住手动插话——适配是后台串行驱动的，
         // 用户中途插一句会打乱多补丁共用的 --resume 上下文。
-        data.streaming_sessions.write().unwrap().insert(session_id_for_init.clone());
+        data.streaming_sessions
+            .write()
+            .unwrap()
+            .insert(session_id_for_init.clone());
     }
 
     loop {
@@ -449,10 +516,20 @@ async fn run_adaptation_loop(data: std::sync::Arc<AppState>, run_id: String) {
         let next = {
             let runs = data.adapt_runs.read().unwrap();
             let Some(run) = runs.get(&run_id) else { break };
-            let Some(item) = run.items.iter().find(|i| i.status == "pending") else { break };
-            Some((item.seq, build_prompt(run, item), run.project_dir.clone(), run.session_id.clone(), run.agent_session_id.clone()))
+            let Some(item) = run.items.iter().find(|i| i.status == "pending") else {
+                break;
+            };
+            Some((
+                item.seq,
+                build_prompt(run, item),
+                run.project_dir.clone(),
+                run.session_id.clone(),
+                run.agent_session_id.clone(),
+            ))
         };
-        let Some((seq, prompt, cwd, session_id, agent_sid)) = next else { break };
+        let Some((seq, prompt, cwd, session_id, agent_sid)) = next else {
+            break;
+        };
 
         // 标记为 running 并上报
         {
@@ -472,15 +549,34 @@ async fn run_adaptation_loop(data: std::sync::Arc<AppState>, run_id: String) {
         // 会话复用：同一个 cc-web 会话 + 已有 claude 会话 id → --resume，多个补丁共用上下文
         let model = {
             let assistant = handle.read().unwrap();
-            assistant.get_model(&session_id).unwrap_or_else(|| assistant.default_model().to_string())
+            assistant
+                .get_model(&session_id)
+                .unwrap_or_else(|| assistant.default_model().to_string())
         };
-        let existing = if agent_sid.is_empty() { None } else { Some(agent_sid) };
+        let existing = if agent_sid.is_empty() {
+            None
+        } else {
+            Some(agent_sid)
+        };
         // 这一轮问了什么先落进会话（与 /api/agent/{id}/start 同一步骤），再起事件落盘器：
         // thinking / 工具调用 / 文本边跑边写进会话，跑到一半点「查看会话」就能看到已产出的过程，
         // 同时把 claude 会话 id 绑到会话上（--resume 的语义因此也是对的）。
         push_session_message(&data, &session_id, "user", &prompt);
-        let saver = crate::api::agent::spawn_event_saver(data.clone(), session_id.clone(), "claude".to_string());
-        let result = run_session_turn(&data, handle.clone(), &session_id, &cwd, &model, &prompt, existing).await;
+        let saver = crate::api::agent::spawn_event_saver(
+            data.clone(),
+            session_id.clone(),
+            "claude".to_string(),
+        );
+        let result = run_session_turn(
+            &data,
+            handle.clone(),
+            &session_id,
+            &cwd,
+            &model,
+            &prompt,
+            existing,
+        )
+        .await;
         // 必须等落盘器收尾（它收到 result/error 就退出）：本线程用的是单线程 runtime，
         // run_adaptation_loop 返回后 runtime 就被 drop，没跑完的任务会被直接取消 → 末轮落盘会丢。
         // 超时只是兜底（正常情况下它和本轮看到的是同一个 result 事件）。
@@ -541,7 +637,12 @@ async fn run_adaptation_loop(data: std::sync::Arc<AppState>, run_id: String) {
         let (has_next, auto_continue) = {
             let runs = data.adapt_runs.read().unwrap();
             runs.get(&run_id)
-                .map(|r| (r.items.iter().any(|i| i.status == "pending"), r.auto_continue))
+                .map(|r| {
+                    (
+                        r.items.iter().any(|i| i.status == "pending"),
+                        r.auto_continue,
+                    )
+                })
                 .unwrap_or((false, false))
         };
         if has_next && !auto_continue {
@@ -553,7 +654,11 @@ async fn run_adaptation_loop(data: std::sync::Arc<AppState>, run_id: String) {
             }
             // 先告诉聊天页「这一轮到此为止」（它会关连接收尾），再上报 ——
             // 收尾不必等两个阻塞 HTTP 跑完，UI 能立刻落定。
-            send_session_event(&data, &session_id, serde_json::json!({"type": "adapt_paused"}));
+            send_session_event(
+                &data,
+                &session_id,
+                serde_json::json!({"type": "adapt_paused"}),
+            );
             report_and_save(&data, &run_id);
             log::info!("[adapt] 本轮补丁已跑完，等待用户确认继续（run={}）", run_id);
             // 必须在这里 break：下一轮循环开头的 should_stop 判据是 `status != "running"`，
@@ -566,13 +671,19 @@ async fn run_adaptation_loop(data: std::sync::Arc<AppState>, run_id: String) {
     let has_pending = {
         let runs = data.adapt_runs.read().unwrap();
         runs.get(&run_id)
-            .map(|r| r.items.iter().any(|i| i.status == "pending" || i.status == "running"))
+            .map(|r| {
+                r.items
+                    .iter()
+                    .any(|i| i.status == "pending" || i.status == "running")
+            })
             .unwrap_or(false)
     };
     if !has_pending {
         let status = {
             let runs = data.adapt_runs.read().unwrap();
-            runs.get(&run_id).map(|r| r.status.clone()).unwrap_or("done".to_string())
+            runs.get(&run_id)
+                .map(|r| r.status.clone())
+                .unwrap_or("done".to_string())
         };
         if status == "running" {
             finalize_run(&data, &run_id, "done");
@@ -581,8 +692,14 @@ async fn run_adaptation_loop(data: std::sync::Arc<AppState>, run_id: String) {
     // 整轮结束：撤掉「执行中」标记与流式缓存。聊天页的「查看会话」据此收尾
     // （前端每 10s 的心跳检查会查后端 isStreaming，变 false 就关连接、清 LIVE 标志）。
     if !session_id_for_init.is_empty() {
-        data.streaming_sessions.write().unwrap().remove(&session_id_for_init);
-        data.streaming_state.write().unwrap().remove(&session_id_for_init);
+        data.streaming_sessions
+            .write()
+            .unwrap()
+            .remove(&session_id_for_init);
+        data.streaming_state
+            .write()
+            .unwrap()
+            .remove(&session_id_for_init);
     }
     log::info!("[adapt] 后台适配任务结束: {}", run_id);
 }
@@ -615,7 +732,11 @@ fn push_session_message(data: &AppState, session_id: &str, role: &str, content: 
                 content: content.to_string(),
                 timestamp: now_ms,
                 content_blocks: None,
-                assistant: if role == "assistant" { Some("claude".to_string()) } else { None },
+                assistant: if role == "assistant" {
+                    Some("claude".to_string())
+                } else {
+                    None
+                },
             });
             session.updated_at = chrono::Utc::now();
         }
@@ -656,7 +777,11 @@ fn set_run_failed(data: &AppState, run_id: &str, reason: &str) {
             None => String::new(),
         }
     };
-    send_session_event(data, &session_id, serde_json::json!({"type": "adapt_finished", "status": "failed"}));
+    send_session_event(
+        data,
+        &session_id,
+        serde_json::json!({"type": "adapt_finished", "status": "failed"}),
+    );
     report_and_save(data, run_id);
 }
 
@@ -679,7 +804,11 @@ pub(super) fn finalize_run(data: &AppState, run_id: &str, status: &str) {
         }
     };
     // 整轮结束 → 明确告诉聊天页可以收尾了（自动模式下它一路保持着连接，见 send_session_event）
-    send_session_event(data, &session_id, serde_json::json!({"type": "adapt_finished", "status": status}));
+    send_session_event(
+        data,
+        &session_id,
+        serde_json::json!({"type": "adapt_finished", "status": status}),
+    );
     report_and_save(data, run_id);
 }
 
@@ -762,12 +891,12 @@ pub(super) fn download_patch_zip<F: FnMut(u64, Option<u64>)>(
         });
     }
 
-    let name = header_file_name(&resp)
-        .unwrap_or_else(|| fallback_name.trim().to_string());
+    let name = header_file_name(&resp).unwrap_or_else(|| fallback_name.trim().to_string());
     let name = safe_file_name(&name);
     let target = dest_dir.join(&name);
     let total = resp.content_length();
-    let mut file = std::fs::File::create(&target).map_err(|e| format!("创建补丁包文件失败：{e}"))?;
+    let mut file =
+        std::fs::File::create(&target).map_err(|e| format!("创建补丁包文件失败：{e}"))?;
 
     let mut buf = vec![0u8; 64 * 1024];
     let mut downloaded: u64 = 0;

@@ -1,8 +1,8 @@
 //! 补丁适配（用户端）：接收本地上传的补丁包 → 存到 temp 并解压；检查客开工程的 git 状态。
 //!
-//! 目录约定（与「智能分析结果」一致，都放在 cc-web 所在目录下的 temp\）：
-//!   <cc-web目录>\temp\adapt\<runId>\<seq>\<补丁文件名>
-//!   <cc-web目录>\temp\adapt\<runId>\<seq>\<解压后的内容>
+//! 目录约定（与「智能分析结果」一致，都放在用户数据目录下的 temp\）：
+//!   <用户数据目录>\temp\adapt\<runId>\<seq>\<补丁文件名>
+//!   <用户数据目录>\temp\adapt\<runId>\<seq>\<解压后的内容>
 //! 事实来源在用户端；patch_search 只收摘要账本（供跨机器查询）。
 //! 「开始适配」由后台线程执行（adapt_bg.rs），浏览器可随时关闭。
 
@@ -34,10 +34,9 @@ fn sanitize(value: &str) -> String {
         .collect()
 }
 
-/// <cc-web.exe 所在目录>\temp\adapt
+/// <用户数据目录>\temp\adapt
 fn adapt_root() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("temp").join("adapt"))
+    Some(crate::cc_web_temp_dir().join("adapt"))
 }
 
 fn extract_zip(zip_path: &Path, dir: &Path) -> Result<usize, String> {
@@ -73,7 +72,7 @@ pub async fn upload(mut payload: Multipart, query: web::Query<UploadQuery>) -> H
         return HttpResponse::BadRequest().json(serde_json::json!({"success": false, "error": "run_id 不能为空"}));
     }
     let Some(root) = adapt_root() else {
-        return HttpResponse::InternalServerError().json(serde_json::json!({"success": false, "error": "无法定位 cc-web 所在目录"}));
+        return HttpResponse::InternalServerError().json(serde_json::json!({"success": false, "error": "无法定位用户临时目录"}));
     };
     let dir = root.join(&run_id).join(query.seq.to_string());
     if let Err(error) = std::fs::create_dir_all(&dir) {
@@ -163,7 +162,7 @@ pub async fn import_patch(body: web::Json<AdaptImportRequest>) -> HttpResponse {
         return HttpResponse::BadRequest().json(serde_json::json!({"success": false, "error": "缺少补丁中心地址或凭据"}));
     }
     let Some(root) = adapt_root() else {
-        return HttpResponse::InternalServerError().json(serde_json::json!({"success": false, "error": "无法定位 cc-web 所在目录"}));
+        return HttpResponse::InternalServerError().json(serde_json::json!({"success": false, "error": "无法定位用户临时目录"}));
     };
     let dir = root.join(&run_id).join(body.seq.to_string());
     if let Err(error) = std::fs::create_dir_all(&dir) {
@@ -600,7 +599,7 @@ pub async fn retry_failed(data: actix_web::web::Data<AppState>, path: actix_web:
 
 /// 删除记录：本机清单里的这条 + 服务器账本里对应的那份。
 ///
-/// 与智能开发的「删除记录」同口径：**不删**补丁解压目录（`<cc-web目录>\temp\adapt\<runId>`）
+/// 与智能开发的「删除记录」同口径：**不删**补丁解压目录（`<用户数据目录>\temp\adapt\<runId>`）
 /// 和 cc-web 会话——前者是用户资产，后者可能还要用「查看会话」看。
 /// 请求体带前端的活 token（老 token 可能已过期），服务器那份用它能删得掉。
 pub async fn delete_run(

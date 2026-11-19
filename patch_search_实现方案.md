@@ -25,7 +25,7 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 │  │  bypassPermissions）    │ ◀─────── │                          │
 │  ├ java_compiler_mcp(stdio)│  下载补丁 │ data/ccweb-update/      │
 │  │  （本机编译/打补丁）     │          │  （cc-web 新版本发布目录）│
-│  └ ~/.cc-web/*.json 清单   │          └──────────────────────────┘
+│  └ ~/.cc-web-dev/*.json 清单   │          └──────────────────────────┘
 └────────────────────────────┘
 ```
 
@@ -46,7 +46,7 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 ### 2.1 核心事实
 
 - **Rust + Actix-Web 单 exe**，前端原生 JS 无构建步骤；`index.html / patches.html / app.js / patches.js / sidenav.js / copybox.js / folderpick.js` 全部**编译期内嵌**（`static_files.rs`）——**改前端必须重新 cargo build**，浏览器靠 ETag 自动取新
-- 数据目录 `~/.cc-web/`，三份本机清单：
+- 数据目录 `~/.cc-web-dev/`，三份本机清单：
   | 文件 | 内容 | 对应服务器表 |
   |---|---|---|
   | sessions.json | 聊天会话与消息 | 无 |
@@ -83,7 +83,7 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 
 | MCP | 形态 | 作用 | 备注 |
 |---|---|---|---|
-| java_compiler_mcp | stdio，cc-web 每次调 claude 都挂上 | 编译 Java / 打补丁 zip（八个工具） | 依赖 `java_home`（来自产品环境变量）；exe 与 `_internal` 必须同级 |
+| java_compiler_mcp | stdio，cc-web 每次调 claude 都挂上 | 编译 Java / 打补丁 zip（八个工具） | 依赖 `java_home`（来自项目环境）；exe 与 `_internal` 必须同级 |
 | patch_source | http（Bearer 静态 token） | 服务器上标品源码**只读检索**（grep/read_file/glob/stat_path/list_roots） | **path 必须写包级相对路径**（如 `nc/impl/tb`），全树扫 20s+，包级 <0.5s；root 按 `<产品>/<版本>` 挂；审计日志 mcp_audit.log 记"读了搜了什么" |
 
 **口径注意**：智能开发的提示词要求用它查标品；**补丁适配默认禁用**（对照物=补丁 vs 客开工程），只有工程里找不到该类时才允许查标品参考——标品是 CFR 反编译产物，当 diff 基线会引入假改动。
@@ -124,7 +124,7 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 ### 补丁适配（adapt）
 把已有补丁包**合并进客开工程**：
 - 入口两个：本页拖拽/选文件（多补丁）；普通检索列表点「适配」（cc-web 直连补丁中心下载，带进度条）
-- 弹窗填：每个补丁的问题描述（必填）+ 产品环境变量（按产品/版本自动预选，带出客开工程目录）
+- 弹窗填：每个补丁的问题描述（必填）+ 项目环境（按产品/版本自动预选，带出客开工程目录）
 - 开始前检查客开工程 git 状态并强确认（适配**直接改工程、无法自动恢复**）
 - **多补丁逐个跑、每个跑完停在「待确认」**：详情页点「继续下一步」（同一 claude 会话 --resume 延续上下文）、
   「一键跑完剩余」（自动连跑，聊天页可全程实时看）、「重试失败的补丁」、「中止适配」、「删除记录」（本机+服务器一起删）
@@ -145,7 +145,7 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 ### 工作目录（directory）
 内置目录=服务器 A 路径（给 server ClaudeCode 步骤）；个人目录=本机路径（给本地步骤运行时绑定）。
 
-### 产品环境变量（project_env）
+### 项目环境（project_env）
 每用户一套"这台机器的环境"：客开代码目录、home/war包地址、本地 JDK（必填）、
 本机 skill 库（可选）、数据库连接（只读）、远程调试地址（仅线程级）。智能开发/适配都从这里取环境。
 
@@ -210,7 +210,7 @@ AI（Claude Code）在每台开发机上干活，服务器只做补丁库、字�
 ### 环境与账本（三类账本同口径：按人隔离、幂等上报、服务器不驱动）
 | 表 | 用途 | 要点 |
 |---|---|---|
-| project_environment | 产品环境变量 | 产品/版本存**字典 ID**（与 patch_info 相反）；local_jdk_path 必填 |
+| project_environment | 项目环境 | 产品/版本存**字典 ID**（与 patch_info 相反）；local_jdk_path 必填 |
 | problem_run | 智能开发运行摘要 | 唯一键 local_run_id（本机清单的 id）；status: running/awaiting_decision/solved/unsolved/merge_failed/aborted |
 | problem_run_session | 已解决 run 的完整会话存档 | LONGTEXT conversation_json，写入按人隔离、**读取仅 admin** |
 | patch_adapt_run / patch_adapt_item | 适配任务与逐补丁结果 | run 状态多一个 awaiting_confirmation；item 状态 done/conflict/nosource/failed/skipped |
@@ -239,7 +239,7 @@ copy /Y target\release\cc-web.exe D:\project\cc-web-dist\cc-web.exe
 3. 配模型凭证：`claude-settings.example.json → ~/.claude/settings.json` 填网关与 token
    （不配则模型下拉为空、发消息失败）
 4. **双击 `start.bat` 启动**（别直接双击 exe——它设置 `CC_WEB_MCP_CONFIG`，直开会导致 MCP 静默不加载）
-5. 登录后到「产品环境变量」页签登记本机环境（客开目录/home/JDK/skill 库）
+5. 登录后到「项目环境」页签登记本机环境（客开目录/home/JDK/skill 库）
 
 ### 7.3 patch_search：源码运行（开发）
 

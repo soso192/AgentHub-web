@@ -70,9 +70,33 @@ const PATCH_NODE_SERVER_STATUS_LABEL = {
     unsolved: '未解决', merge_failed: '合并失败', aborted: '已中断', error: '执行出错',
 };
 
-// MCP 检索 root：产品小写 + 版本去点（如 fbip-82）
+// MCP 检索 root：产品小写 + 版本去点（如 fbip-82、nccloud-65）
 function patchNodeMcpRoot(env) {
-    return `${String(env.product_name || '').toLowerCase()}-${String(env.product_version || '').replace(/\./g, '')}`;
+    const name = String(env.product_name || '').trim().toLowerCase().replace(/\s+/g, '');
+    const version = String(env.product_version || '').trim().replace(/[\s.]/g, '');
+    return name ? `${name}-${version}` : '';
+}
+
+const PATCH_NODE_CONSTRAINT_MARKER = '【强制约束：源码检索与数据库操作】';
+const PATCH_NODE_GLOBAL_CONSTRAINTS = [
+    PATCH_NODE_CONSTRAINT_MARKER,
+    '- patch_source MCP 的 root 必须按「产品名称小写 + 版本号去掉点」计算，例如 FBIP 8.2 → fbip-82、nccloud 65 → nccloud-65；必须使用环境信息中给出的 root，严禁修改 root，严禁自行猜测或切换到其他 root。',
+    '- 执行数据库增删改（INSERT / UPDATE / DELETE / DDL 等）前必须停下来向用户确认是否执行；只有用户明确授权后才能执行。',
+    '- 如果环境信息中没有数据库连接，必须先向用户确认数据库连接；严禁自行从代码、配置文件或日志中读取或推断数据库连接。',
+].join('\n');
+
+// 兜底补齐空 root，并确保模板/内置提示词都带统一约束（有标记则不重复追加）。
+function patchNodeEnsureGovernancePrompt(prompt, run) {
+    const env = (run && run.env_snapshot) || {};
+    const root = patchNodeMcpRoot(env);
+    const rootText = root || '（未配置：项目环境缺少产品名称或版本，必须先向用户确认）';
+    let next = String(prompt || '')
+        .replace(/root\s*=\s*\{\{mcp_root\}\}/g, `root=${rootText}`)
+        .replace(/root\s*=\s*(?=[，,；;、\s)）]|$)/g, `root=${rootText}`);
+    if (!next.includes(PATCH_NODE_CONSTRAINT_MARKER)) {
+        next = `${next}\n\n${PATCH_NODE_GLOBAL_CONSTRAINTS}`;
+    }
+    return next;
 }
 
 /* ── 路径工具 ── */
@@ -173,7 +197,7 @@ function renderNodeTemplate(tpl, values) {
     });
 }
 
-// 统一变量字典（任一 stage 可用子集）：来自 env_snapshot 的产品环境 + 运行期 run 字段。
+// 统一变量字典（任一 stage 可用子集）：来自 env_snapshot 的项目环境 + 运行期 run 字段。
 function buildNodePromptValues(run, extra) {
     const env = (run && run.env_snapshot) || {};
     const turnDir = patchNodeTurnDir(run || {});
@@ -242,10 +266,10 @@ async function nodeResolveStagePrompt(run, stage, builtinFn) {
     if (resolved) {
         const tpl = resolved[stage];
         if (tpl && String(tpl).trim()) {
-            return renderNodeTemplate(tpl, buildNodePromptValues(run));
+            return patchNodeEnsureGovernancePrompt(renderNodeTemplate(tpl, buildNodePromptValues(run)), run);
         }
     }
-    return typeof builtinFn === 'function' ? builtinFn() : '';
+    return patchNodeEnsureGovernancePrompt(typeof builtinFn === 'function' ? builtinFn() : '', run);
 }
 
 /* ── SSE 流（先 connected 再 start）── */

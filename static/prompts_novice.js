@@ -31,9 +31,9 @@ function noviceMaskDbPassword(text) {
 function noviceFbipSkillGuide(env) {
     const dir = String(env.local_skill_path || '').trim().replace(/[\\/]+$/, '');
     const where = dir
-        ? `skill 库位置：优先使用产品环境里配置的「本机 skill 地址」：${dir}（技能在 ${dir}/.claude/skills 下；找不到 fbip-* 时回落到安装目录的 fbip_claude_skills_V82）`
+        ? `skill 库位置：优先使用项目环境里配置的「本机 skill 地址」：${dir}（技能在 ${dir}/.claude/skills 下；找不到 fbip-* 时回落到安装目录的 fbip_claude_skills_V82）`
         : [
-            'skill 库位置：产品环境里登记了 skill 路径时以它为准；未登记时按顺序查找：',
+            'skill 库位置：项目环境里登记了 skill 路径时以它为准；未登记时按顺序查找：',
             '  ① 从本次运行目录向上找到包含 cc-web.exe 的安装目录，其下的 `fbip_claude_skills_V82`（或 `fbip_claude_skills_V*`）；',
             '  ② 用户目录 `~/.claude/skills` 下的 `fbip-*` 技能。',
             '  找到库根后，技能在 `<库根>/.claude/skills` 下。',
@@ -355,6 +355,7 @@ async function noviceBuildPrompt(run, stage, retryPayload) {
         prompt += `\n\n【日志附件】用户提供了 ${logPaths.length} 个日志截图/文件（本机文件），请用 Read 工具查看/读取，结合其中的报错信息分析：\n`
             + logPaths.map(path => `- ${path}`).join('\n');
     }
+    prompt = patchNodeEnsureGovernancePrompt(prompt, promptRun);
     return prompt;
 }
 

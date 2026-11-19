@@ -111,7 +111,7 @@ await sleep(150);
 // 必填项为空时点「开始排查」：应显示校验提示，且不创建会话
 await document.getElementById('noviceRunSubmit').onclick();
 await sleep(100);
-check('必填项为空时有校验提示', String(document.getElementById('noviceRunError').textContent).includes('产品环境'));
+check('必填项为空时有校验提示', String(document.getElementById('noviceRunError').textContent).includes('项目环境'));
 check('校验失败不创建会话', !global.__calls.sse);
 
 const envSelect = document.getElementById('noviceRunEnv');
@@ -132,7 +132,7 @@ check('提交后切回智能开发视图', global.__calls.view === 'node');
 check('阶段一提示词已发出（一次）', Boolean(global.__calls.sse) && global.__calls.sse.id === 'sess-123');
 const prompt = global.__calls.sse && global.__calls.sse.prompt || '';
 check('提示词含问题描述', prompt.includes('一二三四五六七八九十'), prompt.slice(0, 100));
-check('提示词含产品环境', prompt.includes('FBIP') && prompt.includes('8.2'));
+check('提示词含项目环境', prompt.includes('FBIP') && prompt.includes('8.2'));
 const nameRequest = global.__calls.requests.find(item => item.method === 'PATCH' && item.url.includes('/api/sessions/sess-123/name'));
 let nameBody = {};
 try { nameBody = JSON.parse(nameRequest && nameRequest.body || '{}'); } catch (e) {}

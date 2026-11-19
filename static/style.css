@@ -1062,7 +1062,7 @@ textarea {
 /* 未解决重跑弹框：默认 inline-field 是左右排，这里改成标签在上、输入框在下 */
 .patch-admin-form label.patch-inline-field.patch-inline-stack { flex-direction: column; align-items: stretch; gap: 6px; }
 .patch-admin-form label.patch-inline-field.patch-inline-stack > .patch-inline-label { min-width: 0; }
-/* 产品环境变量：标签文字长短不一（2~7 个字），统一标签宽度，右侧控件左边缘才能对齐；
+/* 项目环境：标签文字长短不一（2~7 个字），统一标签宽度，右侧控件左边缘才能对齐；
    文本框高度按 rows 走，不要吃 .patch-admin-form textarea 的 96px 下限。 */
 .patch-admin-form.project-env-form label.patch-inline-field > .patch-inline-label { min-width: 8em; }
 .patch-admin-form.project-env-form label.patch-inline-field > textarea { min-height: 40px; }

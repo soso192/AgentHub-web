@@ -248,19 +248,19 @@ export function ProjectEnvTab() {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <div className="text-[12.5px] text-ink-3">共 {total} 个产品环境</div>
+        <div className="text-[12.5px] text-ink-3">共 {total} 个项目环境</div>
         <Button variant="primary" icon={<Plus size={14} />} onClick={() => setEditing('new')}>
           新增环境
         </Button>
       </div>
 
-      <DataTable columns={columns} rows={rows} loading={loading} rowKey={(row) => String(row.id)} empty="暂无产品环境" />
+      <DataTable columns={columns} rows={rows} loading={loading} rowKey={(row) => String(row.id)} empty="暂无项目环境" />
       <Pagination page={page} size={size} total={total} onPage={(next) => void load(next, size)} onSize={(next) => void load(1, next)} />
 
       <Dialog
         open={editing != null}
         onClose={() => setEditing(null)}
-        title={editing === 'new' ? '新增产品环境' : '编辑产品环境'}
+        title={editing === 'new' ? '新增项目环境' : '编辑项目环境'}
         width="max-w-3xl"
         footer={
           <>
@@ -407,7 +407,7 @@ export function ProjectEnvTab() {
             setDeleteBusy(false);
           }
         }}
-        title="删除产品环境"
+        title="删除项目环境"
         description={deleting ? `确定删除「${deleting.project_name}」吗？` : ''}
         confirmText="删除"
         danger

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="智能开发平台-实施版：智能开发（AI 排查）+ 产品环境变量与环境检查。">
+<meta name="description" content="智能开发平台-实施版：智能开发（AI 排查）+ 项目环境与环境检查。">
 <title>智能开发平台-实施版</title>
 <script>
 // 没有登录 token 时立刻整页进 /login：放在 head 里同步执行，避免先闪一下主界面
@@ -214,13 +214,13 @@ body.novice-shell #welcomeScreen p { max-width: 460px; }
         <!-- 视图 1：智能开发（聊天交互区） -->
         <section id="nv-view-chat">
             <div class="nv-bar">
-                <button class="nv-link-btn" id="noviceEnvBtn" type="button">⚙️ 产品环境变量</button>
+                <button class="nv-link-btn" id="noviceEnvBtn" type="button">⚙️ 项目环境</button>
                 <button class="nv-new-run" id="noviceNewRunBtn" type="button">＋ 创建任务</button>
             </div>
 
             <div class="welcome-screen" id="welcomeScreen">
                 <h1>⚡ 智能开发平台</h1>
-                <p>点右上角「＋ 创建任务」，选择产品环境并描述问题，AI 会开始处理任务；之后可以直接在下方输入框继续和它对话。</p>
+                <p>点右上角「＋ 创建任务」，选择项目环境并描述问题，AI 会开始处理任务；之后可以直接在下方输入框继续和它对话。</p>
             </div>
 
             <div class="single-view-container" id="singleViewContainer">
@@ -244,10 +244,10 @@ body.novice-shell #welcomeScreen p { max-width: 460px; }
             <div class="split-view-container" id="splitViewContainer" style="display:none;"><div class="split-grid" id="splitGrid"></div></div>
         </section>
 
-        <!-- 视图 2：产品环境变量 -->
+        <!-- 视图 2：项目环境 -->
         <section id="nv-view-env" class="nv-panel nv-hidden">
             <div class="nv-panel-head">
-                <h1>产品环境变量</h1>
+                <h1>项目环境</h1>
                 <div class="nv-head-actions">
                     <button class="nv-link-btn" id="btn-env-back" type="button">← 返回</button>
                     <button class="nv-primary-btn" id="btn-new-env" type="button">＋ 新增</button>
@@ -292,10 +292,10 @@ body.novice-shell #welcomeScreen p { max-width: 460px; }
     </main>
 </div>
 
-<!-- 产品环境表单弹窗 -->
+<!-- 项目环境表单弹窗 -->
 <div class="modal-overlay nv-hidden" id="env-form-modal">
     <div class="modal" style="width:620px;max-width:96vw;">
-        <div class="modal-header"><h3 id="env-form-title">产品环境</h3><button class="modal-close" id="env-form-close" type="button">×</button></div>
+        <div class="modal-header"><h3 id="env-form-title">项目环境</h3><button class="modal-close" id="env-form-close" type="button">×</button></div>
         <form id="env-form">
             <label class="nv-field"><span>产品名称<span class="req">*</span></span><select name="product_id" required></select></label>
             <label class="nv-field"><span>版本号<span class="req">*</span></span><select name="version_id" required></select></label>

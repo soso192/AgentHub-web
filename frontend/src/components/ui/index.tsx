@@ -79,12 +79,18 @@ export function Badge({
   children,
   tone = 'muted',
   className,
+  title,
 }: {
   children: ReactNode;
   tone?: 'accent' | 'success' | 'warning' | 'danger' | 'muted';
   className?: string;
+  title?: string;
 }) {
-  return <span className={cn('badge', `badge-${tone}`, className)}>{children}</span>;
+  return (
+    <span className={cn('badge', `badge-${tone}`, className)} title={title}>
+      {children}
+    </span>
+  );
 }
 
 /* ── Input / Select ── */

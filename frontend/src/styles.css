@@ -48,6 +48,9 @@
   --focus-ring: 0 0 0 3px rgba(124, 140, 255, 0.28);
   --scroll-thumb: #2a3344;
   --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* 聊天页右侧用户提问导航：深色背景下未选中为白点，选中为蓝点 */
+  --turn-dot: #ffffff;
+  --turn-dot-active: #3b82f6;
 }
 
 [data-theme="light"] {
@@ -83,6 +86,9 @@
   --shadow-pop: 0 24px 60px rgba(24, 35, 60, 0.18), 0 2px 8px rgba(24, 35, 60, 0.08);
   --focus-ring: 0 0 0 3px rgba(79, 99, 232, 0.22);
   --scroll-thumb: #c6cedd;
+  /* 聊天页右侧用户提问导航：浅色背景下未选中为黑点，选中为蓝点 */
+  --turn-dot: #111827;
+  --turn-dot-active: #2563eb;
 }
 
 @layer base {
@@ -428,4 +434,15 @@
 }
 .no-scrollbar {
   scrollbar-width: none;
+}
+
+/* 补丁部署工具：原生 details 折叠树的箭头 */
+.pd-dir > summary::-webkit-details-marker {
+  display: none;
+}
+.pd-dir > summary .pd-arrow {
+  transition: transform 0.15s ease;
+}
+.pd-dir[open] > summary .pd-arrow {
+  transform: rotate(90deg);
 }

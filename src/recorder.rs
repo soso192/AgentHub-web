@@ -716,8 +716,8 @@ async fn flush_and_export_and_close() {
         }
     };
     if let Some(payload) = payload {
-        // 导出文件放在 cc-web.exe 所在目录的 recordings 下，文件名全英文（避免中文路径带来的编码问题）
-        let dir = crate::cc_web_install_dir().join("recordings");
+        // 导出文件放在用户数据目录的 recordings 下，文件名全英文（避免中文路径带来的编码问题）
+        let dir = crate::cc_web_recordings_dir();
         let _ = std::fs::create_dir_all(&dir);
         let stamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
         let file = dir.join(format!("record_{stamp}.json"));
@@ -1314,7 +1314,7 @@ fn fail(status: u16, message: &str) -> HttpResponse {
     response.json(json!({ "success": false, "error": message }))
 }
 
-/// 用调用方转发来的 token 从 patch_search 查产品环境的「录制页面地址」。
+/// 用调用方转发来的 token 从 patch_search 查项目环境的「录制页面地址」。
 /// 不信任前端传 URL：地址只从服务器上的环境记录取。
 async fn fetch_record_url(req: &HttpRequest, env_id: i64) -> Result<String, String> {
     let auth = req
@@ -1352,10 +1352,10 @@ async fn fetch_record_url(req: &HttpRequest, env_id: i64) -> Result<String, Stri
         {
             let record_url = env.get("record_url").and_then(|value| value.as_str()).unwrap_or("");
             return validate_record_url(record_url)
-                .map_err(|_| "该产品环境没有配置「录制页面地址」".to_string());
+                .map_err(|_| "该项目环境没有配置「录制页面地址」".to_string());
         }
     }
-    Err("找不到该产品环境（可能是登录已失效，或环境已被删除）".to_string())
+    Err("找不到该项目环境（可能是登录已失效，或环境已被删除）".to_string())
 }
 
 /// POST /api/recorder/open

@@ -2113,7 +2113,7 @@ location.href = `index.html?resume=1&sid=${encodeURIComponent(sid)}&cwd=${encode
 
 > 状态：方案已定，**未实现**。
 > 定位：在**智能开发**页签内新增一个本地执行的「问题解决」节点。不走聊天页，也不走 patch_search 的流程引擎。
-> 关联功能：表单项之一的「关联的产品环境变量」来自既有功能 `project_environment`（本文档尚未收录该表，见 `app/routes/project_env.py` 与 `schema/current_schema.sql`）。
+> 关联功能：表单项之一的「关联的项目环境」来自既有功能 `project_environment`（本文档尚未收录该表，见 `app/routes/project_env.py` 与 `schema/current_schema.sql`）。
 
 ### 20.1 需求
 
@@ -2122,7 +2122,7 @@ location.href = `index.html?resume=1&sid=${encodeURIComponent(sid)}&cwd=${encode
 | 表单项 | 说明 |
 |---|---|
 | 问题/需求描述 | 必填。要解决的问题或要实现的需求 |
-| 关联的产品环境变量 | 必填。下拉，取自当前用户的 `project_environment` 条目，选中后带出 `product/version`、`code_directory`、`package_path`、`local_jdk_path` |
+| 关联的项目环境 | 必填。下拉，取自当前用户的 `project_environment` 条目，选中后带出 `product/version`、`code_directory`、`package_path`、`local_jdk_path` |
 | 补丁输出路径 | 必填。本机绝对目录，产物（补丁 zip / SQL / 说明）写到这里 |
 | 相关日志信息 | 选填。粘贴的报错栈/日志文本 |
 
@@ -2295,7 +2295,7 @@ CREATE TABLE IF NOT EXISTS `problem_run` (
   `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '主键',
   `local_run_id` varchar(64) NOT NULL COMMENT '客户端生成的运行标识（uuid），幂等上报的唯一键',
   `problem_desc` text NOT NULL COMMENT '问题/需求描述',
-  `env_id` bigint(20) unsigned DEFAULT NULL COMMENT '关联的产品环境变量 ID（无外键；仅追溯用，展示不 JOIN）',
+  `env_id` bigint(20) unsigned DEFAULT NULL COMMENT '关联的项目环境 ID（无外键；仅追溯用，展示不 JOIN）',
   `env_project_name` varchar(255) DEFAULT NULL COMMENT '环境快照：项目名称（环境改名/删除后本记录仍可读）',
   `product_id` bigint(20) unsigned DEFAULT NULL COMMENT '产品字典 ID（无外键无索引，展示时 LEFT JOIN product 取名称）',
   `version_id` bigint(20) unsigned DEFAULT NULL COMMENT '版本字典 ID（无外键无索引，展示时 LEFT JOIN product_version 取版本号）',
@@ -2331,7 +2331,7 @@ CREATE TABLE IF NOT EXISTS `problem_run` (
 | `id` | BIGINT UNSIGNED | 否 | 自增主键。 |
 | `local_run_id` | VARCHAR(64) | 否 | 客户端生成的 uuid，**唯一键即幂等键**：上报天然可重试，不需要"先查后插"。 |
 | `problem_desc` | TEXT | 否 | 问题/需求描述。 |
-| `env_id` | BIGINT UNSIGNED | 是 | 关联的产品环境变量 ID，**只留列、无外键**（见上方偏差表）。环境被删后本列成为悬空引用，但展示用的是 `env_project_name` 快照，所以历史记录照样可读。 |
+| `env_id` | BIGINT UNSIGNED | 是 | 关联的项目环境 ID，**只留列、无外键**（见上方偏差表）。环境被删后本列成为悬空引用，但展示用的是 `env_project_name` 快照，所以历史记录照样可读。 |
 | `env_project_name` | VARCHAR(255) | 是 | 环境快照。环境改名/删除后本记录仍可读。 |
 | `product_id` / `version_id` | BIGINT UNSIGNED | 是 | 产品/版本字典 ID。与 `project_environment` 的做法一致：**只存 ID、不存名称文本**，展示时 `LEFT JOIN product` / `product_version` 取名称；字典是逻辑删除、行永远在，所以历史记录永远显示得出名字，且管理员改名后自动跟随。 |
 | `code_directory` / `patch_output_path` | VARCHAR(1024) | 是 | 环境快照，本机绝对路径，**仅供看懂"在哪台机器、哪个目录"**，服务端不校验、不访问。 |
@@ -2398,7 +2398,7 @@ running ──(用户点中断)──> aborted
 | 字段 | 控件 | 说明 |
 |---|---|---|
 | 问题/需求描述 | textarea（`problem_desc`），必填 | 前端 trim 后判空 |
-| 关联的产品环境变量 | select（`env_id`），必填 | 选项来自 `GET /api/project-envs`（既有接口），显示 `项目名称（产品名 版本号）`；选中后把 `code_directory/package_path/local_jdk_path` 以及**选填的 `db_connection`/`debug_address`/`local_skill_path`** 一起存进 `env_snapshot`，并在下方提示行显示前三个值（JDK 没登记时提示"编译前需要补"） |
+| 关联的项目环境 | select（`env_id`），必填 | 选项来自 `GET /api/project-envs`（既有接口），显示 `项目名称（产品名 版本号）`；选中后把 `code_directory/package_path/local_jdk_path` 以及**选填的 `db_connection`/`debug_address`/`local_skill_path`** 一起存进 `env_snapshot`，并在下方提示行显示前三个值（JDK 没登记时提示"编译前需要补"） |
 | 补丁输出路径 | input（`patch_output_path`），必填 | 本机绝对路径（父目录，`<outDir>` = 它 + `/<runId>`）。**不设默认值**（已拍板），每次由用户自己填；只做"非空 + 绝对路径"的前端校验 |
 | 相关日志信息 | textarea（`log_info`），选填 | 全文**整段内联**进阶段一提示词（给 claude 定位用）；≤8KB 时在清单里另存一份 `log_info_inline` 备查，超过就不存（见 20.7 / 20.13 第 6 条）。**不落盘、不让 claude 抄** |
 
@@ -2633,7 +2633,7 @@ location.href = `index.html?resume=1&sid=${encodeURIComponent(agent_session_id)}
 
 ### 20.19 仍需确认的一点
 
-**`module_name` 与模块根的判定**（20.12 末尾）：v1 让 claude 自己判断、写进 `结论.md`。如果实际用起来发现它经常判错，再考虑把"模块根相对路径 + module_name"加成产品环境变量的字段（那是改 `project_environment` 表，要部署后端）。**开工前不需要拍板，跑一轮看结果即可。**
+**`module_name` 与模块根的判定**（20.12 末尾）：v1 让 claude 自己判断、写进 `结论.md`。如果实际用起来发现它经常判错，再考虑把"模块根相对路径 + module_name"加成项目环境的字段（那是改 `project_environment` 表，要部署后端）。**开工前不需要拍板，跑一轮看结果即可。**
 
 ### 20.20 落地顺序
 
@@ -2872,7 +2872,7 @@ claude mcp add java_compiler_mcp python3 "/绝对路径/mcpadd/java_compiler_mcp
 
 > ⚠️ 未签名的可执行文件被 Gatekeeper 拦时，**表现是 cc-web 起来后 MCP 静默不加载**，界面上完全看不出来（与 Windows 上不设 `CC_WEB_MCP_CONFIG` 那个坑同类）。装完先在终端里手动跑一次那个可执行文件，确认不弹「无法打开」。
 
-**别忘了 `java_home` 要指到 Mac 上的 JDK**：`java_home` 是**每次工具调用的入参**、不是配置文件里的项 —— 就是产品环境变量里「本地jdk路径」那一列（`local_jdk_path`，见 20.11 的节点表单与 20.12 的提示词）。mac 上是 `/Library/Java/JavaVirtualMachines/<jdk>.jdk/Contents/Home`（用 `/usr/libexec/java_home -V` 列出来）。Apple Silicon 上要用 arm64 的 JDK。
+**别忘了 `java_home` 要指到 Mac 上的 JDK**：`java_home` 是**每次工具调用的入参**、不是配置文件里的项 —— 就是项目环境里「本地jdk路径」那一列（`local_jdk_path`，见 20.11 的节点表单与 20.12 的提示词）。mac 上是 `/Library/Java/JavaVirtualMachines/<jdk>.jdk/Contents/Home`（用 `/usr/libexec/java_home -V` 列出来）。Apple Silicon 上要用 arm64 的 JDK。
 
 ### 21.5 验收清单（mac）
 
@@ -2882,7 +2882,7 @@ claude mcp add java_compiler_mcp python3 "/绝对路径/mcpadd/java_compiler_mcp
 - [ ] 手动跑一次 `dist_onedir/java_compiler_mcp/java_compiler_mcp`，不弹「无法打开」（= Gatekeeper 已放行）
 - [ ] `claude mcp list` 里有 `java_compiler_mcp`；真跑一次 `claude -p "调用 mcp__java_compiler_mcp__java_scan_home 扫一遍 <某个 home> 并原样输出"` 能回真结果
 - [ ] 若走 cc-web：`~/.cc-web/mcp-servers.resolved.json` 里拼出来的路径是对的（点开看一眼，别只看日志）
-- [ ] `java_home` 在产品环境变量「本地jdk路径」里登记了，且指向的是**这台 Mac 上**的 JDK 根目录
+- [ ] `java_home` 在项目环境「本地jdk路径」里登记了，且指向的是**这台 Mac 上**的 JDK 根目录
 
 **patch_search（仅参考，当前不用做）**
 
@@ -2900,7 +2900,7 @@ claude mcp add java_compiler_mcp python3 "/绝对路径/mcpadd/java_compiler_mcp
 2. **单个文件拷过去 = 打开就崩**：onedir 的可执行文件与同目录的 `_internal/` 是一体的，必须**整个文件夹**压缩分发。只拷那个可执行文件是最常见的错。
 3. **解压后丢掉可执行位 / 被杀**：`killed: 9` 或「无法验证开发者」。先 `xattr -dr com.apple.quarantine <文件夹>`；还不行就在目标机上 `codesign --force --deep --sign - <文件夹>/java_compiler_mcp` 做一次 ad-hoc 重签（PyInstaller 打的包本来带 ad-hoc 签名，经压缩/解压/某些拷贝工具后签名可能失效）。
 4. **`mcp` 版本必须 `<2`**：这个 MCP import 的是 `mcp.server.fastmcp`，2.x 已改成 `mcp.server.mcpserver`，升上去直接 `ModuleNotFoundError`；而 patch_search 要 `mcp==2.2.0` —— 一台机器两个 venv，别混装。
-5. **`java_home` 是每次调用的入参**，不会从别处读配置：Mac 上的 JDK 路径必须逐台登记在产品环境变量的「本地jdk路径」里，Apple Silicon 上要用 arm64 的 JDK。
+5. **`java_home` 是每次调用的入参**，不会从别处读配置：Mac 上的 JDK 路径必须逐台登记在项目环境的「本地jdk路径」里，Apple Silicon 上要用 arm64 的 JDK。
 
 **打包/分发 patch_search 时（本章 21.1~21.3 若启用才相关）**
 
@@ -2954,7 +2954,7 @@ cc-web 目前只传 `--mcp-config`（`claude.rs` 的 `mcp_flags()`）。要让"�
 
 改动都在 `static/patches.js`（v1 提示词硬编码在 cc-web，见 20.12）：
 
-1. **建 run 时**：`env_snapshot` 新增 `local_skill_path`（取自产品环境变量，选填；只落本机 `node_runs.json`，**不上报**）。
+1. **建 run 时**：`env_snapshot` 新增 `local_skill_path`（取自项目环境，选填；只落本机 `node_runs.json`，**不上报**）。
 2. **阶段一【环境】段**：登记了才多一行「本机 skill 库（FBIP 领域 skill 库根目录，可按需读取）：…」。
 3. **阶段一【任务】新增第 2 条"先读工具说明书"**（登记了才出现；没登记整条退化成"跳过这一步"）：
    - 读 `<库>/java-compiler-mcp/SKILL.md` —— 编译 MCP 七个工具的参数、路径映射表、GBK 回退、常见错误，**照它调用、不要自己猜参数**；
@@ -2969,12 +2969,12 @@ cc-web 目前只传 `--mcp-config`（`claude.rs` 的 `mcp_flags()`）。要让"�
 1. **skill 列表有预算**：所有 skill 的 `name` + `description` 会进 system prompt，预算约为上下文窗口的 **2%**，**超出的部分被静默丢弃、没有任何报错**。731 个 skill 的描述远超这个预算 —— 装是装上了，但**不能指望"装上就会被自动路由到"**。库里 `description` 越短越有利；真要给自动路由用，只能靠"L1 router 当唯一入口"的设计。
 2. **L1 router 有一个硬缺失**：`fbip-skill-router`（以及 `fbip-jira-solver`、`fbip-jira-search`、`fbip-skill-generator`、`fbip-erm-loan-offset`）**硬性要求一个不存在的 `fbip-code-index-analysis`**（已确认无此目录）。所以提示词里**不要**写"从 L1 开始按路由执行"——那会让它卡在第一步；本次改成"按需读，遇到不存在的前置就跳过并写进结论"。
 
-另外这份库里有**大量机器绝对路径硬编码**（`D:/Tools/jdk1.8.0_201`、`D:/work/ideaworkspace/fbipaihome/home/gl`、`D:/home/hotwebs/hotwebs` 等）。这正是产品环境变量里 `package_path` / `local_jdk_path` 要替代的东西 —— 所以第 2 条 c 明确写了"以【环境】为准"。
+另外这份库里有**大量机器绝对路径硬编码**（`D:/Tools/jdk1.8.0_201`、`D:/work/ideaworkspace/fbipaihome/home/gl`、`D:/home/hotwebs/hotwebs` 等）。这正是项目环境里 `package_path` / `local_jdk_path` 要替代的东西 —— 所以第 2 条 c 明确写了"以【环境】为准"。
 
 ### 22.5 落地动作（每台开发机）
 
 1. 把 skill 库放到本机固定位置（建议 `<盘>:\fbip-skill`，与 `D:\project\fbip-skill` 一致）。
-2. 到「产品环境变量」里把该产品的 **本地skill路径** 填成库根目录（例如 `D:\fbip-skill\.claude\skills`）——它只登记、服务器不校验。
+2. 到「项目环境」里把该产品的 **本地skill路径** 填成库根目录（例如 `D:\fbip-skill\.claude\skills`）——它只登记、服务器不校验。
 3. （可选，但推荐）按 22.2 A 做用户级联接，让交互式 claude 也能用这套 skill。
 4. 重编 cc-web 并分发（本次已做，见 22.6）。
 
@@ -2982,7 +2982,7 @@ cc-web 目前只传 `--mcp-config`（`claude.rs` 的 `mcp_flags()`）。要让"�
 
 - `static/patches.js`：`env_snapshot.local_skill_path`、阶段一【环境】新增 skill 库行、【任务】新增第 2 条并重排第 3 条（a~e）——均已改完，`node --check` 通过，提示词用脱机渲染核对过（登记 / 未登记两种形态）。
 - **cc-web 已重编并分发**：`cargo build --release` → 4,765,696 字节（2026-09-21 08:55），已覆盖 `target/release/cc-web.exe`、仓库根 `cc-web.exe`、`D:\project\cc-web-dist\cc-web.exe`（三份都验过二进制里含新提示词串）。
-- **待用户动作**：重启正在跑的 cc-web（当时那个进程还是 9-20 19:09 的版本）；把 skill 库路径登记进产品环境变量。
+- **待用户动作**：重启正在跑的 cc-web（当时那个进程还是 9-20 19:09 的版本）；把 skill 库路径登记进项目环境。
 - **没做的**：cc-web 不加 `--add-dir`；`fbip-code-index-analysis` 的缺失不补（属 skill 库自身的问题）；skill 库不下发/不自动安装（v1 由各机自己放）。
 
 ## 二十三、源码检索 MCP 的审计日志

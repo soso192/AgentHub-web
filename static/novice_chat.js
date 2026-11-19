@@ -6,10 +6,10 @@
 //
 //  实施版行为：
 //   - 左侧「会话」标题改为「智能开发」；标题栏加「🔍 新建排查」按钮（原来的 + 仍是普通新建会话）
-//   - 新建排查 = 填表单（产品环境 / 问题描述 / 触发项+录制 / 日志文件）→ 建运行目录 →
+//   - 新建排查 = 填表单（项目环境 / 问题描述 / 触发项+录制 / 日志文件）→ 建运行目录 →
 //     建 claude 会话（cwd=运行目录）→ 直接选中该会话 → **只发一次阶段一提示词**；
 //     之后完全由用户和 Claude Code 自由对话（不做状态跟踪、不做判定/打包、不写 run 记录）
-//   - 侧边栏底部加「产品环境变量 / 环境检查」入口（/novice.html）
+//   - 侧边栏底部加「项目环境 / 环境检查」入口（/novice.html）
 //   - 顶部「聊天/智能开发」切换按钮隐藏（合并成一个菜单）
 // ============================================================
 (function () {
@@ -134,7 +134,7 @@
             <div class="nrm-box">
                 <button class="nrm-close" id="noviceRunClose" type="button">×</button>
                 <h3>创建任务</h3>
-                <label><span>产品环境 <b class="nrm-req">*</b></span><select id="noviceRunEnv"></select></label>
+                <label><span>项目环境 <b class="nrm-req">*</b></span><select id="noviceRunEnv"></select></label>
                 <label><span>问题描述 <b class="nrm-req">*</b></span>
                     <textarea id="noviceRunDesc" rows="4"></textarea></label>
                 <div class="nrm-attach">
@@ -184,19 +184,19 @@
         el('noviceRecList').style.display = 'none';
         el('noviceRecList').textContent = '';
         const select = el('noviceRunEnv');
-        select.innerHTML = '<option value="">加载产品环境…</option>';
+        select.innerHTML = '<option value="">加载项目环境…</option>';
         el('noviceRunModal').style.display = 'flex';
         try {
             S.envs = (await patchRequest('/api/project-envs')) || [];
         } catch (error) {
             S.envs = [];
-            showNotice('产品环境加载失败：' + error.message);
+            showNotice('项目环境加载失败：' + error.message);
         }
         if (!S.envs.length) {
-            select.innerHTML = '<option value="">（请先到「产品环境变量」新增一个环境）</option>';
+            select.innerHTML = '<option value="">（请先到「项目环境」新增一个环境）</option>';
             return;
         }
-        select.innerHTML = ['<option value="">请选择产品环境</option>'].concat(
+        select.innerHTML = ['<option value="">请选择项目环境</option>'].concat(
             S.envs.map(item => `<option value="${escape(item.id)}">${escape(`${item.project_name || ''}（${item.product_name || ''} ${item.product_version || ''}）`)}</option>`)
         ).join('');
         syncRecordButton();
@@ -431,7 +431,7 @@
         const env = currentEnv();
         const desc = String(el('noviceRunDesc').value || '').trim();
         const recordUrl = String(el('noviceRunUrl').value || '').trim();
-        if (!env) { showRunError('请选择产品环境', 'noviceRunEnv'); return; }
+        if (!env) { showRunError('请选择项目环境', 'noviceRunEnv'); return; }
         if (!desc && !S.images.length) { showRunError('请填写问题描述，或添加图片/文件附件', 'noviceRunDesc'); return; }
         if (recordUrl && !/^https?:\/\//i.test(recordUrl)) {
             showRunError('「录制页面地址」必须是 http/https 地址，或留空', 'noviceRunUrl'); return;

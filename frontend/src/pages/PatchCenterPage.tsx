@@ -33,11 +33,15 @@ import { CodeSearchTab } from '../components/patches/CodeSearchTab';
 import { SmartTab } from '../components/patches/SmartTab';
 import { AdaptTab } from '../components/patches/AdaptTab';
 import { NodeTab } from '../components/patches/NodeTab';
+import { FbipGraphTab } from '../components/patches/FbipGraphTab';
+import { PatchDeployTab } from '../components/patches/PatchDeployTab';
 import type { PatchRow } from '../lib/types';
 import {
   buildDevTabs,
   readCachedCodeSearchUrl,
+  readCachedFbipGraphUrl,
   rememberCodeSearchUrl,
+  rememberFbipGraphUrl,
 } from '../lib/devTabs';
 
 export function PatchCenterPage() {
@@ -52,6 +56,9 @@ export function PatchCenterPage() {
   // 先用上次缓存渲染，配置回来后再校准：避免「源码搜索」菜单项刷新时先隐藏再出现。
   const [codeSearchUrl, setCodeSearchUrl] = useState<string | null>(() =>
     readCachedCodeSearchUrl()
+  );
+  const [fbipGraphUrl, setFbipGraphUrl] = useState<string | null>(() =>
+    readCachedFbipGraphUrl()
   );
   const [usage, setUsage] = useState<Record<string, number> | null>(null);
   const [updateInfo, setUpdateInfo] = useState<Record<string, unknown> | null>(null);
@@ -79,6 +86,9 @@ export function PatchCenterPage() {
         const url = config.code_search_url || '';
         rememberCodeSearchUrl(url);
         setCodeSearchUrl(url);
+        const graphUrl = config.fbip_graph_url || '';
+        rememberFbipGraphUrl(graphUrl);
+        setFbipGraphUrl(graphUrl);
         setApiStatus(config.patch_search_servers?.length ? 'ok' : 'missing');
       })
       .catch(() => setApiStatus('fail'));
@@ -264,7 +274,7 @@ export function PatchCenterPage() {
           <span className="text-[14px] font-semibold text-ink">
             {activeTab?.label || '智能开发'}
           </span>
-          <span className="badge badge-muted">补丁中心</span>
+          {edition === 'novice' && <span className="badge badge-muted">补丁中心</span>}
         </div>
         <div className="flex-1" />
         {usage && (
@@ -350,7 +360,7 @@ export function PatchCenterPage() {
 
       <div
         className={
-          activeTab?.key === 'codesearch'
+          activeTab?.key === 'codesearch' || activeTab?.key === 'fbipgraph'
             ? 'flex min-h-0 flex-1 flex-col p-3'
             : 'scroll-area min-h-0 flex-1 p-3'
         }
@@ -373,6 +383,8 @@ export function PatchCenterPage() {
         )}
         {activeTab?.key === 'smart' && <SmartTab />}
         {activeTab?.key === 'codesearch' && <CodeSearchTab url={codeSearchUrl || ''} />}
+        {activeTab?.key === 'fbipgraph' && <FbipGraphTab url={fbipGraphUrl} />}
+        {activeTab?.key === 'patchdeploy' && <PatchDeployTab />}
         {activeTab?.key === 'directory' && <DirectoriesTab admin={admin} />}
         {activeTab?.key === 'project_env' && <ProjectEnvTab />}
         {activeTab?.key === 'flow' && <AdminConfigTab kind="flow" />}

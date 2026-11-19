@@ -98,7 +98,7 @@ function SettingsDialog({
         items={[
           { key: 'appearance', label: '外观' },
           ...(edition === 'novice' && loggedIn
-            ? [{ key: 'project-env', label: '产品环境' }]
+            ? [{ key: 'project-env', label: '项目环境' }]
             : []),
           { key: 'env-check', label: '环境检查' },
           { key: 'about', label: '关于' },
@@ -242,7 +242,7 @@ export function AppShell({
     }
   }, [loggedIn, searchParams]);
 
-  // 未登录时产品环境页签不可用，自动回到外观；环境检查不依赖登录，保持可用
+  // 未登录时项目环境页签不可用，自动回到外观；环境检查不依赖登录，保持可用
   useEffect(() => {
     if (!loggedIn && settingsTab === 'project-env') {
       setSettingsTab('appearance');

@@ -232,6 +232,7 @@ function SessionRow({
       role="button"
       tabIndex={0}
       draggable={draggable}
+      data-session-id={session.id}
       aria-current={active ? 'true' : undefined}
       onClick={activate}
       onKeyDown={(event) => {
@@ -507,6 +508,8 @@ export function SessionList({
 
   const viewMenuRef = useRef<HTMLDivElement>(null);
   const newMenuRef = useRef<HTMLSpanElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const autoTargetRef = useRef<string | null>(null);
   const manual = prefs.sortBy === 'manual';
 
   /* 会话变化后清理失效选中项 */
@@ -524,7 +527,7 @@ export function SessionList({
     });
   }, [sessions]);
 
-  /* 按项目分组需要产品环境和节点运行快照 */
+  /* 按项目分组需要项目环境和节点运行快照 */
   useEffect(() => {
     if (prefs.groupBy !== 'project') return;
     let cancelled = false;
@@ -619,7 +622,7 @@ export function SessionList({
 
     for (const session of sessions) {
       if (skip.has(session.id)) continue;
-      // 优先用工作目录匹配当前产品环境（环境改名后仍能显示新名称）；
+      // 优先用工作目录匹配当前项目环境（环境改名后仍能显示新名称）；
       // 智能开发/排查任务的会话目录在 temp 下，匹配不到时退回节点运行的环境快照。
       const env = envByCwd.get(normalizePath(session.cwd));
       if (env) {
@@ -753,6 +756,41 @@ export function SessionList({
     }
     return list;
   }, [filtered, prefs, aliases, projectInfoBySession, ungrouped, groupOrders, manualIndex]);
+
+  // 只有「当前会话发生变化」时才自动定位/展开分组。
+  // 不能把 collapsedGroups 当成触发源，否则用户手动折叠当前会话所在分组后，
+  // 这个 effect 会立刻把它重新展开，导致分组折不起来。
+  useEffect(() => {
+    autoTargetRef.current = currentSessionId || null;
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    const targetId = autoTargetRef.current;
+    if (!targetId) return;
+    const group = groups.find((item) =>
+      item.sessions.some((session) => session.id === targetId)
+    );
+    if (!group) return;
+
+    const mode = prefs.groupBy;
+    const collapsed = collapsedGroups[mode] || [];
+    if (collapsed.includes(group.key)) {
+      const next = { ...collapsedGroups, [mode]: collapsed.filter((key) => key !== group.key) };
+      setCollapsedGroups(next);
+      saveCollapsed(next);
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      const rows = listRef.current?.querySelectorAll<HTMLElement>('[data-session-id]');
+      const target = rows
+        ? Array.from(rows).find((row) => row.dataset.sessionId === targetId)
+        : null;
+      target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      autoTargetRef.current = null;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [currentSessionId, groups, prefs.groupBy, collapsedGroups]);
 
   const allFilteredSelected =
     filtered.length > 0 && filtered.every((session) => selectedIds.has(session.id));
@@ -1084,7 +1122,7 @@ export function SessionList({
         </div>
       )}
 
-      <div className="scroll-area min-h-0 flex-1 px-1.5 pb-2">
+      <div ref={listRef} className="scroll-area min-h-0 flex-1 px-1.5 pb-2">
         {loadingSessions && !sessions.length ? (
           <div className="flex items-center justify-center py-8">
             <Spinner />
@@ -1256,7 +1294,7 @@ export function SessionList({
           maxLength={100}
         />
         <div className="mt-2 text-[11.5px] text-ink-3">
-          仅修改本地显示名称，不改产品环境变量或工作目录。
+          仅修改本地显示名称，不改项目环境或工作目录。
         </div>
       </Dialog>
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Circle, Image as ImageIcon, Loader2, Paperclip, X } from 'lucide-react';
 import { api } from '../../lib/api';
 import { novicePreflight } from '../../lib/novicePrompt';
@@ -8,7 +9,7 @@ import { firstChars } from '../../lib/utils';
 import { useChatStore } from '../../store/chat';
 import { useNodeStore, type LocalNodeRun } from '../../store/nodeRuns';
 import { useProjectEnvs } from '../patches/hooks';
-import { Button, Dialog, Input } from '../ui';
+import { Button, ConfirmDialog, Dialog, Input } from '../ui';
 import { useToast } from '../ui/toast';
 
 function newRunId(): string {
@@ -61,7 +62,7 @@ function buildPrompt(run: {
   }
   return `你是一名实施顾问，请分析并解决下面的产品问题。
 
-【产品环境】
+【项目环境】
 产品：${variables.product_name} ${variables.product_version}
 项目：${variables.project_name}
 客开代码目录（只读参考）：${variables.code_directory}
@@ -97,8 +98,9 @@ export function NewTaskDialog({
   onClose: () => void;
   onStarted?: (sessionId: string) => void;
 }) {
+  const navigate = useNavigate();
   const toast = useToast();
-  const { envs, reload: reloadEnvs } = useProjectEnvs();
+  const { envs, loading: envsLoading, reload: reloadEnvs } = useProjectEnvs();
   const createSession = useChatStore((state) => state.createSession);
   const sendMessage = useChatStore((state) => state.sendMessage);
   const registerExternal = useNodeStore((state) => state.registerExternal);
@@ -108,6 +110,7 @@ export function NewTaskDialog({
   const [recordPath, setRecordPath] = useState('');
   const [images, setImages] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
+  const [noEnvOpen, setNoEnvOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recState, setRecState] = useState('');
   const pollRef = useRef<number | null>(null);
@@ -116,7 +119,7 @@ export function NewTaskDialog({
   const env: ProjectEnv | undefined = envs.find((item) => String(item.id) === envId);
 
   // 弹窗常驻在页面里，首次挂载后不会再请求环境列表；每次打开都重新拉一次，
-  // 否则刚在「产品环境」里新增的环境不会出现在下拉框里。
+  // 否则刚在「项目环境」里新增的环境不会出现在下拉框里。
   useEffect(() => {
     if (!open) return;
     void reloadEnvs();
@@ -130,6 +133,17 @@ export function NewTaskDialog({
         : String(envs[0]?.id || '')
     );
   }, [open, envs]);
+
+  // 没有项目环境时不要让人填空表单，先提示去创建。
+  useEffect(() => {
+    if (!open || envsLoading) return;
+    if (!envs.length) setNoEnvOpen(true);
+  }, [open, envsLoading, envs.length]);
+
+  const closeAll = () => {
+    setNoEnvOpen(false);
+    onClose();
+  };
 
   useEffect(() => {
     return () => {
@@ -206,7 +220,7 @@ export function NewTaskDialog({
 
   const submit = async () => {
     if (!env) {
-      toast.error('请选择产品环境');
+      toast.error('请选择项目环境');
       return;
     }
     if (!problem.trim() && !images.length) {
@@ -342,11 +356,12 @@ export function NewTaskDialog({
   };
 
   return (
+    <>
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={closeAll}
       title="创建排查任务"
-      description="选择产品环境，描述问题。任务会在聊天中启动 Claude 分析。"
+      description="选择项目环境，描述问题。任务会在聊天中启动 Claude 分析。"
       width="max-w-2xl"
       footer={
         <>
@@ -361,10 +376,10 @@ export function NewTaskDialog({
     >
       <div className="space-y-3">
         <div>
-          <label className="mb-1 block text-[12px] font-medium text-ink-2">产品环境 <span className="text-danger">*</span></label>
+          <label className="mb-1 block text-[12px] font-medium text-ink-2">项目环境 <span className="text-danger">*</span></label>
           <select value={envId} onChange={(event) => setEnvId(event.target.value)} className="input">
             <option value="">
-              {envs.length ? '选择产品环境' : '（请先到「产品环境」新增一个环境）'}
+              {envs.length ? '选择项目环境' : '（请先到「项目环境」新增一个环境）'}
             </option>
             {envs.map((item) => (
               <option key={String(item.id)} value={String(item.id)}>
@@ -468,5 +483,18 @@ export function NewTaskDialog({
         </div>
       </div>
     </Dialog>
+    <ConfirmDialog
+      open={noEnvOpen}
+      onClose={closeAll}
+      onConfirm={() => {
+        setNoEnvOpen(false);
+        onClose();
+        navigate('/?view=env');
+      }}
+      title="未创建项目环境"
+      description="检测到您未创建项目环境，请先创建项目环境。"
+      confirmText="确定"
+    />
+    </>
   );
 }

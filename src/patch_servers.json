@@ -2,5 +2,6 @@
   "patch_search_servers": [
     "http://10.4.122.39:40010"
   ],
-  "code_search_url": "http://10.13.51.67:40001"
+  "code_search_url": "http://10.13.51.67:40001",
+  "fbip_graph_url": "http://10.13.51.67:40003/"
 }

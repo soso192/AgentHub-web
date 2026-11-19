@@ -7,6 +7,7 @@ import {
   LogOut,
   MessageSquare,
   MessagesSquare,
+  PackageCheck,
   Search,
   Server,
   Sparkles,
@@ -21,19 +22,21 @@ import { NewTaskDialog } from '../components/novice/NewTaskDialog';
 import { ProjectEnvTab } from '../components/patches/ProjectEnvTab';
 import { SearchTab } from '../components/patches/SearchTab';
 import { NodeTab } from '../components/patches/NodeTab';
+import { PatchDeployTab } from '../components/patches/PatchDeployTab';
 import { Button } from '../components/ui';
 import { useToast } from '../components/ui/toast';
 import { useAppStore } from '../store/app';
 import { useAuthStore } from '../store/auth';
 import { useChatStore } from '../store/chat';
 
-type View = 'chat' | 'runs' | 'patch' | 'env';
+type View = 'chat' | 'runs' | 'patch' | 'env' | 'deploy';
 
 const VIEW_TITLES: Record<View, string> = {
   chat: '智能开发',
   runs: '排查记录',
   patch: '补丁检索',
-  env: '产品环境',
+  env: '项目环境',
+  deploy: '补丁管理',
 };
 
 export function NoviceShell({ initialView }: { initialView?: string }) {
@@ -49,7 +52,9 @@ export function NoviceShell({ initialView }: { initialView?: string }) {
   const [newSessionOpen, setNewSessionOpen] = useState(false);
 
   const view = (searchParams.get('view') as View) || (initialView as View) || 'chat';
-  const safeView: View = ['chat', 'runs', 'patch', 'env'].includes(view) ? view : 'chat';
+  const safeView: View = ['chat', 'runs', 'patch', 'env', 'deploy'].includes(view)
+    ? view
+    : 'chat';
   const loggedIn = Boolean(user) || hasAuthSession();
 
   useEffect(() => {
@@ -103,7 +108,7 @@ export function NoviceShell({ initialView }: { initialView?: string }) {
     else setSearchParams({ view: next }, { replace: true });
   };
 
-  // 实施版左侧菜单只保留两个入口：补丁检索在上，智能开发在下
+  // 实施版左侧菜单：补丁检索、补丁部署、智能开发
   const nav: NavItem[] = useMemo(
     () => [
       {
@@ -117,6 +122,19 @@ export function NoviceShell({ initialView }: { initialView?: string }) {
             return;
           }
           setView('patch');
+        },
+      },
+      {
+        key: 'deploy',
+        label: '补丁管理',
+        icon: <PackageCheck size={15} />,
+        active: safeView === 'deploy',
+        onClick: () => {
+          if (!loggedIn) {
+            navigate(`/login?next=${encodeURIComponent('/?view=deploy')}`);
+            return;
+          }
+          setView('deploy');
         },
       },
       {
@@ -142,7 +160,7 @@ export function NoviceShell({ initialView }: { initialView?: string }) {
         <div className="flex-1" />
         {safeView === 'chat' && loggedIn && (
           <Button size="sm" icon={<Server size={13} />} onClick={() => setView('env')}>
-            产品环境
+            项目环境
           </Button>
         )}
         {(safeView === 'chat' || safeView === 'runs') && loggedIn && (
@@ -151,7 +169,7 @@ export function NoviceShell({ initialView }: { initialView?: string }) {
             onNewTask={() => setTaskOpen(true)}
           />
         )}
-        {(safeView === 'patch' || safeView === 'env') && loggedIn && (
+        {(safeView === 'patch' || safeView === 'env' || safeView === 'deploy') && loggedIn && (
           <Button size="sm" icon={<ArrowLeft size={14} />} onClick={() => setView('chat')}>
             返回
           </Button>
@@ -197,7 +215,7 @@ export function NoviceShell({ initialView }: { initialView?: string }) {
           {!currentSessionId && (
             <div className="border-b border-line bg-surface-2/50 px-4 py-2 text-[11.5px] text-ink-3">
               {loggedIn
-                ? '点击右上角「新建会话」，选择「创建开发任务」填写产品环境和问题，或在下方直接与 AI 对话。'
+                ? '点击右上角「新建会话」，选择「创建开发任务」填写项目环境和问题，或在下方直接与 AI 对话。'
                 : '未登录也可以直接对话；登录后可创建智能开发任务并使用补丁检索。'}
             </div>
           )}
@@ -217,11 +235,17 @@ export function NoviceShell({ initialView }: { initialView?: string }) {
         </div>
       )}
 
+      {safeView === 'deploy' && loggedIn && (
+        <div className="scroll-area min-h-0 flex-1 p-3">
+          <PatchDeployTab />
+        </div>
+      )}
+
       {safeView === 'env' && loggedIn && (
         <div className="scroll-area min-h-0 flex-1 p-3">
           <div className="mb-3 flex items-center gap-2">
             <KeyRound size={15} className="text-accent" />
-            <span className="text-[13.5px] font-semibold text-ink">产品环境</span>
+            <span className="text-[13.5px] font-semibold text-ink">项目环境</span>
             <span className="text-[11.5px] text-ink-3">
               这些环境会用于「创建任务」时的产品、目录、JDK、数据库等信息
             </span>

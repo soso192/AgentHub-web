@@ -49,7 +49,7 @@
 - **Race Condition Protection** — Abort immediately cleans up streaming state, prevents stale events from rendering in the next message
 
 ### 💾 Session Persistence
-- All sessions auto-saved to `~/.cc-web/sessions.json`
+- All sessions auto-saved to `~/.cc-web-dev/sessions.json`
 - **Sessions survive restarts**, including full chat history and content blocks
 - Claude Agent supports `--resume` native session recovery
 - Pi Agent supports `--session` native session recovery
@@ -68,7 +68,7 @@
 - All components use CSS variables, theme switch with zero flicker
 
 ### 📝 Structured Logging System
-- Logs written to file `~/.cc-web/logs/cc-web-YYYY-MM-DD.log`
+- Logs written to file `~/.cc-web-dev/logs/cc-web-YYYY-MM-DD.log`
 - Five log levels: `error` > `warn` > `info` > `debug` > `trace`
 - Console shows only startup banner, detailed logs go to file only
 - Environment variable control: `RUST_LOG=debug`, `RUST_LOG=cc_web::ai::pi=trace`

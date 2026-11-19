@@ -1,11 +1,12 @@
+use chrono::Local;
 /// 结构化日志系统
 ///
-/// 日志只写入文件（~/.cc-web/logs/cc-web-YYYY-MM-DD.log），控制台不输出。
+/// 日志只写入文件（~/.cc-web-dev/logs/cc-web-YYYY-MM-DD.log），控制台不输出。
 /// 启动横幅通过 println! 直接输出到控制台（不受日志系统控制）。
 ///
 /// 使用方式：
 ///   - 设置环境变量 RUST_LOG 控制日志级别：RUST_LOG=debug,cc_web=trace
-///   - 日志文件路径：~/.cc-web/logs/cc-web-YYYY-MM-DD.log
+///   - 日志文件路径：~/.cc-web-dev/logs/cc-web-YYYY-MM-DD.log
 ///   - 文件日志包含完整时间戳、模块名、行号
 ///
 /// 日志级别：
@@ -16,17 +17,15 @@
 ///   log::debug!("收到事件: type={}, count={}", event_type, count);
 ///   log::warn!("心跳超时: {}ms", time_since_heartbeat);
 ///   log::error!("SSE 发送失败: {}", error);
-
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use chrono::Local;
 
 /// 全局日志文件句柄
 static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
 
-/// 获取日志文件目录（~/.cc-web/logs/，实施版 ~/.cc-web-novice/logs/）
+/// 获取日志文件目录（~/.cc-web-dev/logs/，实施版 ~/.cc-web-impl/logs/）
 fn get_log_dir() -> PathBuf {
     let log_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -104,7 +103,10 @@ pub fn init() {
 
     // 写入启动分隔线
     log::info!("═══════════════════════════════════════════════════════");
-    log::info!("CC-Web 服务启动: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
+    log::info!(
+        "CC-Web 服务启动: {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    );
     log::info!("═══════════════════════════════════════════════════════");
 
     // 读取 RUST_LOG 环境变量，决定日志级别

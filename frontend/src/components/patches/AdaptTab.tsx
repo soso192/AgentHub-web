@@ -421,7 +421,7 @@ export function AdaptTab({
         <div className="space-y-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-[12px] font-medium text-ink-2">产品环境（可选）</label>
+              <label className="mb-1 block text-[12px] font-medium text-ink-2">项目环境（可选）</label>
               <select
                 value={envId}
                 onChange={(event) => setEnvId(event.target.value)}

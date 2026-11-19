@@ -9,7 +9,8 @@ use actix_web::HttpResponse;
 /// 可配字段：
 /// - `patch_search_servers`: patch_search 补丁中心后端地址列表（多条用于内网穿透隧道）；
 /// - `code_search_url`: 源码搜索 Web 工具地址（补丁中心「源码搜索」页签的 iframe 嵌入地址），
-///   留空则前端隐藏该页签。
+///   留空则前端隐藏该页签；
+/// - `fbip_graph_url`: FBIP 全库表关系图谱 Web 地址（「FBIP全库表关系图谱」页签的 iframe 地址）。
 const PATCH_SERVERS_CONFIG: &str = include_str!("../patch_servers.json");
 
 /// exe 同目录的外置 patch_servers.json（存在则整体覆盖内嵌默认）。
@@ -34,6 +35,8 @@ struct Config {
     patch_search_servers: Vec<String>,
     #[serde(default)]
     code_search_url: String,
+    #[serde(default)]
+    fbip_graph_url: String,
 }
 
 fn parse_config() -> Config {
@@ -52,7 +55,20 @@ pub fn patch_search_servers() -> Vec<String> {
 
 /// 源码搜索 Web 工具地址（空 = 未配置，前端隐藏页签）。
 pub fn code_search_url() -> String {
-    parse_config().code_search_url.trim().trim_end_matches('/').to_string()
+    parse_config()
+        .code_search_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// FBIP 全库表关系图谱 Web 地址（空 = 未配置，页签显示提示）。
+pub fn fbip_graph_url() -> String {
+    parse_config()
+        .fbip_graph_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// GET /api/patch-config —— 向补丁中心前端下发外部服务地址。
@@ -60,5 +76,6 @@ pub async fn get_patch_config() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({
         "patch_search_servers": patch_search_servers(),
         "code_search_url": code_search_url(),
+        "fbip_graph_url": fbip_graph_url(),
     }))
 }

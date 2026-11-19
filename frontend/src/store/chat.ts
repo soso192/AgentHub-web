@@ -147,10 +147,9 @@ function applyChunk(blocks: ContentBlock[], content: string): ContentBlock[] {
 
 function applyThinking(blocks: ContentBlock[], thinking: string): ContentBlock[] {
   if (!thinking) return blocks;
-  const block: ContentBlock = { type: 'thinking', thinking };
-  const pos = blocks.findIndex((item) => item.type === 'text');
-  if (pos === -1) return [...blocks, block];
-  return [...blocks.slice(0, pos), block, ...blocks.slice(pos)];
+  // 按事件顺序追加：thinking 只在它真实出现的位置展示，
+  // 后续文本输出才能把「它之前的过程」准确折叠起来。
+  return [...blocks, { type: 'thinking', thinking }];
 }
 
 function applyToolCall(

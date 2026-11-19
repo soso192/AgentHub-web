@@ -3,6 +3,7 @@ import { api, openSessionStream } from '../lib/api';
 import {
   applyEnvSupplement,
   applyPromptSwitches,
+  dbGraphGuide,
   envSupplementForPrompt,
   fbipSkillGuide,
   novicePreflight,
@@ -109,11 +110,32 @@ function renderTemplate(template: string, variables: Record<string, string>): st
   return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => variables[key] ?? '');
 }
 
-/** patch_source MCP 的 root：产品名小写 + 版本去点，中间短线（如 fbip-82）。 */
+/** patch_source MCP 的 root：产品名小写 + 版本去点，中间短线（如 fbip-82、nccloud-65）。 */
 function mcpRoot(env: Record<string, unknown>): string {
-  const name = String(env.product_name || '').trim().toLowerCase();
-  const version = String(env.product_version || '').trim().replace(/\./g, '');
+  const name = String(env.product_name || '').trim().toLowerCase().replace(/\s+/g, '');
+  const version = String(env.product_version || '').trim().replace(/[\s.]/g, '');
   return name ? `${name}-${version}` : '';
+}
+
+const GLOBAL_CONSTRAINT_MARKER = '【强制约束：源码检索与数据库操作】';
+const GLOBAL_AGENT_CONSTRAINTS = [
+  GLOBAL_CONSTRAINT_MARKER,
+  '- patch_source MCP 的 root 必须按「产品名称小写 + 版本号去掉点」计算，例如 FBIP 8.2 → fbip-82、nccloud 65 → nccloud-65；必须使用环境信息中给出的 root，严禁修改 root，严禁自行猜测或切换到其他 root。',
+  '- 执行数据库增删改（INSERT / UPDATE / DELETE / DDL 等）前必须停下来向用户确认是否执行；只有用户明确授权后才能执行。',
+  '- 如果环境信息中没有数据库连接，必须先向用户确认数据库连接；严禁自行从代码、配置文件或日志中读取或推断数据库连接。',
+].join('\n');
+
+/** 兜底补齐模板里未渲染出的 root，并确保所有智能开发提示词都带上统一约束。 */
+function ensureAgentPrompt(prompt: string, env: Record<string, unknown>): string {
+  const root = mcpRoot(env);
+  const rootText = root || '（未配置：项目环境缺少产品名称或版本，必须先向用户确认）';
+  let next = prompt
+    .replace(/root\s*=\s*\{\{mcp_root\}\}/g, `root=${rootText}`)
+    .replace(/root\s*=\s*(?=[，,；;、\s)）]|$)/g, `root=${rootText}`);
+  if (!next.includes(GLOBAL_CONSTRAINT_MARKER)) {
+    next = `${next}\n\n${GLOBAL_AGENT_CONSTRAINTS}`;
+  }
+  return next;
 }
 
 function timestampStamp(): string {
@@ -270,17 +292,18 @@ async function resolvePrompt(
   // 分析/重试阶段固定先读 FBIP Skills：开发版、实施版共用同一套 skill 库。
   // 模板与内置默认提示词都要带上，管理员改模板不会漏掉这段。
   if (stage !== 'phase2') {
-    prompt =
+    const baseGuide =
       run.edition === 'novice'
-        ? `${novicePreflight(env, String(run.turn_dir || ''))}\n\n${prompt}`
-        : `${fbipSkillGuide(env, 'dev')}\n\n${noviceProblemTypeGuide(env, String(run.turn_dir || ''))}\n\n${prompt}`;
+        ? novicePreflight(env, String(run.turn_dir || ''))
+        : `${fbipSkillGuide(env, 'dev')}\n\n${noviceProblemTypeGuide(env, String(run.turn_dir || ''))}`;
+    prompt = [dbGraphGuide(env), baseGuide, prompt].filter(Boolean).join('\n\n');
   }
 
   // 模板没引用的环境字段补进【环境】段（数据库连接、调试地址、录制页面等）。
   prompt = applyEnvSupplement(prompt, env);
 
   // 「是否需要排查日志 / 是否生成差异报告」关掉时，直接裁掉模板里对应整段。
-  return applyPromptSwitches(prompt, run);
+  return ensureAgentPrompt(applyPromptSwitches(prompt, run), env);
 }
 
 async function readText(path?: string): Promise<string> {
@@ -514,11 +537,11 @@ export const useNodeStore = create<NodeState>((set, get) => {
         outDir = String((workspace as unknown as { path?: string }).path || (workspace as unknown as { data?: { path?: string } }).data?.path || '');
         if (!outDir) throw new Error('创建运行工作目录失败');
       } else {
-        // 表单没填就回落到产品环境变量；两者都没有才提示。
+        // 表单没填就回落到项目环境；两者都没有才提示。
         const patchOutput =
           options.patch_output_path?.trim() || String(env.patch_output_path || '').trim();
         if (!patchOutput) {
-          throw new Error('当前产品环境变量中未填写补丁输出路径，请在此处填写');
+          throw new Error('当前项目环境中未填写补丁输出路径，请在此处填写');
         }
         outDir = joinPath(patchOutput, id);
       }

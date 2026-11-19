@@ -119,7 +119,7 @@ function applyMenuVisibility(user, isAdmin) {
     const releaseTab = document.querySelector('.patch-tab[data-tab="release"]');
     if (releaseTab) releaseTab.hidden = !isAdmin;
     // 实施版：菜单写死在客户端——只留「智能开发」页签（与开发版完全一致的 UI），
-    // 管理员项也一律隐藏（实施版没有管理功能）。产品环境变量/环境检查在 /novice.html。
+    // 管理员项也一律隐藏（实施版没有管理功能）。项目环境/环境检查在 /novice.html。
     if (patchState.edition === 'novice') {
         PATCH_MENU_KEYS.forEach(key => {
             const tab = document.querySelector(`.patch-tab[data-tab="${key}"]`);
@@ -417,7 +417,7 @@ async function fetchProducts() {
 }
 
 // 产品版本管理页用：含已逻辑删除的行（仅管理员可调），结果只能进 patchState.admin.products，
-// 绝不能写进共享缓存，否则已删除的产品会漏进补丁上传/编辑和产品环境变量的下拉。
+// 绝不能写进共享缓存，否则已删除的产品会漏进补丁上传/编辑和项目环境的下拉。
 async function fetchAllProducts() {
     return await patchRequest('/api/products?include_deleted=1');
 }
@@ -2197,7 +2197,7 @@ async function saveDirectory(event) {
     catch (error) { document.getElementById('patchDirectoryMessage').textContent = ''; patchShowError(error.message, '工作目录保存失败'); }
 }
 
-// 产品环境变量：每人一份，后端按 created_by_user_id 严格隔离（admin 也一样），前端不做权限判断
+// 项目环境：每人一份，后端按 created_by_user_id 严格隔离（admin 也一样），前端不做权限判断
 async function loadProjectEnvs() {
     const body = document.getElementById('patchProjectEnvBody');
     body.innerHTML = '<tr><td colspan="10" class="patch-empty">正在加载...</td></tr>';
@@ -2209,11 +2209,11 @@ async function loadProjectEnvs() {
         patchState.projectEnv.size = (data && data.size) || patchState.projectEnv.size;
         patchState.projectEnv.total = (data && data.total) || 0;
         patchRenderPager('projectEnv');
-        body.innerHTML = patchState.admin.projectEnvs.length ? patchState.admin.projectEnvs.map(projectEnvRow).join('') : '<tr><td colspan="10" class="patch-empty">暂无产品环境，请先新增</td></tr>';
+        body.innerHTML = patchState.admin.projectEnvs.length ? patchState.admin.projectEnvs.map(projectEnvRow).join('') : '<tr><td colspan="10" class="patch-empty">暂无项目环境，请先新增</td></tr>';
     } catch (error) {
         body.innerHTML = '<tr><td colspan="10" class="patch-empty">加载失败，请重试</td></tr>';
         document.getElementById('patchProjectEnvMessage').textContent = '';
-        patchShowError(error.message, '产品环境加载失败');
+        patchShowError(error.message, '项目环境加载失败');
     }
 }
 
@@ -2258,7 +2258,7 @@ async function openProjectEnvForm(item = {}) {
     let products;
     try { products = await ensureProductOptions(); }
     catch (error) { patchShowError(error.message, '产品字典加载失败'); return; }
-    if (!products.length) { patchShowError('管理员尚未配置产品字典，请先在「产品版本管理」中添加产品与版本。', '无法维护产品环境'); return; }
+    if (!products.length) { patchShowError('管理员尚未配置产品字典，请先在「产品版本管理」中添加产品与版本。', '无法维护项目环境'); return; }
     form.project_name.value = item.project_name || '';
     fillProjectEnvProducts(form, item);
     fillProjectEnvVersions(form, form.product_id.value, item.version_id);
@@ -2279,7 +2279,7 @@ async function saveProjectEnv(event) {
     // 必填校验前端先拦一遍（后端同样会校验），空值时不发请求
     const required = [['project_name', '项目名称'], ['product_id', '产品名称'], ['version_id', '版本号'], ['code_directory', '客开代码目录'], ['package_path', 'home/war包地址'], ['local_jdk_path', '本地jdk路径']];
     for (const [field, label] of required) {
-        if (!String(payload[field] || '').trim()) { patchShowError(`${label}为必填项`, '产品环境保存失败'); form[field].focus(); return; }
+        if (!String(payload[field] || '').trim()) { patchShowError(`${label}为必填项`, '项目环境保存失败'); form[field].focus(); return; }
     }
     const id = patchState.admin.projectEnvId;
     // 下拉的 value 是字符串，转成数字再发（后端是 int，gt=0）
@@ -2291,7 +2291,7 @@ async function saveProjectEnv(event) {
         await loadProjectEnvs();
     } catch (error) {
         document.getElementById('patchProjectEnvMessage').textContent = '';
-        patchShowError(error.message, '产品环境保存失败');
+        patchShowError(error.message, '项目环境保存失败');
     }
 }
 
@@ -2358,7 +2358,7 @@ async function saveProduct(event) {
 
 function deleteProduct(id) {
     const product = patchState.admin.products.find(value => String(value.id) === String(id));
-    patchConfirm(`产品“${product ? product.name : ''}”及其版本将从选择列表中移除（逻辑删除）；历史补丁与产品环境记录不受影响。`, '删除产品').then(confirmed => {
+    patchConfirm(`产品“${product ? product.name : ''}”及其版本将从选择列表中移除（逻辑删除）；历史补丁与项目环境记录不受影响。`, '删除产品').then(confirmed => {
         if (!confirmed) return;
         return patchRequest(`/api/products/${encodeURIComponent(id)}`, {method: 'DELETE'}).then(() => { patchState.products = null; loadProducts(); });
     }).catch(error => patchShowError(error.message, '删除产品失败'));
@@ -3066,7 +3066,7 @@ async function changePassword(event) {
    ──────────────────────────────────────────────────────────────────
    三条决定了整段代码形状的约束：
 
-   1. **本机清单是事实来源**。run 存 ~/.cc-web/node_runs.json（cc-web 只透明存取，
+   1. **本机清单是事实来源**。run 存 ~/.cc-web-dev/node_runs.json（cc-web 只透明存取，
       不解释字段），产物存用户填的补丁输出目录。服务器 problem_run 只是只写账本：
       上报 fire-and-forget，失败静默、本地留 reported=false 待补报。
    2. **两阶段跑在同一个 claude 会话里，cwd 都是 code_directory**。阶段一在客开工程里
@@ -3371,9 +3371,9 @@ function patchNodePhaseOnePrompt(run, logInfo) {
         `暂存目录（改动只能写到这里）：${run.stage_dir}`,
         `补丁输出目录：${patchNodeTurnDir(run)}`,
         `工程 home / war 包地址（编译依赖根）：${env.package_path}`,
-        `JDK：${env.local_jdk_path || '（该产品环境变量里没登记本地 JDK 路径，编译前先向用户确认）'}`,
+        `JDK：${env.local_jdk_path || '（该项目环境里没登记本地 JDK 路径，编译前先向用户确认）'}`,
     ];
-    // skill 库根目录（产品环境变量里登记了才有）。只作信息登记：不再用于"直读 SKILL.md 兜底"——
+    // skill 库根目录（项目环境里登记了才有）。只作信息登记：不再用于"直读 SKILL.md 兜底"——
     // java-compiler-mcp 保证每台开发机都装，走 Skill 工具按名字调用即可，不需要这条兜底路径。
     const skillDir = String(env.local_skill_path || '').trim().replace(/[\\/]+$/, '');
     if (skillDir) envLines.push(`本机 skill 库（FBIP 领域 skill 库根目录，可按需读取）：${skillDir}`);
@@ -4098,7 +4098,7 @@ async function openRunSession(localRunId, step) {
 
 // ── 新建 run ──
 // 新建表单按版本切换布局：开发版保持现状（触发项必填、贴日志、必填补丁输出路径）；
-// 实施版只有 问题描述* / 产品环境* / 触发项(选填+录制按钮) / 日志文件(上传)。
+// 实施版只有 问题描述* / 项目环境* / 触发项(选填+录制按钮) / 日志文件(上传)。
 function patchApplyNodeFormEdition() {
     const isNovice = patchState.edition === 'novice';
     const form = document.getElementById('patchNodeRunForm');
@@ -4140,22 +4140,22 @@ async function patchNodeOpenForm() {
     form.reset();
     patchNodeEnvHint();   // 同步提示行/录制按钮初始状态（未选环境 → 录制置灰）
     const select = form.env_id;
-    select.innerHTML = '<option value="">加载产品环境变量中...</option>';
+    select.innerHTML = '<option value="">加载项目环境中...</option>';
     document.getElementById('patchNodeFormModal').hidden = false;
     let envs = [];
     try {
         envs = (await patchRequest('/api/project-envs')) || [];
     } catch (error) {
         select.innerHTML = '<option value="">加载失败</option>';
-        patchShowError(error.message, '产品环境变量加载失败');
+        patchShowError(error.message, '项目环境加载失败');
         return;
     }
     patchState.admin.projectEnvs = envs;
     if (!envs.length) {
-        select.innerHTML = '<option value="">（还没有产品环境变量）</option>';
+        select.innerHTML = '<option value="">（还没有项目环境）</option>';
         return;
     }
-    select.innerHTML = ['<option value="">请选择产品环境</option>'].concat(
+    select.innerHTML = ['<option value="">请选择项目环境</option>'].concat(
         envs.map(item => `<option value="${patchEscape(item.id)}">${patchEscape(`${item.project_name}（${item.product_name} ${item.product_version}）`)}</option>`)
     ).join('');
 }
@@ -4174,7 +4174,7 @@ function patchNodeEnvHint() {
             btn.disabled = !ready;
             btn.title = ready
                 ? '打开浏览器录制问题现场，结束后自动填入「触发的 url/入口类」'
-                : (env ? '该产品环境还没有配置「录制页面地址」，请先到产品环境变量里补上' : '请先选择产品环境');
+                : (env ? '该项目环境还没有配置「录制页面地址」，请先到项目环境里补上' : '请先选择项目环境');
         }
         return;
     }
@@ -4192,7 +4192,7 @@ function patchNodeEnvHint() {
 //   - JDK 未登记时先在 home 下浅扫一次（/api/env-check），找到就写进本次快照
 async function patchNodeStartRunNovice(form, values, problemDesc) {
     const env = (patchState.admin.projectEnvs || []).find(item => String(item.id) === String(values.env_id));
-    if (!env) { patchShowError('请选择产品环境', '智能开发创建失败'); return; }
+    if (!env) { patchShowError('请选择项目环境', '智能开发创建失败'); return; }
     const triggerUrl = String(values.trigger_url || '').trim();
     // 日志文件（选填）
     let logInfo = '';
@@ -4332,9 +4332,9 @@ async function patchNodeStartRun(event) {
     const triggerUrl = String(values.trigger_url || '').trim();
     if (!triggerUrl) { patchShowError('触发的url/入口类为必填项', '智能开发创建失败'); form.trigger_url.focus(); return; }
     const env = (patchState.admin.projectEnvs || []).find(item => String(item.id) === String(values.env_id));
-    if (!env) { patchShowError('请选择关联的产品环境变量', '智能开发创建失败'); return; }
+    if (!env) { patchShowError('请选择关联的项目环境', '智能开发创建失败'); return; }
     if (!patchNodeIsAbsolutePath(env.code_directory)) {
-        patchShowError('该产品环境变量里的「客开代码目录」不是绝对路径，请先到「产品环境变量」页签改正。', '智能开发创建失败');
+        patchShowError('该项目环境里的「客开代码目录」不是绝对路径，请先到「项目环境」页签改正。', '智能开发创建失败');
         return;
     }
     const outParent = String(values.patch_output_path || '').trim();
@@ -4562,7 +4562,7 @@ function patchNodeReadLogFile(file, maxBytes) {
 
 /* ── 接口录制（前端交互）──
    后端 CDP 模块（routes/recorder.rs）提供三个接口，契约如下：
-     POST /api/recorder/open    { env_id }  拉起独立浏览器并打开该产品环境登记的「录制页面地址」
+     POST /api/recorder/open    { env_id }  拉起独立浏览器并打开该项目环境登记的「录制页面地址」
                                             （地址由后端从环境取，不接受前端传 URL；已开着时幂等复用）
      GET  /api/recorder/status  → { state: 'idle'|'browser_open'|'recording'|'finished',
                                     file: 导出 JSON 的绝对路径 | null,
@@ -4581,7 +4581,7 @@ function patchRecordStatusText(state) {
 }
 
 async function patchRecordApi(path, options = {}) {
-    // open 接口要把登录凭据转发给补丁中心查产品环境（录制地址由后端从环境取，前端不传 URL）
+    // open 接口要把登录凭据转发给补丁中心查项目环境（录制地址由后端从环境取，前端不传 URL）
     const headers = { 'Content-Type': 'application/json' };
     const token = patchToken();
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -4605,16 +4605,16 @@ async function patchRecordOpen(target) {
         const run = patchNodeRerunTarget;
         if (!run) return;
         if (!String((run.env_snapshot || {}).record_url || '').trim()) {
-            patchShowError('这条运行对应的产品环境没有配置「录制页面地址」，请先到产品环境变量里补上', '接口录制');
+            patchShowError('这条运行对应的项目环境没有配置「录制页面地址」，请先到项目环境里补上', '接口录制');
             return;
         }
         envId = run.env_id;
     } else {
         const form = document.getElementById('patchNodeRunForm');
         const env = (patchState.admin.projectEnvs || []).find(item => String(item.id) === String(form.env_id.value));
-        if (!env) { patchShowError('请先选择产品环境', '接口录制'); return; }
+        if (!env) { patchShowError('请先选择项目环境', '接口录制'); return; }
         if (!String(env.record_url || '').trim()) {
-            patchShowError('该产品环境还没有配置「录制页面地址」，请先到产品环境变量里补上（点「高级设置」可填）', '接口录制');
+            patchShowError('该项目环境还没有配置「录制页面地址」，请先到项目环境里补上（点「高级设置」可填）', '接口录制');
             return;
         }
         envId = env.id;
@@ -4975,7 +4975,7 @@ function patchBindEvents() {
     // 目录弹窗：类型切换控制 产品/版本 显隐与联动；产品切换刷新版本下拉
     document.getElementById('patchDirectoryCategory').onchange = patchDirectorySyncCategoryFields;
     document.getElementById('patchDirectoryProduct').onchange = patchDirectorySyncCategoryFields;
-    document.getElementById('patchNewProjectEnv').onclick = () => openProjectEnvForm().catch(error => patchShowError(error.message, '产品环境打开失败'));
+    document.getElementById('patchNewProjectEnv').onclick = () => openProjectEnvForm().catch(error => patchShowError(error.message, '项目环境打开失败'));
     document.getElementById('patchProjectEnvForm').onsubmit = saveProjectEnv;
     // 换产品就重列版本；fillProjectEnvVersions 会重建 options，旧版本号自动清空
     document.getElementById('patchProjectEnvForm').product_id.addEventListener('change', event => {
@@ -5294,15 +5294,15 @@ function patchBindEvents() {
         const projectEnvEdit = event.target.closest('[data-project-env-edit]');
         if (projectEnvEdit) {
             const item = patchState.admin.projectEnvs.find(value => String(value.id) === projectEnvEdit.dataset.projectEnvEdit);
-            if (item) openProjectEnvForm(item).catch(error => patchShowError(error.message, '产品环境打开失败'));
+            if (item) openProjectEnvForm(item).catch(error => patchShowError(error.message, '项目环境打开失败'));
         }
         const projectEnvDelete = event.target.closest('[data-project-env-delete]');
         if (projectEnvDelete) {
             const item = patchState.admin.projectEnvs.find(value => String(value.id) === projectEnvDelete.dataset.projectEnvDelete);
             const name = item ? `${item.project_name || ''}` : '';
-            patchConfirm(`删除后无法恢复。确认删除产品环境「${name}」？`, '删除产品环境').then(confirmed => {
+            patchConfirm(`删除后无法恢复。确认删除项目环境「${name}」？`, '删除项目环境').then(confirmed => {
                 if (!confirmed) return;
-                return patchRequest(`/api/project-envs/${projectEnvDelete.dataset.projectEnvDelete}`, {method: 'DELETE'}).then(() => loadProjectEnvs()).catch(error => patchShowError(error.message, '产品环境删除失败'));
+                return patchRequest(`/api/project-envs/${projectEnvDelete.dataset.projectEnvDelete}`, {method: 'DELETE'}).then(() => loadProjectEnvs()).catch(error => patchShowError(error.message, '项目环境删除失败'));
             });
         }
         const productVersions = event.target.closest('[data-product-versions]');

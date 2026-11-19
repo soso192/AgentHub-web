@@ -173,7 +173,7 @@ export const api = {
       `/api/pick-folder${start ? `?start=${encodeURIComponent(start)}` : ''}`
     ),
 
-  /** local_temp 工作流步骤：在 cc-web 安装目录的 temp 下创建/重置临时目录。 */
+  /** local_temp 工作流步骤：在用户数据目录的 temp 下创建/重置临时目录。 */
   workflowTemp: (runId: string, stepOrder: number) =>
     request<{ success: boolean; path: string; error?: string }>('/api/workflows/local-temp', {
       method: 'POST',
@@ -189,7 +189,9 @@ export const api = {
     ),
 
   patchConfig: () =>
-    request<{ patch_search_servers: string[]; code_search_url: string }>('/api/patch-config'),
+    request<{ patch_search_servers: string[]; code_search_url: string; fbip_graph_url: string }>(
+      '/api/patch-config'
+    ),
 
   envCheck: (home?: string) =>
     request<{

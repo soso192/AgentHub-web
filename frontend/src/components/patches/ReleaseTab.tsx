@@ -6,6 +6,7 @@ import { relativeTime } from '../../lib/utils';
 import { Button, Checkbox, ConfirmDialog, Dialog, Input } from '../ui';
 import { useToast } from '../ui/toast';
 import { DataTable, type Column } from './DataTable';
+import { DesktopReleaseTab } from './DesktopReleaseTab';
 
 const PLATFORMS: Array<{ key: string; field: string; label: string }> = [
   { key: 'windows', field: 'windows', label: 'Windows' },
@@ -15,6 +16,7 @@ const PLATFORMS: Array<{ key: string; field: string; label: string }> = [
 
 export function ReleaseTab() {
   const toast = useToast();
+  const [releaseKind, setReleaseKind] = useState<'ccweb' | 'desktop'>('ccweb');
   const [edition, setEdition] = useState<'dev' | 'novice'>('dev');
   const [rows, setRows] = useState<ReleaseRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -131,8 +133,40 @@ export function ReleaseTab() {
     },
   ];
 
+  const releaseKindTabs = (
+    <div className="flex items-center gap-2 border-b border-line pb-2">
+      <div className="flex rounded-lg border border-line bg-surface-2 p-0.5">
+        {([
+          ['ccweb', 'cc-web 应用发布'],
+          ['desktop', '桌面版应用发布'],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setReleaseKind(key)}
+            className={`rounded-md px-3 py-1 text-[11.5px] transition-colors ${
+              releaseKind === key ? 'bg-accent text-white' : 'text-ink-3 hover:text-ink'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  if (releaseKind === 'desktop') {
+    return (
+      <div className="space-y-3">
+        {releaseKindTabs}
+        <DesktopReleaseTab />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
+      {releaseKindTabs}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <div className="flex rounded-lg border border-line bg-surface-2 p-0.5">

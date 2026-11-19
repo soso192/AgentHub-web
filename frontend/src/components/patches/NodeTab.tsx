@@ -114,10 +114,11 @@ export function NodeTab({ edition }: { edition: 'dev' | 'novice' }) {
   const rerun = useNodeStore((state) => state.rerun);
   const abort = useNodeStore((state) => state.abort);
   const remove = useNodeStore((state) => state.remove);
-  const { envs } = useProjectEnvs();
+  const { envs, loading: envsLoading } = useProjectEnvs();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [formOpen, setFormOpen] = useState(false);
+  const [noEnvOpen, setNoEnvOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
   const [detailArtifacts, setDetailArtifacts] = useState<ArtifactItem[]>([]);
@@ -152,18 +153,24 @@ export function NodeTab({ edition }: { edition: 'dev' | 'novice' }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 从左侧「创建开发任务」进入：/?tab=node&new=1 自动打开新建表单
+  // 从左侧「创建开发任务」进入：/?tab=node&new=1 自动打开新建表单。
+  // 等项目环境加载完成后再判断：没有环境时提示先创建，不能直接打开空表单。
   useEffect(() => {
-    if (searchParams.get('new') !== '1') return;
+    if (searchParams.get('new') !== '1' || envsLoading) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('new');
+    setSearchParams(next, { replace: true });
+    if (!envs.length) {
+      setFormOpen(false);
+      setNoEnvOpen(true);
+      return;
+    }
     setForm((current) => ({
       ...current,
       env_id: current.env_id || String(envs[0]?.id || ''),
     }));
     setFormOpen(true);
-    const next = new URLSearchParams(searchParams);
-    next.delete('new');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams, envs]);
+  }, [searchParams, setSearchParams, envs, envsLoading]);
 
   const visibleRuns = useMemo(() => {
     const list = edition === 'novice' ? runs.filter((run) => run.edition === 'novice') : runs;
@@ -205,6 +212,12 @@ export function NodeTab({ edition }: { edition: 'dev' | 'novice' }) {
   };
 
   const openTaskForm = () => {
+    if (envsLoading) return;
+    if (!envs.length) {
+      setFormOpen(false);
+      setNoEnvOpen(true);
+      return;
+    }
     setForm((current) => ({
       ...current,
       env_id: current.env_id || String(envs[0]?.id || ''),
@@ -222,14 +235,14 @@ export function NodeTab({ edition }: { edition: 'dev' | 'novice' }) {
       return;
     }
     if (!selectedEnv) {
-      toast.error('请选择产品环境');
+      toast.error('请选择项目环境');
       return;
     }
-    // 补丁输出路径：表单填了用表单，没填回落到产品环境变量；两者都没有才提示。
+    // 补丁输出路径：表单填了用表单，没填回落到项目环境；两者都没有才提示。
     const patchOutputPath =
       form.patch_output_path.trim() || String(selectedEnv.patch_output_path || '').trim();
     if (edition === 'dev' && !patchOutputPath) {
-      toast.error('当前产品环境变量中未填写补丁输出路径，请在此处填写');
+      toast.error('当前项目环境中未填写补丁输出路径，请在此处填写');
       return;
     }
     setCreating(true);
@@ -509,7 +522,7 @@ export function NodeTab({ edition }: { edition: 'dev' | 'novice' }) {
         title={`新建${edition === 'novice' ? '智能排查' : '智能开发'}`}
         description={
           edition === 'novice'
-            ? '填写问题描述并选择产品环境，系统会在工作区中启动 Claude 分析。'
+            ? '填写问题描述并选择项目环境，系统会在工作区中启动 Claude 分析。'
             : '填写问题、触发入口和输出目录，分析过程不会修改客户工程。'
         }
         width="max-w-3xl"
@@ -538,13 +551,13 @@ export function NodeTab({ edition }: { edition: 'dev' | 'novice' }) {
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-[12px] font-medium text-ink-2">产品环境 <span className="text-danger">*</span></label>
+              <label className="mb-1 block text-[12px] font-medium text-ink-2">项目环境 <span className="text-danger">*</span></label>
               <select
                 value={form.env_id}
                 onChange={(event) => setForm({ ...form, env_id: event.target.value })}
                 className="input"
               >
-                <option value="">选择产品环境</option>
+                <option value="">选择项目环境</option>
                 {envs.map((env) => (
                   <option key={String(env.id)} value={String(env.id)}>
                     {env.project_name} · {env.product_name} {env.product_version}
@@ -604,7 +617,7 @@ export function NodeTab({ edition }: { edition: 'dev' | 'novice' }) {
                 <Input
                   value={form.patch_output_path}
                   onChange={(event) => setForm({ ...form, patch_output_path: event.target.value })}
-                  placeholder="留空则使用产品环境变量中的补丁输出路径"
+                  placeholder="留空则使用项目环境中的补丁输出路径"
                 />
                 <Button
                   className="shrink-0"
@@ -927,6 +940,22 @@ export function NodeTab({ edition }: { edition: 'dev' | 'novice' }) {
         }
         confirmText="删除"
         danger
+      />
+
+      <ConfirmDialog
+        open={noEnvOpen}
+        onClose={() => {
+          setNoEnvOpen(false);
+          setFormOpen(false);
+        }}
+        onConfirm={() => {
+          setNoEnvOpen(false);
+          setFormOpen(false);
+          navigate('/?tab=project_env');
+        }}
+        title="未创建项目环境"
+        description="检测到您未创建项目环境，请先创建项目环境。"
+        confirmText="确定"
       />
 
       <NewSessionDialog

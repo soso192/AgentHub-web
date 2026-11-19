@@ -1,4 +1,4 @@
-//! 智能开发节点的**本机运行清单**（`~/.cc-web/node_runs.json`）。
+//! 智能开发节点的**本机运行清单**（`~/.cc-web-dev/node_runs.json`）。
 //!
 //! 设计要点（与 patch_search 侧的 `problem_run` 表配套，见方案文档第二十章）：
 //!
@@ -26,7 +26,9 @@ const MAX_ID_LEN: usize = 128;
 fn valid_run_id(run_id: &str) -> bool {
     !run_id.is_empty()
         && run_id.len() <= MAX_ID_LEN
-        && run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn ok(data: Value) -> HttpResponse {
@@ -66,14 +68,19 @@ pub async fn list_runs(data: web::Data<AppState>) -> HttpResponse {
 /// PUT /api/node/runs/{id} —— 整对象 upsert（不存在则创建）。
 ///
 /// 前端在每个阶段结束、状态变化时全量 PUT 一次，所以这里不做字段级合并。
-pub async fn put_run(id: web::Path<String>, body: web::Json<Value>, data: web::Data<AppState>) -> HttpResponse {
+pub async fn put_run(
+    id: web::Path<String>,
+    body: web::Json<Value>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
     let id = id.into_inner();
     if id.len() > MAX_ID_LEN {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": "运行标识过长" }));
     }
     let mut run = body.into_inner();
     if !run.is_object() {
-        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "运行记录必须是 JSON 对象" }));
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": "运行记录必须是 JSON 对象" }));
     }
     // 以路径里的 id 为准：两者不一致时若各存一份，清单里就会凭空多出一条永远点不动的记录。
     run["id"] = Value::String(id.clone());
@@ -161,7 +168,12 @@ pub async fn ensure_dir(
 /// **不删**补丁输出目录里的产物，也**不删** cc-web 会话：产物是用户资产，
 /// 会话还可能被「继续会话」用到。删除清单项只表示"不再跟踪这次运行"。
 pub async fn delete_run(id: web::Path<String>, data: web::Data<AppState>) -> HttpResponse {
-    let removed = data.node_runs.write().unwrap().remove(&id.into_inner()).is_some();
+    let removed = data
+        .node_runs
+        .write()
+        .unwrap()
+        .remove(&id.into_inner())
+        .is_some();
     if removed {
         save_node_runs_to_disk_async(&data);
     }
@@ -180,7 +192,10 @@ pub struct WorkspaceRequest {
 /// （其暂存目录在用户自填的补丁输出目录下，由 claude 自己建）。
 ///
 /// run_id 只放行字母/数字/`-`/`_`：它是 URL 路径的一部分，拦住 `..` 之类的穿越输入。
-pub async fn create_workspace(body: web::Json<WorkspaceRequest>, _data: web::Data<AppState>) -> HttpResponse {
+pub async fn create_workspace(
+    body: web::Json<WorkspaceRequest>,
+    _data: web::Data<AppState>,
+) -> HttpResponse {
     let run_id = body.run_id.as_deref().unwrap_or("").trim().to_string();
     if !valid_run_id(&run_id) {
         return HttpResponse::BadRequest().json(serde_json::json!({
@@ -220,10 +235,20 @@ fn sanitize_file_name(raw: &str) -> String {
     let cleaned: String = raw
         .trim()
         .chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '(' | ')') { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '(' | ')') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let cleaned = cleaned.trim_matches('_').trim_matches('.').to_string();
-    if cleaned.is_empty() { "attachment.bin".to_string() } else { cleaned }
+    if cleaned.is_empty() {
+        "attachment.bin".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// 附件只用于 AI 查看，不需要可执行：明显可执行的扩展名直接拒绝。
@@ -265,7 +290,10 @@ async fn save_uploaded_files(
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(filename);
         let safe = sanitize_file_name(&provided);
-        if let Some(ext) = std::path::Path::new(&safe).extension().and_then(|value| value.to_str()) {
+        if let Some(ext) = std::path::Path::new(&safe)
+            .extension()
+            .and_then(|value| value.to_str())
+        {
             if BLOCKED_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
                 return Err((400, "不支持上传可执行文件".to_string()));
             }
@@ -305,7 +333,10 @@ pub async fn save_problem_image(
     if !valid_run_id(&run_id) {
         return upload_fail(400, "run_id 只允许字母、数字、- 和 _（长度 1~128）");
     }
-    let dir = crate::cc_web_temp_dir().join("node").join(&run_id).join("images");
+    let dir = crate::cc_web_temp_dir()
+        .join("node")
+        .join(&run_id)
+        .join("images");
     match save_uploaded_files(payload, dir, query.name.clone()).await {
         Ok(paths) => HttpResponse::Ok().json(serde_json::json!({
             "success": true,

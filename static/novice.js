@@ -1,5 +1,5 @@
 // ============================================================
-//  novice.js - 实施版「产品环境变量 / 环境检查」页
+//  novice.js - 实施版「项目环境 / 环境检查」页
 //  依赖（先加载）：common.js、folderpick.js
 //
 //  智能开发/聊天不在本页：它们是独立页面（与开发版同一份实现，
@@ -13,7 +13,7 @@ const patchState = {
     authInvalidated: false,
     user: null,
     products: null,          // 产品/版本字典缓存
-    envs: [],                // 产品环境列表（/api/project-envs 全量）
+    envs: [],                // 项目环境列表（/api/project-envs 全量）
     envCheck: null,          // /api/env-check 结果
     envEditId: null,
     view: 'node',            // node(智能开发=聊天) | env | check
@@ -34,7 +34,7 @@ function noviceSetView(view) {
         if (nav) nav.classList.toggle('active', key === view);
     });
     if (view === 'env' && noviceRequireLogin()) {
-        noviceLoadEnvs().catch(error => patchShowError(error.message, '产品环境加载失败'));
+        noviceLoadEnvs().catch(error => patchShowError(error.message, '项目环境加载失败'));
     }
     if (view === 'check' && noviceRequireLogin()) {
         noviceRunEnvCheck();
@@ -120,7 +120,7 @@ async function noviceLogout() {
 async function noviceRunEnvCheck() {
     const box = el('envcheck-list');
     box.innerHTML = '<div class="nv-check-card"><div class="nv-check-title">正在检查，请稍候…</div></div>';
-    // home 取第一个登记了 home 的产品环境（顺手把 home 下的 JDK 也查了）
+    // home 取第一个登记了 home 的项目环境（顺手把 home 下的 JDK 也查了）
     if (!(patchState.envs || []).some(item => String(item.package_path || '').trim())) {
         try { await noviceLoadEnvs(); } catch {}
     }
@@ -149,8 +149,8 @@ async function noviceRunEnvCheck() {
         '未检测到 claude 命令。请先安装 Claude Code 并重新打开本页面，否则智能开发无法运行。'));
     cards.push(card(data.java && data.java.ok, 'Java / JDK（编译补丁用）', data.java && data.java.detail,
         data.home_jdk && data.home_jdk.ok
-            ? `未在系统里找到 java，但在产品 home 下发现了 JDK：${data.home_jdk.path}。可以把这个路径填到产品环境变量的「本地 JDK」里（点「高级」展开）。`
-            : 'PATH 和 JAVA_HOME 都没有可用的 java。AI 编译时会依次在工程 home/war 包下、cc-web 安装目录的 jdk 目录下查找，仍没有会自动下载所需版本的 JDK 到 cc-web 安装目录/jdk/；也可以在产品环境变量里直接登记本地 JDK 路径（点「高级」展开）。'));
+            ? `未在系统里找到 java，但在产品 home 下发现了 JDK：${data.home_jdk.path}。可以把这个路径填到项目环境的「本地 JDK」里（点「高级」展开）。`
+            : 'PATH 和 JAVA_HOME 都没有可用的 java。AI 编译时会依次在工程 home/war 包下、cc-web 安装目录的 jdk 目录下查找，仍没有会自动下载所需版本的 JDK 到 cc-web 安装目录/jdk/；也可以在项目环境里直接登记本地 JDK 路径（点「高级」展开）。'));
     cards.push(card(data.python && data.python.ok, 'Python（生成对比报告用，缺了也能用）', data.python && data.python.detail,
         '未检测到可用的 python。不影响补丁排查，只是没有 HTML 对比报告。可安装 Python 3 后刷新本页。'));
     cards.push(card(data.git_bash && data.git_bash.ok, 'Git Bash（Claude Code 执行命令需要）', data.git_bash && data.git_bash.detail,
@@ -158,7 +158,7 @@ async function noviceRunEnvCheck() {
     box.innerHTML = cards.join('');
 }
 
-/* ── 产品环境变量页 ── */
+/* ── 项目环境页 ── */
 
 async function noviceLoadEnvs() {
     const body = el('env-list');
@@ -172,7 +172,7 @@ function noviceRenderEnvs() {
     const body = el('env-list');
     const envs = patchState.envs || [];
     if (!envs.length) {
-        body.innerHTML = '<div class="nv-empty">还没有产品环境。点右上角「新增」填好产品、版本和 home/war 路径即可开始使用智能开发。</div>';
+        body.innerHTML = '<div class="nv-empty">还没有项目环境。点右上角「新增」填好产品、版本和 home/war 路径即可开始使用智能开发。</div>';
         return;
     }
     body.innerHTML = envs.map(env => `
@@ -194,7 +194,7 @@ async function noviceOpenEnvForm(item = {}) {
     try { products = await noviceEnsureProducts(); }
     catch (error) { patchShowError(error.message, '产品字典加载失败'); return; }
     if (!products.length) {
-        patchShowError('管理员还没有配置产品字典。请联系管理员先在管理端添加产品与版本。', '无法维护产品环境');
+        patchShowError('管理员还没有配置产品字典。请联系管理员先在管理端添加产品与版本。', '无法维护项目环境');
         return;
     }
     patchState.envEditId = item.id || null;
@@ -254,8 +254,8 @@ async function noviceSaveEnv(event) {
 
 async function noviceDeleteEnv(id) {
     const ok = typeof confirmAppAction === 'function'
-        ? await confirmAppAction('删除后无法恢复，但已创建的智能开发运行不受影响。', '删除产品环境')
-        : window.confirm('确定删除这个产品环境？已创建的智能开发运行不受影响。');
+        ? await confirmAppAction('删除后无法恢复，但已创建的智能开发运行不受影响。', '删除项目环境')
+        : window.confirm('确定删除这个项目环境？已创建的智能开发运行不受影响。');
     if (!ok) return;
     try {
         await patchRequest(`/api/project-envs/${id}`, { method: 'DELETE' });
@@ -805,7 +805,7 @@ function noviceBindEvents() {
     const bindNav = (id, view) => { const node = el(id); if (node) node.onclick = e => { e.preventDefault(); noviceSetView(view); }; };
     bindNav('nav-node', 'node');
     bindNav('nav-patch', 'patch');
-    // 右上角：产品环境变量 / 新建排查
+    // 右上角：项目环境 / 新建排查
     const envBtn = el('noviceEnvBtn');
     if (envBtn) envBtn.onclick = () => noviceSetView('env');
     // 补丁检索：搜索 / 分页 / 下载
@@ -896,7 +896,7 @@ function noviceBindEvents() {
     el('btn-patch-back').onclick = () => noviceSetView('node');
     el('btn-envcheck-refresh').onclick = () => noviceRunEnvCheck();
     // 登录在独立页面 /login 完成（见 novice_login.js），这里不再有登录弹窗
-    // 产品环境
+    // 项目环境
     el('btn-env-back').onclick = () => noviceSetView('node');
     el('btn-new-env').onclick = () => noviceOpenEnvForm().catch(error => patchShowError(error.message, '打开失败'));
     el('env-form').onsubmit = noviceSaveEnv;

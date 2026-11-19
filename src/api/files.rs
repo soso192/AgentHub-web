@@ -29,8 +29,14 @@ fn ensure_path_allowed(path_str: &str, data: &web::Data<crate::AppState>) -> Res
         Ok(p) => p,
         Err(_) => return Ok(()),
     };
-    // cc-web 自己的目录：temp（运行工作区）+ recordings（接口录制导出，在安装目录下）
-    for root in [crate::cc_web_temp_dir(), crate::cc_web_install_dir().join("recordings")] {
+    // cc-web 自己的目录：temp（运行工作区）+ recordings（接口录制导出，都在用户数据目录下）。
+    // 同时保留旧版安装目录下的 temp/recordings 只读兼容，旧任务里的绝对路径仍能打开。
+    for root in [
+        crate::cc_web_temp_dir(),
+        crate::cc_web_recordings_dir(),
+        crate::cc_web_install_dir().join("temp"),
+        crate::cc_web_install_dir().join("recordings"),
+    ] {
         if path_under(&canonical, &root.to_string_lossy()) {
             return Ok(());
         }
@@ -66,7 +72,7 @@ fn ensure_path_allowed(path_str: &str, data: &web::Data<crate::AppState>) -> Res
     }
     Err(HttpResponse::Forbidden().json(serde_json::json!({
         "success": false,
-        "error": "实施版仅能访问运行工作目录、补丁输出目录和产品环境登记的 home/客开目录"
+        "error": "实施版仅能访问运行工作目录、补丁输出目录和项目环境登记的 home/客开目录"
     })))
 }
 

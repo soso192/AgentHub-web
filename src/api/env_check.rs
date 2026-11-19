@@ -17,7 +17,7 @@ use std::time::Duration;
 
 #[derive(Deserialize)]
 pub struct EnvCheckQuery {
-    /// 产品环境登记的 home/war 目录（选填）：传了就顺带在里面浅扫 JDK
+    /// 项目环境登记的 home/war 目录（选填）：传了就顺带在里面浅扫 JDK
     pub home: Option<String>,
 }
 
@@ -163,7 +163,7 @@ pub async fn env_check(query: web::Query<EnvCheckQuery>) -> HttpResponse {
                 .unwrap_or(None);
             match version {
                 Some(detail) => serde_json::json!({ "ok": true, "detail": detail, "source": "PATH" }),
-                None => serde_json::json!({ "ok": false, "detail": "PATH 与 JAVA_HOME 都没有可用的 java（可在产品环境里登记本地 JDK 路径，或让系统在 home 下自动找）", "source": null }),
+                None => serde_json::json!({ "ok": false, "detail": "PATH 与 JAVA_HOME 都没有可用的 java（可在项目环境里登记本地 JDK 路径，或让系统在 home 下自动找）", "source": null }),
             }
         }
     };

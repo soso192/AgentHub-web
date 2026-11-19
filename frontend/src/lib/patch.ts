@@ -478,6 +478,24 @@ export const patchApi = {
       '/api/ccweb/publish',
       { method: 'POST', body: form }
     ),
+
+  desktopReleaseFiles: (
+    edition: 'dev' | 'impl',
+    platform: 'windows' | 'arm64' | 'x64'
+  ) =>
+    patchRequest<{
+      edition: 'dev' | 'impl';
+      platform: 'windows' | 'arm64' | 'x64';
+      files: Array<{ name: string; size: number; updated_at: string }>;
+    }>(`/api/ccweb/desktop-files?edition=${edition}&platform=${platform}`),
+
+  publishDesktopRelease: (form: FormData) =>
+    patchRequest<{
+      edition: 'dev' | 'impl';
+      platform: 'windows' | 'arm64' | 'x64';
+      path: string;
+      files: Array<{ name: string; size: number; updated_at: string }>;
+    }>('/api/ccweb/desktop-publish', { method: 'POST', body: form }),
 };
 
 /* ── 文件下载（带鉴权 + 多服务器回退） ── */

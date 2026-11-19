@@ -45,7 +45,7 @@
         {key: 'analysis', label: '待分析补丁', icon: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>'},
         {key: 'product', label: '产品版本管理', icon: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line>'},
         {key: 'directory', label: '工作目录', icon: '<path d="M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path>'},
-        {key: 'project_env', label: '产品环境变量', icon: '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"></path>'},
+        {key: 'project_env', label: '项目环境', icon: '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"></path>'},
         {key: 'menus', label: '菜单可见性', icon: '<line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line>'},
         {key: 'sessions', label: '会话存档', icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>'},
         {key: 'release', label: '版本发布', icon: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line>'},
@@ -61,12 +61,12 @@
     }
 
     // ── 实施版固定菜单（与开发版共用这一份文件，按 /api/version 的 edition 切换）──
-    // 实施版菜单写死在客户端：智能开发（= 开发版完整页面）/ 聊天 / 产品环境变量 / 环境检查。
+    // 实施版菜单写死在客户端：智能开发（= 开发版完整页面）/ 聊天 / 项目环境 / 环境检查。
     // 后两项在 /novice.html（实施版的轻量页），智能开发/聊天是独立页面。
     const NOVICE_ITEMS = [
         { key: 'node', label: '智能开发', href: '/patches.html?tab=node', icon: ITEMS[0].icon },
         { key: 'chat', label: '聊天', href: '/chat.html', icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>' },
-        { key: 'env', label: '产品环境变量', href: '/novice.html?view=env', icon: ITEMS.find(item => item.key === 'project_env').icon },
+        { key: 'env', label: '项目环境', href: '/novice.html?view=env', icon: ITEMS.find(item => item.key === 'project_env').icon },
         { key: 'check', label: '环境检查', href: '/novice.html?view=check', icon: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>' },
     ];
     let noviceEdition = false;

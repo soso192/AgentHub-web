@@ -57,10 +57,10 @@ fn sanitize_filename(value: &str) -> String {
     }).collect()
 }
 
-/// 把 claude 写出的 结论.md / 摘要.md 复制到 <cc-web所在目录>\temp\（平铺）。
+/// 把 claude 写出的 结论.md / 摘要.md 复制到用户数据目录\temp\（平铺）。
 /// 文件名 = <execution_id>_结论.md / _摘要.md（execution_id = "<runId>-<stepOrder>"，稳定名、覆盖即幂等）。
-fn archive_output_md(exe_dir: &Path, execution_id: &str, cwd: &str) {
-    let temp_dir = exe_dir.join("temp");
+fn archive_output_md(execution_id: &str, cwd: &str) {
+    let temp_dir = crate::cc_web_temp_dir();
     if std::fs::create_dir_all(&temp_dir).is_err() {
         log::warn!("[local-claude] 无法创建 temp 目录：{}", temp_dir.display());
         return;
@@ -146,15 +146,11 @@ pub async fn execute(data: web::Data<AppState>, body: web::Json<LocalClaudeReque
     match result {
         Ok((text, session_id)) => {
             // 提示词要求 claude 在工作目录下写 结论.md / 摘要.md：
-            // ① 复制到 <cc-web目录>\temp\ 留档（用户端）；② 内容随响应返回，由前端上报入库。
+            // ① 复制到用户数据目录\temp\ 留档（用户端）；② 内容随响应返回，由前端上报入库。
             let cwd_path = Path::new(&cwd);
             let conclusion = read_output_file(cwd_path, "结论.md");
             let summary = read_output_file(cwd_path, "摘要.md");
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(dir) = exe.parent() {
-                    archive_output_md(dir, &body.execution_id, &cwd);
-                }
-            }
+            archive_output_md(&body.execution_id, &cwd);
             HttpResponse::Ok().json(LocalClaudeResponse {
                 execution_id: body.execution_id.clone(),
                 text: Some(text),
@@ -187,7 +183,7 @@ pub struct WorkflowTempRequest {
 
 /// 为「标品代码分析」这类本地步骤创建临时工作目录。
 ///
-/// 位置：`<cc-web.exe 所在目录>/temp/workflow/<run_id>/step<N>`。
+/// 位置：`<用户数据目录>/temp/workflow/<run_id>/step<N>`。
 /// 该目录同时作为 claude 的 cwd 和产物目录；重新执行同一步时会先清空，避免旧产物混入。
 pub async fn workflow_temp(body: web::Json<WorkflowTempRequest>) -> HttpResponse {
     if body.step_order == 0 {

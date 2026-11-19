@@ -18,7 +18,7 @@ function skillLocation(env: EnvSnapshot): string {
   const dir = text(env.local_skill_path).trim().replace(/[\\/]+$/, '');
   if (dir) {
     return [
-      `skill 库位置：**优先**使用产品环境里配置的「本机 skill 地址」：${dir}`,
+      `skill 库位置：**优先**使用项目环境里配置的「本机 skill 地址」：${dir}`,
       '  - 该目录下直接有 `SKILL.md`：它本身就是一个 skill，按需读取；',
       `  - 该目录下有 \`.claude/skills\`：它是 skill 库根目录，技能在 ${dir}/.claude/skills 下；`,
       `  - 该目录下是多个含 \`SKILL.md\` 的子目录：把它当作 skills 目录，技能路径为 ${dir}/<skill>/SKILL.md。`,
@@ -26,7 +26,7 @@ function skillLocation(env: EnvSnapshot): string {
     ].join('\n');
   }
   return [
-    'skill 库位置：产品环境里登记了「本机 skill 地址」时以它为准；未登记时按顺序查找：',
+    'skill 库位置：项目环境里登记了「本机 skill 地址」时以它为准；未登记时按顺序查找：',
     '  ① 从本次运行目录向上找到包含 cc-web.exe 的安装目录，其下的 `fbip_claude_skills_V82`（或 `fbip_claude_skills_V*`）；',
     '  ② 用户目录 `~/.claude/skills` 下的 `fbip-*` 技能。',
     '  找到库根后，技能在 `<库根>/.claude/skills` 下。',
@@ -72,7 +72,33 @@ export function noviceSkillGuide(env: EnvSnapshot): string {
 }
 
 /**
- * 环境补充：把产品环境里配置、但提示词模板没有引用的字段补进【环境】段。
+ * FBIP / NCCloud 数据库表关系 MCP 的使用说明。
+ * 只有产品为 FBIP 或 NCCloud 时返回内容；其他产品返回空字符串。
+ */
+export function dbGraphGuide(env: EnvSnapshot): string {
+  const product = `${text(env.product_name)} ${text(env.product_version)}`.trim();
+  if (!/fbip|nc\s*cloud|ncc/i.test(product)) return '';
+
+  return [
+    '【数据库表关系 MCP（FBIP / NCCloud）】',
+    '当问题涉及数据库表、字段、表间关系、单据流转、连接查询或需要生成 SQL 时，优先使用 `fbip82_graph` MCP，不要凭经验猜表名和字段。',
+    '工具用法：',
+    '- `search_tables(query, module?, limit?)`：按表名、中文名、业务含义、实体或 action 搜索表；',
+    '- `get_table(table, rel_limit?, ref_limit?)`：查看表字段、业务画像、出入关系、action 入口和源码定位；',
+    '- `get_relations(table, direction=out|in|both, kind?, evidence?)`：查看列级关系；',
+    '- `get_concept(query)`：解释业务概念并列出相关表；',
+    '- `find_join_path(src, dst, max_depth?)`：查找两张表之间的 JOIN 路径；',
+    '- `get_actions(table?/query?/module?)`、`neighbors(table, hops)`：辅助定位业务入口和邻接表。',
+    '使用规则：',
+    '- 先确认表名、字段名和关系，再写 SQL 或下结论；',
+    '- `confirmed` 关系可以直接作为依据；`candidate` / `inferred` / `heuristic` 必须标注“待验证”，并用实际数据或 SQL 校验；',
+    '- 结论里注明使用了哪些表、字段和关系；',
+    '- 如果 MCP 不可用，明确说明，退回现有代码和数据库信息分析，禁止编造表结构。',
+  ].join('\n');
+}
+
+/**
+ * 环境补充：把项目环境里配置、但提示词模板没有引用的字段补进【环境】段。
  *
  * 模板是数据库里配置的，字段不一定齐全（例如模板只有产品/目录/JDK，没有数据库连接、
  * 调试地址、录制页面）。这里按「值非空且模板还没有对应标签」补一行，避免漏信息。

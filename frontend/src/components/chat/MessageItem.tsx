@@ -27,10 +27,12 @@ export function MessageItem({
   message,
   assistant,
   streaming = false,
+  turnId,
 }: {
   message: Message;
   assistant?: string;
   streaming?: boolean;
+  turnId?: string;
 }) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
@@ -49,7 +51,10 @@ export function MessageItem({
 
   if (isUser) {
     return (
-      <div className="group flex justify-end gap-2.5 px-1 py-1.5">
+      <div
+        data-turn-id={turnId}
+        className="group flex justify-end gap-2.5 px-1 py-1.5"
+      >
         <div className="flex max-w-[82%] flex-col items-end gap-1">
           <div className="whitespace-pre-wrap break-words rounded-2xl rounded-tr-md border border-line bg-[var(--user-bg)] px-4 py-2.5 text-[13.5px] leading-6 text-ink">
             {message.content}

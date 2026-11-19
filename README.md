@@ -49,7 +49,8 @@
 - **防竞态** — 中止操作立即清理流式状态，防止残留事件渲染到下一条消息
 
 ### 💾 会话持久化
-- 所有会话自动保存到 `~/.cc-web/sessions.json`
+- 所有会话自动保存到 `~/.cc-web-dev/sessions.json`
+- 首次启动新版本时，旧目录 `~/.cc-web` 会自动迁移到 `~/.cc-web-dev`（实施版迁移到 `~/.cc-web-impl`），迁移成功后删除旧目录
 - **重启后会话不丢失**，包括完整的聊天记录和 content blocks
 - Claude Agent 支持 `--resume` 原生会话恢复
 - Pi Agent 支持 `--session` 原生会话恢复
@@ -68,7 +69,7 @@
 - 所有组件统一使用 CSS 变量，主题切换无闪烁
 
 ### 📝 结构化日志系统
-- 日志写入文件 `~/.cc-web/logs/cc-web-YYYY-MM-DD.log`
+- 日志写入文件 `~/.cc-web-dev/logs/cc-web-YYYY-MM-DD.log`
 - 五级日志：`error` > `warn` > `info` > `debug` > `trace`
 - 控制台只显示启动横幅，详细日志只写文件
 - 环境变量控制级别：`RUST_LOG=debug`、`RUST_LOG=cc_web::ai::pi=trace`

@@ -151,14 +151,9 @@ pub(crate) fn spawn_event_saver(
                         }
                         "thinking" => {
                             if let Some(thinking) = event.get("thinking").and_then(|t| t.as_str()) {
-                                // Insert thinking block before any text blocks
-                                // This ensures thinking always appears at the top
-                                let insert_pos = content_blocks.iter().position(|b| matches!(b, ContentBlock::Text { .. }));
-                                if let Some(pos) = insert_pos {
-                                    content_blocks.insert(pos, ContentBlock::Thinking { thinking: thinking.to_string() });
-                                } else {
-                                    content_blocks.push(ContentBlock::Thinking { thinking: thinking.to_string() });
-                                }
+                                // 按事件顺序追加，保留 thinking / text / tool 的真实交错顺序。
+                                // 前端依赖这个顺序，把每段过程折叠到它后面的文本输出上。
+                                content_blocks.push(ContentBlock::Thinking { thinking: thinking.to_string() });
                                 needs_save = true;
                             }
                         }

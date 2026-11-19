@@ -10,6 +10,8 @@ import {
   LayoutList,
   ListChecks,
   MessageSquare,
+  Network,
+  PackageCheck,
   PackageSearch,
   Server,
   Settings2,
@@ -26,6 +28,7 @@ export interface DevTabDef {
 }
 
 const CODE_SEARCH_CACHE_KEY = 'cc-web-code-search-url';
+const FBIP_GRAPH_CACHE_KEY = 'cc-web-fbip-graph-url';
 
 /** 上次取到的源码搜索地址；null 表示还没有取到过，不能当成“未配置”。 */
 export function readCachedCodeSearchUrl(): string | null {
@@ -42,6 +45,24 @@ export function rememberCodeSearchUrl(url: string): void {
     localStorage.setItem(CODE_SEARCH_CACHE_KEY, url);
   } catch {
     /* localStorage 不可用时只影响下次首屏，不影响功能 */
+  }
+}
+
+/** 上次取到的 FBIP 全库表关系图谱地址；null 表示还没取到。 */
+export function readCachedFbipGraphUrl(): string | null {
+  try {
+    const value = localStorage.getItem(FBIP_GRAPH_CACHE_KEY);
+    return value === null ? null : value;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberFbipGraphUrl(url: string): void {
+  try {
+    localStorage.setItem(FBIP_GRAPH_CACHE_KEY, url);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -94,6 +115,20 @@ export function buildDevTabs({
       visible: codeSearchUrl === null || Boolean(codeSearchUrl),
     },
     {
+      key: 'fbipgraph',
+      label: 'FBIP全库表关系图谱',
+      icon: <Network size={14} />,
+      // 内置页面，开发版固定显示，不依赖异步配置，避免刷新时菜单闪动。
+      visible: edition !== 'novice',
+    },
+    {
+      key: 'patchdeploy',
+      label: '补丁管理',
+      icon: <PackageCheck size={14} />,
+      // 本地部署能力只放在开发版；实施版后端不注册 /api/patch-deploy 高危路由。
+      visible: edition !== 'novice',
+    },
+    {
       key: 'directory',
       label: '工作目录',
       icon: <FolderTree size={14} />,
@@ -101,7 +136,7 @@ export function buildDevTabs({
     },
     {
       key: 'project_env',
-      label: '产品环境变量',
+      label: '项目环境',
       icon: <Server size={14} />,
       visible: can('project_env'),
     },

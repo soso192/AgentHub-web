@@ -1,8 +1,29 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowDown, MessageSquarePlus, Sparkles } from 'lucide-react';
 import type { ChatView } from '../../store/chat';
 import { cn } from '../../lib/utils';
 import { MessageItem, StreamingMessage } from './MessageItem';
+
+interface TurnAnchor {
+  id: string;
+  text: string;
+}
+
+function cleanTurnText(text: string): string {
+  return (
+    text
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/[`#>*_~[\]()]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim() || '用户提问'
+  );
+}
+
+function clipTurnText(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max).join('')}...` : text;
+}
 
 export function MessageList({
   view,
@@ -14,13 +35,108 @@ export function MessageList({
   onSuggestion?: (text: string) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const railCloseTimer = useRef<number | null>(null);
   const [atBottom, setAtBottom] = useState(true);
+  const [activeTurn, setActiveTurn] = useState<string | null>(null);
+  const [railOpen, setRailOpen] = useState(false);
+  const [detail, setDetail] = useState<{ text: string; left: number; top: number } | null>(null);
+
+  const turns = useMemo<TurnAnchor[]>(
+    () =>
+      view.messages
+        .map((message, index) =>
+          message.role === 'user'
+            ? {
+                id: `turn-${index}-${message.timestamp}`,
+                text: cleanTurnText(message.content || ''),
+              }
+            : null
+        )
+        .filter((turn): turn is TurnAnchor => Boolean(turn)),
+    [view.messages]
+  );
+
+  // 轨道最多 10 个点，均匀采样全部提问（包含第一条和最后一条）。
+  const railTurns = useMemo<TurnAnchor[]>(() => {
+    if (turns.length <= 10) return turns;
+    return Array.from({ length: 10 }, (_, index) =>
+      turns[Math.round((index * (turns.length - 1)) / 9)]
+    );
+  }, [turns]);
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     const node = scrollerRef.current;
     if (!node) return;
     node.scrollTo({ top: node.scrollHeight, behavior });
   };
+
+  const updateActiveTurn = () => {
+    const node = scrollerRef.current;
+    if (!node) return;
+    const anchors = Array.from(node.querySelectorAll<HTMLElement>('[data-turn-id]'));
+    if (!anchors.length) {
+      setActiveTurn(null);
+      return;
+    }
+    const top = node.getBoundingClientRect().top;
+    let current = anchors[0].dataset.turnId || null;
+    for (const anchor of anchors) {
+      if (anchor.getBoundingClientRect().top - top <= 80) {
+        current = anchor.dataset.turnId || current;
+      } else {
+        break;
+      }
+    }
+    setActiveTurn(current);
+  };
+
+  const jumpToTurn = (turnId: string) => {
+    const node = scrollerRef.current;
+    if (!node) return;
+    const anchor = Array.from(node.querySelectorAll<HTMLElement>('[data-turn-id]')).find(
+      (item) => item.dataset.turnId === turnId
+    );
+    anchor?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setActiveTurn(turnId);
+    setRailOpen(false);
+    setDetail(null);
+  };
+
+  const openRail = () => {
+    if (railCloseTimer.current) {
+      window.clearTimeout(railCloseTimer.current);
+      railCloseTimer.current = null;
+    }
+    setRailOpen(true);
+  };
+
+  const closeRail = () => {
+    if (railCloseTimer.current) window.clearTimeout(railCloseTimer.current);
+    railCloseTimer.current = window.setTimeout(() => {
+      setRailOpen(false);
+      setDetail(null);
+      railCloseTimer.current = null;
+    }, 180);
+  };
+
+  const showDetail = (turn: TurnAnchor, event: MouseEvent<HTMLElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const popupRect = popupRef.current?.getBoundingClientRect();
+    const left = Math.max(8, (popupRect?.left ?? rect.left) - 272);
+    const top = Math.max(40, Math.min(window.innerHeight - 40, rect.top + rect.height / 2));
+    setDetail({
+      text: clipTurnText(turn.text, 100),
+      left,
+      top,
+    });
+  };
+
+  useEffect(() => {
+    return () => {
+      if (railCloseTimer.current) window.clearTimeout(railCloseTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (atBottom) scrollToBottom('auto');
@@ -36,7 +152,14 @@ export function MessageList({
     if (!node) return;
     const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
     setAtBottom(distance < 80);
+    updateActiveTurn();
   };
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(updateActiveTurn);
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view.messages.length, view.sessionId]);
 
   const isEmpty =
     !view.loading && view.messages.length === 0 && !view.streaming && view.liveBlocks.length === 0;
@@ -91,6 +214,7 @@ export function MessageList({
                   key={`${message.timestamp}-${index}`}
                   message={message}
                   assistant={view.assistant}
+                  turnId={message.role === 'user' ? `turn-${index}-${message.timestamp}` : undefined}
                 />
               ))}
               {(view.streaming || view.liveBlocks.length > 0 || view.error) && (
@@ -105,6 +229,77 @@ export function MessageList({
           )}
         </div>
       </div>
+
+      {turns.length > 0 && (
+        <div
+          className="absolute right-1.5 top-1/2 z-30 -translate-y-1/2"
+          onMouseEnter={openRail}
+          onMouseLeave={closeRail}
+        >
+          <div className="flex flex-col items-center gap-2" aria-label="用户提问导航">
+            {railTurns.map((turn, index) => (
+              <button
+                key={turn.id}
+                type="button"
+                title={clipTurnText(turn.text, 15)}
+                aria-label={`跳转到第 ${index + 1} 个用户提问：${clipTurnText(turn.text, 15)}`}
+                aria-current={activeTurn === turn.id ? 'true' : undefined}
+                onClick={() => jumpToTurn(turn.id)}
+                className={cn(
+                  'rounded-full transition-all duration-150',
+                  activeTurn === turn.id
+                    ? 'h-3 w-3 shadow-[0_0_0_3px_var(--accent-soft)]'
+                    : 'h-2.5 w-2.5 hover:h-3 hover:w-3 hover:opacity-80'
+                )}
+                style={{
+                  backgroundColor:
+                    activeTurn === turn.id ? 'var(--turn-dot-active)' : 'var(--turn-dot)',
+                }}
+              />
+            ))}
+          </div>
+
+          {railOpen && (
+            <div
+              ref={popupRef}
+              onMouseEnter={openRail}
+              onMouseLeave={closeRail}
+              className="absolute right-full top-1/2 mr-2 max-h-72 w-60 -translate-y-1/2 overflow-y-auto rounded-xl border border-line bg-surface-2 p-1.5 shadow-pop"
+            >
+              <div className="px-2 py-1 text-[10.5px] font-medium text-ink-3">用户提问导航</div>
+              {turns.map((turn, index) => (
+                <button
+                  key={turn.id}
+                  type="button"
+                  onMouseEnter={(event) => showDetail(turn, event)}
+                  onMouseLeave={() => setDetail(null)}
+                  onClick={() => jumpToTurn(turn.id)}
+                  className={cn(
+                    'block w-full truncate rounded-lg px-2 py-1.5 text-left text-[11.5px] transition-colors',
+                    activeTurn === turn.id
+                      ? 'bg-accent-soft text-accent'
+                      : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
+                  )}
+                  title={clipTurnText(turn.text, 15)}
+                >
+                  {index + 1}. {clipTurnText(turn.text, 15)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {detail &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[80] w-64 -translate-y-1/2 rounded-lg border border-white/10 bg-[#1f2329] px-3 py-2 text-[11.5px] leading-5 text-white shadow-pop"
+            style={{ left: detail.left, top: detail.top }}
+          >
+            {detail.text}
+          </div>,
+          document.body
+        )}
 
       {!atBottom && (
         <button

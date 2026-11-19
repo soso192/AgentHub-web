@@ -8,7 +8,7 @@
 //  不如让 cc-web 自己带一份：
 //
 //    读配置 → 把相对路径按「正在运行的 cc-web.exe 所在目录」解析成绝对
-//    路径 → 落一份到 ~/.cc-web/mcp-servers.resolved.json → 把该路径交给
+//    路径 → 落一份到 ~/.cc-web-dev/mcp-servers.resolved.json → 把该路径交给
 //    claude 的 --mcp-config。
 //
 //  这样一份配置在所有机器通用（前提是 MCP 的可执行文件与 cc-web.exe 保持
@@ -27,11 +27,15 @@ use std::path::{Component, Path, PathBuf};
 
 /// 覆盖配置文件路径的环境变量（沿用本项目 CLAUDE_CMD / CODEX_CMD / PI_CMD 的习惯）
 const ENV_OVERRIDE: &str = "CC_WEB_MCP_CONFIG";
-/// 默认配置文件，放在 ~/.cc-web/ 下（沿用 main.rs 的目录约定）
+/// 默认配置文件，放在 ~/.cc-web-dev/ 下（沿用 main.rs 的目录约定）
 const DEFAULT_FILE: &str = "mcp-servers.json";
 /// 解析后的输出文件名，与源文件放同一目录，便于对照
 const RESOLVED_FILE: &str = "mcp-servers.resolved.json";
-const DATA_DIR: &str = if cfg!(feature = "implCon") { ".cc-web-novice" } else { ".cc-web" };
+const DATA_DIR: &str = if cfg!(feature = "implCon") {
+    ".cc-web-impl"
+} else {
+    ".cc-web-dev"
+};
 
 /// 读 cc-web 的 MCP 配置，解析相对路径并落盘，返回给 `--mcp-config` 用的绝对路径。
 ///
@@ -113,7 +117,7 @@ pub fn resolve_mcp_config() -> Option<PathBuf> {
     Some(path)
 }
 
-/// 配置文件来源：环境变量优先，否则 `~/.cc-web/mcp-servers.json`
+/// 配置文件来源：环境变量优先，否则 `~/.cc-web-dev/mcp-servers.json`
 fn source_path() -> Option<PathBuf> {
     if let Ok(value) = std::env::var(ENV_OVERRIDE) {
         let trimmed = value.trim();
@@ -239,7 +243,7 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// 把解析后的配置写进 `~/.cc-web/mcp-servers.resolved.json`
+/// 把解析后的配置写进 `~/.cc-web-dev/mcp-servers.resolved.json`
 fn materialize(servers: &serde_json::Map<String, serde_json::Value>) -> Option<PathBuf> {
     let dir = dirs::home_dir()?.join(DATA_DIR);
     if let Err(error) = std::fs::create_dir_all(&dir) {
@@ -276,16 +280,36 @@ mod tests {
     #[test]
     fn resolves_relative_ones() {
         let cases = [
-            (r".\java_compiler_mcp.exe", r"D:\project\cc\target\release\java_compiler_mcp.exe"),
-            ("./java_compiler_mcp.exe", r"D:\project\cc\target\release\java_compiler_mcp.exe"),
-            (r"..\..\..\mcpadd\.venv\Scripts\python.exe", r"D:\project\mcpadd\.venv\Scripts\python.exe"),
-            ("../../../mcpadd/java_compiler_mcp.py", r"D:\project\mcpadd\java_compiler_mcp.py"),
+            (
+                r".\java_compiler_mcp.exe",
+                r"D:\project\cc\target\release\java_compiler_mcp.exe",
+            ),
+            (
+                "./java_compiler_mcp.exe",
+                r"D:\project\cc\target\release\java_compiler_mcp.exe",
+            ),
+            (
+                r"..\..\..\mcpadd\.venv\Scripts\python.exe",
+                r"D:\project\mcpadd\.venv\Scripts\python.exe",
+            ),
+            (
+                "../../../mcpadd/java_compiler_mcp.py",
+                r"D:\project\mcpadd\java_compiler_mcp.py",
+            ),
             (r"tools\a.exe", r"D:\project\cc\target\release\tools\a.exe"),
             // 裸文件名带扩展名 → 当成 exe 同目录下的文件（npx 这种没扩展名的走 PATH，见下个测试）
-            ("java_compiler_mcp.exe", r"D:\project\cc\target\release\java_compiler_mcp.exe"),
+            (
+                "java_compiler_mcp.exe",
+                r"D:\project\cc\target\release\java_compiler_mcp.exe",
+            ),
         ];
         for (input, expected) in cases {
-            assert_eq!(resolve_path_like(input, &base()), expected, "input={}", input);
+            assert_eq!(
+                resolve_path_like(input, &base()),
+                expected,
+                "input={}",
+                input
+            );
         }
     }
 
@@ -293,7 +317,10 @@ mod tests {
     fn keeps_absolute_and_bare_names() {
         let cases = [
             // 已经是绝对路径 → 原样
-            (r"D:\tools\java_compiler_mcp.exe", r"D:\tools\java_compiler_mcp.exe"),
+            (
+                r"D:\tools\java_compiler_mcp.exe",
+                r"D:\tools\java_compiler_mcp.exe",
+            ),
             // 裸命令名（无扩展名）→ 走 PATH，不能被拼成 <base>\npx
             ("npx", "npx"),
             ("python", "python"),
@@ -301,7 +328,12 @@ mod tests {
             ("--flag", "--flag"),
         ];
         for (input, expected) in cases {
-            assert_eq!(resolve_path_like(input, &base()), expected, "input={}", input);
+            assert_eq!(
+                resolve_path_like(input, &base()),
+                expected,
+                "input={}",
+                input
+            );
         }
     }
 
@@ -312,7 +344,10 @@ mod tests {
             PathBuf::from(r"D:\a\d\e")
         );
         // 绝对路径越过根 → 钳在根上，不吐 ..
-        assert_eq!(normalize(Path::new(r"D:\a\..\..\..\b")), PathBuf::from(r"D:\b"));
+        assert_eq!(
+            normalize(Path::new(r"D:\a\..\..\..\b")),
+            PathBuf::from(r"D:\b")
+        );
     }
 
     #[test]
@@ -326,15 +361,25 @@ mod tests {
         let out = resolve_server(&server, &base());
         assert_eq!(
             out["command"],
-            serde_json::Value::String(r"D:\project\cc\target\release\java_compiler_mcp.exe".to_string())
+            serde_json::Value::String(
+                r"D:\project\cc\target\release\java_compiler_mcp.exe".to_string()
+            )
         );
         assert_eq!(
             out["args"][0],
-            serde_json::Value::String(r"D:\project\cc\target\mcpadd\java_compiler_mcp.py".to_string())
+            serde_json::Value::String(
+                r"D:\project\cc\target\mcpadd\java_compiler_mcp.py".to_string()
+            )
         );
         // 非路径的 arg 原样
-        assert_eq!(out["args"][1], serde_json::Value::String("--verbose".to_string()));
-        assert_eq!(out["cwd"], serde_json::Value::String(r"D:\project\cc\target\work".to_string()));
+        assert_eq!(
+            out["args"][1],
+            serde_json::Value::String("--verbose".to_string())
+        );
+        assert_eq!(
+            out["cwd"],
+            serde_json::Value::String(r"D:\project\cc\target\work".to_string())
+        );
     }
 
     #[test]

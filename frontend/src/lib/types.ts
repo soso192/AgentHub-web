@@ -72,6 +72,7 @@ export interface VersionInfo {
 export interface PatchConfig {
   patch_search_servers?: string[];
   code_search_url?: string;
+  fbip_graph_url?: string;
 }
 
 export interface PatchItem {
