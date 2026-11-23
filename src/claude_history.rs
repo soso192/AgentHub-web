@@ -95,6 +95,7 @@ fn parse_history(sid: &str, assistant: &str, include_thinking: bool) -> Vec<Mess
                         timestamp: parse_timestamp(event.get("timestamp"), now),
                         content_blocks: Some(blocks),
                         assistant: Some(assistant.to_string()),
+                        display_content: None,
                     });
                 }
             }
@@ -120,6 +121,7 @@ fn parse_history(sid: &str, assistant: &str, include_thinking: bool) -> Vec<Mess
                         timestamp: parse_timestamp(event.get("timestamp"), now),
                         content_blocks: None,
                         assistant: None,
+                        display_content: None,
                     });
                 } else if let Some(arr) = content.and_then(|c| c.as_array()) {
                     // tool_result 追加到当前助手消息，保证与对应 tool_use 同一条 Message，

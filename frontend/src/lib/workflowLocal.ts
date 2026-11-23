@@ -202,6 +202,7 @@ export async function runWorkflowLocal(
       dir: artifactDir,
       runId,
       step: waiting,
+      display_prompt: String(data.business_input || '').trim(),
     });
 
     if (holder.cancelled) {
@@ -259,7 +260,7 @@ export async function runWorkflowLocal(
           if (holder.cancelled) return;
           promptSent = true;
           void api.agent
-            .start(sessionId, pending.prompt)
+            .start(sessionId, pending.prompt, String(data.business_input || '').trim())
             .then((result) => {
               if (result && result.success === false) {
                 void finish(result.error || '启动失败');

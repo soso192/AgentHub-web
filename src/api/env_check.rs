@@ -1,9 +1,13 @@
 //! 环境自检：实施版「环境检查页」/首次启动自检用（开发版也可调）。
 //!
 //! 检查项与判定：
-//! - **claude**：`claude --version` 能跑通。智能开发的执行引擎，缺了整个功能不可用。
-//! - **python**：`python --version` 能跑通。diff-report（差异报告）skill 用它生成 html 报告。
+//! - **claude**：用与智能开发相同的探测逻辑找到 CLI，再执行 `--version`。
+//!   Windows 上兼容 npm 的 `claude.cmd` 和 `node_modules` 的 `node:<cli.js>`。
+//! - **python**：依次尝试 `python` / `python3` / `py -3` / `py`（Windows），
+//!   跳过微软商店占位别名。diff-report（差异报告）skill 用它生成 html 报告。
 //!   缺了只是「没有对比报告」，不拦运行。
+//! - **git_bash**：Windows 上按 `CLAUDE_CODE_GIT_BASH_PATH` → PATH（含从
+//!   `Git\cmd\git.exe` 反推安装目录）→ `where git` → 常见安装目录的顺序查找。
 //! - **java**：`java -version`（PATH）或 `JAVA_HOME`。编译补丁需要 JDK；
 //!   PATH/JAVA_HOME 都没有时前端再去 home 下找（home_jdk 项）。
 //! - **home_jdk**（传了 `home` 时才查）：在 home 目录下**浅层**扫一层 jdk* 目录。
@@ -61,34 +65,65 @@ fn looks_like_store_stub(detail: &str) -> bool {
 }
 
 /// 找 Git Bash（Windows 上 Claude Code 执行命令依赖它）。
-/// 探测顺序与 `ai/claude.rs` 的 `git_bash_path` 保持一致：
-/// 先看 `CLAUDE_CODE_GIT_BASH_PATH`（必须真实存在），再找 Git for Windows 常见安装路径。
-#[cfg(windows)]
+/// 与实际执行 Claude 时共用 `ai/claude.rs::find_git_bash_path`，支持 PATH、
+/// `Git\cmd` 反推安装目录、`where git` 和常见安装位置。
 fn find_git_bash() -> Option<String> {
-    let explicit = std::env::var("CLAUDE_CODE_GIT_BASH_PATH")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty() && std::path::Path::new(value).is_file());
-    if explicit.is_some() {
-        return explicit;
+    #[cfg(windows)]
+    {
+        crate::ai::claude::find_git_bash_path()
     }
-    let candidates = [
-        r"D:\Downloads\Software\Git\bin\bash.exe",
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-        r"C:\Program Files\Git\usr\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
-    ];
-    candidates
-        .iter()
-        .find(|path| std::path::Path::new(path).is_file())
-        .map(|path| path.to_string())
+    #[cfg(not(windows))]
+    {
+        // macOS/Linux：claude 不需要 Git Bash，PATH 里有 bash 就算通过。
+        run_version_cmd("bash", &["--version"]).map(|_| "bash（PATH）".to_string())
+    }
 }
 
-/// macOS/Linux：claude 不需要 Git Bash，PATH 里有 bash 就算通过。
-#[cfg(not(windows))]
-fn find_git_bash() -> Option<String> {
-    run_version_cmd("bash", &["--version"]).map(|_| "bash（PATH）".to_string())
+/// 按 Claude 实际启动方式跑 `--version`：处理 npm 的 `claude.cmd` 和 node_modules 的 `node:<cli.js>`。
+fn run_claude_version(cmd: &str) -> Option<String> {
+    if let Some(cli_js) = cmd.strip_prefix("node:") {
+        return run_version_cmd("node", &[cli_js, "--version"]);
+    }
+    #[cfg(windows)]
+    {
+        let lowered = cmd.to_lowercase();
+        // npm 的 claude.cmd，以及 PATH 中不带扩展名的裸命令，都要经 cmd.exe 启动。
+        let bare = !cmd.contains('\\') && !cmd.contains('/');
+        if bare || lowered.ends_with(".cmd") || lowered.ends_with(".bat") {
+            return run_version_cmd("cmd.exe", &["/C", cmd, "--version"]);
+        }
+    }
+    run_version_cmd(cmd, &["--version"])
+}
+
+fn display_cmd(cmd: &str) -> String {
+    match cmd.strip_prefix("node:") {
+        Some(cli_js) => format!("node {cli_js}"),
+        None => cmd.to_string(),
+    }
+}
+
+/// Python 候选：Windows 上依次尝试 python / python3 / py -3 / py，
+/// 遇到微软商店占位别名时继续尝试下一个，而不是直接判失败。
+#[allow(unused_mut)]
+fn find_python() -> Option<(String, String)> {
+    let mut candidates: Vec<(&str, Vec<&str>, &str)> = vec![
+        ("python", vec!["--version"], "python"),
+        ("python3", vec!["--version"], "python3"),
+    ];
+    #[cfg(windows)]
+    {
+        candidates.push(("py", vec!["-3", "--version"], "py -3"));
+        candidates.push(("py", vec!["--version"], "py"));
+    }
+    for (program, args, label) in candidates {
+        if let Some(detail) = run_version_cmd(program, &args) {
+            if !looks_like_store_stub(&detail) {
+                return Some((label.to_string(), detail));
+            }
+        }
+    }
+    None
 }
 
 /// 在 home 下浅扫 JDK：直接子目录 + 再往下一层，目录名含 "jdk"（不区分大小写）即命中。
@@ -127,20 +162,42 @@ pub async fn env_check(query: web::Query<EnvCheckQuery>) -> HttpResponse {
     // 超时参数，这里用简单兜底——版本命令正常毫秒级返回；挂住的情况交给前端 fetch 超时）
     let _ = Duration::from_secs(5);
 
-    let claude = tokio::task::spawn_blocking(|| run_version_cmd("claude", &["--version"]))
-        .await
-        .unwrap_or(None);
-    let claude_item = match &claude {
-        Some(detail) => serde_json::json!({ "ok": true,  "detail": detail }),
-        None => serde_json::json!({ "ok": false, "detail": "未找到 claude 命令，请先安装 Claude Code CLI" }),
+    // 与智能开发实际启动 Claude 时共用同一套探测逻辑，避免“检查页说没有、实际能用”。
+    let claude_cmd = tokio::task::spawn_blocking(
+        crate::ai::claude::ClaudeAssistant::resolve_claude_cmd,
+    )
+    .await
+    .unwrap_or(None);
+    let claude_version = match claude_cmd.clone() {
+        Some(cmd) => tokio::task::spawn_blocking(move || run_claude_version(&cmd))
+            .await
+            .unwrap_or(None),
+        None => None,
+    };
+    let claude_item = match (claude_cmd, claude_version) {
+        (Some(cmd), Some(detail)) => serde_json::json!({
+            "ok": true,
+            "detail": format!("{detail}（{}）", display_cmd(&cmd)),
+            "path": display_cmd(&cmd),
+        }),
+        (Some(cmd), None) => serde_json::json!({
+            "ok": false,
+            "detail": format!("已找到 {}，但执行 --version 失败", display_cmd(&cmd)),
+        }),
+        (None, _) => serde_json::json!({ "ok": false, "detail": "未找到 claude 命令，请先安装 Claude Code CLI" }),
     };
 
-    let python = tokio::task::spawn_blocking(|| run_version_cmd("python", &["--version"]))
-        .await
-        .unwrap_or(None);
-    let python_item = match &python {
-        Some(detail) if !looks_like_store_stub(detail) => serde_json::json!({ "ok": true, "detail": detail }),
-        _ => serde_json::json!({ "ok": false, "detail": "未找到可用的 python（差异报告生成需要它，缺失不影响补丁排查）" }),
+    let python = tokio::task::spawn_blocking(find_python).await.unwrap_or(None);
+    let python_item = match python {
+        Some((cmd, detail)) => serde_json::json!({
+            "ok": true,
+            "detail": format!("{detail}（{cmd}）"),
+            "path": cmd,
+        }),
+        None => serde_json::json!({
+            "ok": false,
+            "detail": "未找到可用的 python（差异报告生成需要它，缺失不影响补丁排查）"
+        }),
     };
 
     let java_home = std::env::var("JAVA_HOME").ok().filter(|v| !v.trim().is_empty());

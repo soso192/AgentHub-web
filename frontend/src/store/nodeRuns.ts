@@ -170,6 +170,7 @@ function variablesFor(run: LocalNodeRun, extra: Record<string, string> = {}): Re
     trigger_url: run.trigger_url || '',
     code_directory: str(env.code_directory),
     package_path: str(env.package_path),
+    local_service_address: str(env.local_service_address),
     patch_output_path: str(env.patch_output_path),
     local_jdk_path: str(env.local_jdk_path),
     local_skill_path: str(env.local_skill_path),
@@ -439,7 +440,7 @@ export const useNodeStore = create<NodeState>((set, get) => {
     if (next) report(next);
   };
 
-  const startPrompt = async (run: LocalNodeRun, prompt: string) => {
+  const startPrompt = async (run: LocalNodeRun, prompt: string, displayContent?: string) => {
     if (!run.session_id) throw new Error('会话尚未创建');
     const existing = activeStreams.get(run.id);
     if (existing) {
@@ -454,7 +455,7 @@ export const useNodeStore = create<NodeState>((set, get) => {
         if (event.type === 'connected' && !promptSent) {
           promptSent = true;
           api.agent
-            .start(run.session_id!, prompt)
+            .start(run.session_id!, prompt, displayContent)
             .then((result) => {
               if (result && (result as { success?: boolean }).success === false) {
                 void finish(run.id, (result as { error?: string }).error || '启动失败');
@@ -523,6 +524,7 @@ export const useNodeStore = create<NodeState>((set, get) => {
         product_version: env.product_version,
         code_directory: env.code_directory,
         package_path: env.package_path,
+        local_service_address: env.local_service_address,
         patch_output_path: env.patch_output_path,
         local_skill_path: env.local_skill_path,
         local_jdk_path: env.local_jdk_path,
@@ -622,7 +624,7 @@ export const useNodeStore = create<NodeState>((set, get) => {
             '\n\n【附件】用户上传了以下文件，请先用 Read 工具查看（图片可看图，其他文件读取内容）：\n' +
             attachmentLines.map((path) => `- ${path}`).join('\n');
         }
-        await startPrompt(withSession || run, prompt);
+        await startPrompt(withSession || run, prompt, options.problem_desc);
         return withSession || run;
       } catch (error) {
         const failed = update(id, {
@@ -700,7 +702,7 @@ export const useNodeStore = create<NodeState>((set, get) => {
       const prompt = await resolvePrompt(next, 'phase2', {
         changes: changes.slice(0, 20000),
       });
-      await startPrompt(next, prompt);
+      await startPrompt(next, prompt, '帮我同步到客开工程');
     },
 
     mergeToSession: async (id, options) => {
@@ -749,7 +751,7 @@ export const useNodeStore = create<NodeState>((set, get) => {
       activeStreams.set(id, close);
 
       try {
-        await useChatStore.getState().sendMessage(prompt, sessionForMerge);
+        await useChatStore.getState().sendMessage(prompt, sessionForMerge, '帮我同步到客开工程');
       } catch (error) {
         close();
         activeStreams.delete(id);
@@ -785,7 +787,7 @@ export const useNodeStore = create<NodeState>((set, get) => {
         note: extra.note || '',
         log_text: extra.log_text || '',
       });
-      await startPrompt(next, prompt);
+      await startPrompt(next, prompt, run.problem_desc);
     },
 
     rerun: async (id) => {

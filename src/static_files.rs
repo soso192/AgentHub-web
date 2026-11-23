@@ -14,6 +14,7 @@ use actix_web::{HttpRequest, HttpResponse, http::header};
 const INDEX_HTML: &str = include_str!("../static/dist/index.html");
 const APP_JS: &str = include_str!("../static/dist/app.js");
 const APP_CSS: &str = include_str!("../static/dist/app.css");
+const LOGO_PNG: &[u8] = include_bytes!("../static/dist/assets/logo.png");
 
 /// 所有由 React Router 处理的页面路径。
 const SPA_ROUTES: &[&str] = &[
@@ -32,6 +33,15 @@ const SPA_ROUTES: &[&str] = &[
 ];
 
 /// Generate ETag based on content hash for cache validation
+fn generate_etag_bytes(content: &[u8]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("\"{:x}\"", hasher.finish())
+}
+
+/// Generate ETag based on content hash for cache validation
 fn generate_etag(content: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -42,6 +52,20 @@ fn generate_etag(content: &str) -> String {
 
 pub async fn serve(req: HttpRequest) -> HttpResponse {
     let path = req.path();
+
+    if path == "/assets/logo.png" {
+        let etag = generate_etag_bytes(LOGO_PNG);
+        if let Some(if_none_match) = req.headers().get("If-None-Match") {
+            if if_none_match.to_str().unwrap_or("") == etag {
+                return HttpResponse::NotModified().finish();
+            }
+        }
+        return HttpResponse::Ok()
+            .insert_header((header::CONTENT_TYPE, "image/png"))
+            .insert_header((header::ETAG, etag))
+            .insert_header(("Cache-Control", "no-cache, must-revalidate"))
+            .body(LOGO_PNG);
+    }
 
     let (content, content_type) = if SPA_ROUTES.contains(&path) {
         (INDEX_HTML, "text/html; charset=utf-8")

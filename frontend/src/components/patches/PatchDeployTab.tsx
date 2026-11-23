@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ArchiveRestore,
   ChevronRight,
@@ -7,10 +8,12 @@ import {
   FolderOpen,
   FolderTree,
   Loader2,
+  Lock,
   PackageCheck,
   Play,
   RefreshCw,
   RotateCcw,
+  Server,
   Settings2,
   ShieldAlert,
   Trash2,
@@ -185,6 +188,22 @@ function ArchiveTree({ archive, showAll }: { archive: PatchDeployArchive; showAl
   );
 }
 
+export function PatchPlanPreview({
+  plan,
+  showAll = false,
+}: {
+  plan: PatchDeployPlan;
+  showAll?: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      {plan.archives.map((archive) => (
+        <ArchiveTree key={archive.name} archive={archive} showAll={showAll} />
+      ))}
+    </div>
+  );
+}
+
 function statusBadge(batch: PatchDeployBatch) {
   if (batch.status === 'deployed') return <Badge tone="success">已部署</Badge>;
   if (batch.status === 'rolled_back') return <Badge tone="muted">已撤回</Badge>;
@@ -202,6 +221,7 @@ function actionBadge(file: PatchDeployBatchFile) {
 
 export function PatchDeployTab() {
   const toast = useToast();
+  const navigate = useNavigate();
   const fileInput = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
   const targetFieldRef = useRef<HTMLDivElement>(null);
@@ -220,6 +240,7 @@ export function PatchDeployTab() {
   const [detecting, setDetecting] = useState(false);
   const [savingCommands, setSavingCommands] = useState(false);
   const [commandsOpen, setCommandsOpen] = useState(false);
+  const [targetEditing, setTargetEditing] = useState(false);
   const [commandForm, setCommandForm] = useState({
     start: '',
     stop: '',
@@ -241,6 +262,9 @@ export function PatchDeployTab() {
   const [result, setResult] = useState<PatchDeployResult | null>(null);
   const [serviceFilter, setServiceFilter] = useState('');
   const [showRolledBack, setShowRolledBack] = useState(false);
+
+  // 未检测到 FBIP 环境时，部署补丁整体锁定（上传、拖拽、预检都不可用）。
+  const deployLocked = !env;
 
   useEffect(() => {
     if (!env) return;
@@ -362,6 +386,7 @@ export function PatchDeployTab() {
     try {
       const data = await patchDeployApi.detect(value, 'auto');
       setEnv(data.env);
+      setTargetEditing(false);
       if (!silent) {
         toast.success(`已识别 ${data.env.edition_label}`);
       }
@@ -389,6 +414,15 @@ export function PatchDeployTab() {
     if (detected) saveFormConfig();
   };
 
+  const focusTargetEditor = () => {
+    setTargetEditing(true);
+    requestAnimationFrame(() => {
+      const field = targetFieldRef.current;
+      field?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      field?.querySelector('input')?.focus();
+    });
+  };
+
   useEffect(() => {
     void (async () => {
       try {
@@ -403,10 +437,14 @@ export function PatchDeployTab() {
       }
     })();
     void loadBatches();
+    const onUpdated = () => void loadBatches();
+    window.addEventListener('ccweb:patch-deploy-updated', onUpdated);
+    return () => window.removeEventListener('ccweb:patch-deploy-updated', onUpdated);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
+    if (deployLocked) return;
     const node = dropRef.current;
     if (!node) return;
     const prevent = (event: DragEvent) => event.preventDefault();
@@ -422,9 +460,15 @@ export function PatchDeployTab() {
       node.removeEventListener('dragenter', prevent);
       node.removeEventListener('drop', onDrop);
     };
-  }, []);
+    // deployLocked 变化时重新绑定：检测成功后上传区才真正可用。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deployLocked]);
 
   const addFiles = (list: FileList | null | undefined) => {
+    if (deployLocked) {
+      toast.error('请先检测本地服务环境，再选择补丁');
+      return;
+    }
     if (!list) return;
     const incoming: File[] = [];
     for (const file of Array.from(list)) {
@@ -669,9 +713,9 @@ export function PatchDeployTab() {
   const importFromEnv = async () => {
     const item = envs.find((candidate) => String(candidate.id) === selectedEnvId);
     if (!item) return;
-    const address = (item.package_path || '').trim();
+    const address = ((item.local_service_address || '').trim() || (item.package_path || '').trim());
     if (!address) {
-      toast.error('该项目环境暂未填写 home/war 包地址');
+      toast.error('该项目环境暂未填写本机服务地址或 home/war 包地址');
       return;
     }
     setEnvPickerOpen(false);
@@ -694,6 +738,30 @@ export function PatchDeployTab() {
           <div className="text-[10.5px] text-ink-3">FBIP {batch.edition}</div>
         </div>
       ),
+    },
+    {
+      key: 'source',
+      title: '来源',
+      render: (batch) => {
+        const fromChat = batch.source === 'chat';
+        return (
+          <div className="flex max-w-[180px] flex-col items-start gap-1">
+            <Badge tone={fromChat ? 'accent' : 'muted'}>{fromChat ? '会话' : '手动'}</Badge>
+            {fromChat && batch.session_name && batch.session_id && (
+              <button
+                type="button"
+                className="max-w-[180px] truncate text-[10.5px] text-accent hover:underline"
+                title={batch.session_name}
+                onClick={() =>
+                  navigate(`/chat.html?session=${encodeURIComponent(batch.session_id || '')}`)
+                }
+              >
+                {batch.session_name}
+              </button>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'patches',
@@ -762,64 +830,43 @@ export function PatchDeployTab() {
 
   return (
     <div className="space-y-4">
-      <div className="panel p-4">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 text-[14px] font-semibold text-ink">
-              <PackageCheck size={16} className="text-accent" />
-              补丁管理
-            </div>
-            <div className="mt-1 text-[12px] leading-5 text-ink-3">
-              直接部署到本机 FBIP 服务目录。预检发现同名文件时会先弹出替换确认，不会直接覆盖。
-            </div>
+      <div className="panel p-3.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex items-center gap-2 text-[13.5px] font-semibold text-ink">
+            <Server size={15} className="text-accent" />
+            当前服务
           </div>
           {env ? (
             <Badge tone="success">{env.edition_label}</Badge>
+          ) : detecting ? (
+            <Badge tone="warning">检测中…</Badge>
           ) : (
-            <Badge tone="muted">未检测环境</Badge>
+            <Badge tone="danger" className="font-bold">
+              未检测环境
+            </Badge>
           )}
-        </div>
-
-        <div>
-          <label className="mb-1 block text-[12px] font-medium text-ink-2">
-            本地服务地址（FBIP 部署目录）
-          </label>
-          <div className="flex flex-wrap items-center gap-2">
-            <div ref={targetFieldRef} className="relative min-w-[300px] flex-1">
-              <Input
-                className="w-full pr-10"
-                value={target}
-                onChange={(event) => {
-                  setTarget(event.target.value);
-                  setEnv(null);
-                }}
-                onBlur={() => {
-                  if (targetFieldRef.current?.contains(document.activeElement)) return;
-                  void handleTargetBlur();
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void handleDetect();
-                }}
-                placeholder="例如 D:\TongWeb\domains\domain1\deployment\fbip 或 /data/fbip"
-              />
-              {detecting && (
-                <span className="pointer-events-none absolute right-9 top-1/2 -translate-y-1/2 text-ink-3">
-                  <Loader2 size={14} className="animate-spin" />
-                </span>
-              )}
-              <button
-                type="button"
-                title="选择目录"
-                aria-label="选择目录"
-                disabled={detecting}
-                onClick={() => void pickFolder()}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-ink-3 transition-colors hover:bg-surface-3 hover:text-accent disabled:opacity-50"
-              >
-                <FolderOpen size={15} />
-              </button>
-            </div>
+          <span
+            className={`min-w-0 flex-1 truncate font-mono text-[11.5px] ${
+              !env && !detecting ? 'font-bold text-danger' : 'text-ink-2'
+            }`}
+            title={target || undefined}
+          >
+            {target || (detecting ? '正在检测本地服务环境…' : '还没有选择本地服务地址')}
+          </span>
+          {env && (
+            <Badge tone={env.service.can_restart ? 'success' : 'muted'}>
+              {env.service.restart_script
+                ? '已配置重启命令'
+                : env.service.can_restart
+                  ? '停止 + 启动可用'
+                  : '未配置重启命令'}
+            </Badge>
+          )}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
             <Button
-              icon={<Download size={14} />}
+              size="sm"
+              variant="primary"
+              icon={<Download size={13} />}
               onClick={() => {
                 setEnvPickerOpen(true);
                 setSelectedEnvId('');
@@ -830,242 +877,386 @@ export function PatchDeployTab() {
             </Button>
             {env && (
               <Button
-                icon={<Settings2 size={14} />}
-                title={commandsOpen ? '收起服务命令' : '修改服务命令'}
-                onClick={() => setCommandsOpen((open) => !open)}
+                size="sm"
+                variant="primary"
+                icon={<Settings2 size={13} />}
+                onClick={() => setCommandsOpen(true)}
               >
-                {commandsOpen ? '收起服务命令' : '修改服务命令'}
+                服务命令
               </Button>
             )}
+            <Button
+              size="sm"
+              icon={<FolderOpen size={13} />}
+              onClick={() => setTargetEditing((value) => !value)}
+            >
+              {targetEditing ? '收起地址' : '更换地址'}
+            </Button>
+            <span
+              className="inline-flex"
+              title={
+                !env
+                  ? '请先填写并检测本地服务地址'
+                  : env.service.can_restart
+                    ? '重启本地服务'
+                    : '未找到重启命令'
+              }
+            >
+              <Button
+                size="sm"
+                variant="danger"
+                icon={<RefreshCw size={13} />}
+                loading={restarting}
+                disabled={!env?.service.can_restart}
+                onClick={() => void restartService()}
+              >
+                重启服务
+              </Button>
+            </span>
           </div>
         </div>
 
-        {env && (
-          <div className="mt-3 grid gap-1.5 rounded-lg border border-line bg-surface-2 p-3 text-[11.5px]">
-            <div className="flex gap-2">
-              <span className="w-[92px] shrink-0 text-ink-3">部署根目录</span>
-              <span className="break-all font-mono text-ink-2">{env.target_root}</span>
-            </div>
-            <div className="flex gap-2">
-              <span className="w-[92px] shrink-0 text-ink-3">应用根目录</span>
-              <span className="break-all font-mono text-ink-2">{env.app_root}</span>
-            </div>
-            <div className="flex items-start gap-2">
-              <span className="w-[92px] shrink-0 leading-5 text-ink-3">服务命令</span>
-              <div className="min-w-0 flex-1 break-all leading-5 text-ink-2">
-                {env.service.message}
-              </div>
-            </div>
-            {env.service.deploy_script && (
-              <div className="flex gap-2">
-                <span className="w-[92px] shrink-0 text-ink-3">部署脚本</span>
-                <span className="break-all font-mono text-ink-2">{env.service.deploy_script}</span>
-              </div>
-            )}
-            {commandsOpen && (
-            <div className="mt-2 rounded-lg border border-line bg-surface p-2.5">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[11.5px] font-medium text-ink-2">服务命令配置</span>
-                <span className="text-[10.5px] text-ink-3">
-                  有重启命令时直接执行重启，否则停止后启动
-                </span>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-3">
-                <div>
-                  <label className="mb-1 block text-[10.5px] text-ink-3">启动命令</label>
-                  <Input
-                    className="h-8 text-[11px]"
-                    value={commandForm.start}
-                    onChange={(event) =>
-                      setCommandForm((current) => ({ ...current, start: event.target.value }))
-                    }
-                    placeholder="未配置"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[10.5px] text-ink-3">停止命令</label>
-                  <Input
-                    className="h-8 text-[11px]"
-                    value={commandForm.stop}
-                    onChange={(event) =>
-                      setCommandForm((current) => ({ ...current, stop: event.target.value }))
-                    }
-                    placeholder="未配置"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[10.5px] text-ink-3">重启命令</label>
-                  <Input
-                    className="h-8 text-[11px]"
-                    value={commandForm.restart}
-                    onChange={(event) =>
-                      setCommandForm((current) => ({ ...current, restart: event.target.value }))
-                    }
-                    placeholder="未配置时使用停止+启动"
-                  />
-                </div>
-              </div>
-              <div className="mt-2 flex justify-end">
-                <Button size="sm" loading={savingCommands} onClick={() => void saveServiceCommands()}>
-                  保存服务命令
-                </Button>
-              </div>
-            </div>
-            )}
+        {!env && !detecting && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-danger/25 bg-danger-soft px-3 py-2 text-[11.5px] text-danger">
+            <ShieldAlert size={13} className="shrink-0" />
+            <span className="font-semibold">
+              {target.trim()
+                ? '本地服务地址检测失败，补丁部署功能暂不可用。'
+                : '还没有选择本地服务地址，补丁部署功能暂不可用。'}
+            </span>
+            <span className="text-danger/80">
+              {target.trim()
+                ? '请检查地址是否正确后重新检测。'
+                : '请填写地址并点击「检测」，或从项目环境导入。'}
+            </span>
           </div>
         )}
-      </div>
 
-      <div className="panel p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <div className="flex items-center gap-2 text-[14px] font-semibold text-ink">
-              <UploadCloud size={16} className="text-accent" />
-              选择要部署的补丁
-            </div>
-            <div className="mt-1 text-[11.5px] text-ink-3">
-              一次选择多个 ZIP 会作为同一个部署批次。
-            </div>
-          </div>
-          <span className="badge badge-muted">{files.length} 个文件</span>
-        </div>
-
-        <div
-          ref={dropRef}
-          className="cursor-pointer rounded-xl border border-dashed border-line-strong bg-surface-2 px-4 py-7 text-center transition-colors hover:border-accent hover:bg-accent-soft/30"
-          onClick={() => fileInput.current?.click()}
-        >
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".zip"
-            multiple
-            className="hidden"
-            onChange={(event) => {
-              addFiles(event.target.files);
-              event.target.value = '';
-            }}
-          />
-          <UploadCloud size={26} className="mx-auto mb-2 text-accent" />
-          <div className="text-[13px] font-medium text-ink-2">点击选择或拖拽 ZIP 补丁包到这里</div>
-          <div className="mt-1 text-[11.5px] text-ink-3">
-            支持 FBIP 8.1 / 8.2 补丁格式和 installpatch.xml
-          </div>
-        </div>
-
-        {files.length > 0 && (
-          <div className="mt-2 grid gap-1.5">
-            {files.map((file, index) => (
-              <div
-                key={`${file.name}-${file.size}-${file.lastModified}`}
-                className="flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px]"
-              >
-                <FileArchive size={14} className="shrink-0 text-ink-3" />
-                <span className="min-w-0 flex-1 truncate" title={file.name}>
-                  {file.name}
-                </span>
-                <span className="shrink-0 text-[10.5px] text-ink-3">
-                  {(file.size / 1024).toFixed(1)} KB
-                </span>
+        {(targetEditing || !env) && (
+          <div className="mt-3 rounded-lg border border-line bg-surface-2 p-3">
+            <label className="mb-1.5 block text-[11.5px] font-medium text-ink-2">
+              本地服务地址（FBIP 部署目录）
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <div ref={targetFieldRef} className="relative min-w-[280px] flex-1">
+                <Input
+                  className="w-full pr-10"
+                  value={target}
+                  onChange={(event) => {
+                    setTarget(event.target.value);
+                    setEnv(null);
+                  }}
+                  onBlur={() => {
+                    if (targetFieldRef.current?.contains(document.activeElement)) return;
+                    void handleTargetBlur();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void handleDetect();
+                  }}
+                  placeholder="例如 D:\TongWeb\domains\domain1\deployment\fbip 或 /data/fbip"
+                />
+                {detecting && (
+                  <span className="pointer-events-none absolute right-9 top-1/2 -translate-y-1/2 text-ink-3">
+                    <Loader2 size={14} className="animate-spin" />
+                  </span>
+                )}
                 <button
                   type="button"
-                  className="rounded p-0.5 text-ink-3 hover:bg-surface-3 hover:text-danger"
-                  title="移除"
-                  onClick={() => setFiles((current) => current.filter((_, i) => i !== index))}
+                  title="选择目录"
+                  aria-label="选择目录"
+                  disabled={detecting}
+                  onClick={() => void pickFolder()}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-ink-3 transition-colors hover:bg-surface-3 hover:text-accent disabled:opacity-50"
                 >
-                  <XCircle size={14} />
+                  <FolderOpen size={15} />
                 </button>
               </div>
-            ))}
+              <Button
+                icon={detecting ? <Spinner size={13} /> : <RefreshCw size={13} />}
+                loading={detecting}
+                onClick={() => void handleDetect()}
+              >
+                检测
+              </Button>
+            </div>
           </div>
         )}
 
-        <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-          <Button
-            variant="primary"
-            size="lg"
-            loading={preflighting}
-            icon={<Play size={14} />}
-            onClick={() => void preflight()}
-          >
-            预检并部署
-          </Button>
-          <span
-            className="inline-flex"
-            title={
-              !env
-                ? '请先填写并检测本地服务地址'
-                : env.service.can_restart
-                  ? '重启本地服务'
-                  : '未找到重启命令'
-            }
-          >
-            <Button
-              size="lg"
-              icon={<RefreshCw size={14} />}
-              loading={restarting}
-              disabled={!env?.service.can_restart}
-              onClick={() => void restartService()}
-            >
-              重启本地服务
-            </Button>
-          </span>
-        </div>
+        {!targetEditing && env && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-3">
+            <span className="min-w-0 truncate">
+              应用根目录{' '}
+              <span className="font-mono text-ink-2">{env.app_root}</span>
+            </span>
+            <span className="min-w-0 flex-1 truncate" title={env.service.message}>
+              服务命令 <span className="text-ink-2">{env.service.message}</span>
+            </span>
+          </div>
+        )}
       </div>
 
-      <div className="panel p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <div className="flex items-center gap-2 text-[14px] font-semibold text-ink">
-              <ArchiveRestore size={16} className="text-accent" />
-              已部署的补丁
+      <div className="space-y-4">
+        <div className="panel p-4">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-2 text-[14px] font-semibold text-ink">
+                <UploadCloud size={16} className="text-accent" />
+                部署补丁
+              </div>
+              <div className="mt-1 text-[11.5px] text-ink-3">
+                一次选择多个 ZIP 会作为同一个部署批次。
+              </div>
             </div>
-            <div className="mt-1 text-[11.5px] text-ink-3">
-              只支持逆序撤回。撤回较早批次时，会自动先撤回它之后的所有批次。
+            {deployLocked ? (
+              <Badge tone="danger" className="font-semibold">
+                不可用
+              </Badge>
+            ) : (
+              <span className="badge badge-muted">{files.length} 个文件</span>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            {deployLocked ? (
+              <div className="rounded-xl border border-dashed border-danger/30 bg-danger-soft/40 px-4 py-6 text-center">
+                <Lock size={24} className="mx-auto mb-2 text-danger/70" />
+                <div className="text-[13px] font-semibold text-danger">
+                  补丁部署功能暂不可用，请先配置本地服务地址
+                </div>
+                <div className="mt-1 text-[11.5px] text-danger/80">
+                  检测本地服务环境后即可选择并部署补丁。
+                </div>
+                <Button
+                  size="sm"
+                  className="mt-3"
+                  icon={<Settings2 size={13} />}
+                  onClick={focusTargetEditor}
+                >
+                  去配置服务地址
+                </Button>
+              </div>
+            ) : (
+              <div
+                ref={dropRef}
+                className="cursor-pointer rounded-xl border border-dashed border-line-strong bg-surface-2 px-4 py-7 text-center transition-colors hover:border-accent hover:bg-accent-soft/30"
+                onClick={() => fileInput.current?.click()}
+              >
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept=".zip"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    addFiles(event.target.files);
+                    event.target.value = '';
+                  }}
+                />
+                <UploadCloud size={26} className="mx-auto mb-2 text-accent" />
+                <div className="text-[13px] font-medium text-ink-2">
+                  点击选择或拖拽 ZIP 补丁包到这里
+                </div>
+                <div className="mt-1 text-[11.5px] text-ink-3">
+                  支持 FBIP 8.1 / 8.2 补丁格式和 installpatch.xml
+                </div>
+              </div>
+            )}
+
+            {files.length > 0 && (
+              <div className="grid gap-1.5">
+                {files.map((file, index) => (
+                  <div
+                    key={`${file.name}-${file.size}-${file.lastModified}`}
+                    className="flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px]"
+                  >
+                    <FileArchive size={14} className="shrink-0 text-ink-3" />
+                    <span className="min-w-0 flex-1 truncate" title={file.name}>
+                      {file.name}
+                    </span>
+                    <span className="shrink-0 text-[10.5px] text-ink-3">
+                      {(file.size / 1024).toFixed(1)} KB
+                    </span>
+                    <button
+                      type="button"
+                      className="rounded p-0.5 text-ink-3 hover:bg-surface-3 hover:text-danger"
+                      title="移除"
+                      onClick={() => setFiles((current) => current.filter((_, i) => i !== index))}
+                    >
+                      <XCircle size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 flex items-center justify-end">
+            <Button
+              variant="primary"
+              size="lg"
+              loading={preflighting}
+              disabled={deployLocked}
+              title={deployLocked ? '请先检测本地服务环境' : undefined}
+              icon={<Play size={14} />}
+              onClick={() => void preflight()}
+            >
+              预检并部署
+            </Button>
+          </div>
+        </div>
+
+        <div className="panel p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-2 text-[14px] font-semibold text-ink">
+                <ArchiveRestore size={16} className="text-accent" />
+                已部署的补丁
+              </div>
+              <div className="mt-1 text-[11.5px] text-ink-3">
+                只支持逆序撤回；撤回较早批次时会先撤回它之后的所有批次。
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge tone="muted">{visibleBatches.length} 个批次</Badge>
+              <Button
+                size="sm"
+                icon={<RefreshCw size={13} />}
+                loading={batchesLoading}
+                onClick={() => void loadBatches()}
+              >
+                刷新
+              </Button>
             </div>
           </div>
-          <Button
-            size="sm"
-            icon={<RefreshCw size={13} />}
+
+          <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2">
+            <span className="text-[12px] font-medium text-ink-2">按服务查看</span>
+            <Select
+              className="min-w-[220px] flex-1"
+              value={serviceFilter}
+              onChange={(event) => selectService(event.target.value)}
+              options={services.map((service) => ({
+                value: service.key,
+                label: service.label,
+              }))}
+              placeholder={services.length ? undefined : '还没有服务记录'}
+            />
+            <Checkbox
+              checked={showRolledBack}
+              onChange={setShowRolledBack}
+              label="显示已撤回记录"
+            />
+          </div>
+
+          <DataTable
+            columns={batchColumns}
+            rows={visibleBatches}
+            rowKey={(batch) => batch.id}
             loading={batchesLoading}
-            onClick={() => void loadBatches()}
-          >
-            刷新
-          </Button>
-        </div>
-
-        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2">
-          <span className="text-[12px] font-medium text-ink-2">按服务查看</span>
-          <Select
-            className="min-w-[300px] flex-1"
-            value={serviceFilter}
-            onChange={(event) => selectService(event.target.value)}
-            options={services.map((service) => ({
-              value: service.key,
-              label: service.label,
-            }))}
-            placeholder={services.length ? undefined : '还没有服务记录'}
+            empty="当前服务还没有已部署的补丁"
           />
-          <Badge tone="muted">{visibleBatches.length} 个批次</Badge>
-          <Checkbox
-            checked={showRolledBack}
-            onChange={setShowRolledBack}
-            label="显示已撤回记录"
-          />
-          <span className="text-[10.5px] text-ink-3">
-            部署、撤回和列表都按服务隔离；撤回只会影响当前服务。
-          </span>
         </div>
-
-        <DataTable
-          columns={batchColumns}
-          rows={visibleBatches}
-          rowKey={(batch) => batch.id}
-          loading={batchesLoading}
-          empty="当前服务还没有已部署的补丁"
-        />
       </div>
 
+      <Dialog
+        open={commandsOpen && Boolean(env)}
+        onClose={() => setCommandsOpen(false)}
+        title="服务命令"
+        description={env ? `当前服务：${env.target_root}（${env.edition_label}）` : undefined}
+        width="max-w-2xl"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setCommandsOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              loading={savingCommands}
+              onClick={() => void saveServiceCommands()}
+            >
+              保存服务命令
+            </Button>
+          </>
+        }
+      >
+        {env && (
+          <div className="space-y-3">
+            <div className="grid gap-1.5 rounded-lg border border-line bg-surface-2 p-3 text-[11.5px]">
+              <div className="flex gap-2">
+                <span className="w-[80px] shrink-0 text-ink-3">部署根目录</span>
+                <span className="break-all font-mono text-ink-2">{env.target_root}</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="w-[80px] shrink-0 text-ink-3">应用根目录</span>
+                <span className="break-all font-mono text-ink-2">{env.app_root}</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="w-[80px] shrink-0 text-ink-3">启动命令</span>
+                <span className="break-all font-mono text-ink-2">
+                  {env.service.start_script || '未配置'}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <span className="w-[80px] shrink-0 text-ink-3">停止命令</span>
+                <span className="break-all font-mono text-ink-2">
+                  {env.service.stop_script || '未配置'}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <span className="w-[80px] shrink-0 text-ink-3">重启命令</span>
+                <span className="break-all font-mono text-ink-2">
+                  {env.service.restart_script || '未配置'}
+                </span>
+              </div>
+              {env.service.deploy_script && (
+                <div className="flex gap-2">
+                  <span className="w-[80px] shrink-0 text-ink-3">部署脚本</span>
+                  <span className="break-all font-mono text-ink-2">{env.service.deploy_script}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-3">启动命令</label>
+                <Input
+                  className="h-9 text-[12px]"
+                  value={commandForm.start}
+                  onChange={(event) =>
+                    setCommandForm((current) => ({ ...current, start: event.target.value }))
+                  }
+                  placeholder="未配置"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-3">停止命令</label>
+                <Input
+                  className="h-9 text-[12px]"
+                  value={commandForm.stop}
+                  onChange={(event) =>
+                    setCommandForm((current) => ({ ...current, stop: event.target.value }))
+                  }
+                  placeholder="未配置"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-3">重启命令</label>
+                <Input
+                  className="h-9 text-[12px]"
+                  value={commandForm.restart}
+                  onChange={(event) =>
+                    setCommandForm((current) => ({ ...current, restart: event.target.value }))
+                  }
+                  placeholder="未配置时使用停止+启动"
+                />
+              </div>
+            </div>
+            <div className="text-[11px] text-ink-3">
+              有重启命令时直接执行重启，否则停止后启动。
+            </div>
+          </div>
+        )}
+      </Dialog>
       <Dialog
         open={planOpen && Boolean(plan)}
         onClose={() => {
@@ -1434,8 +1625,8 @@ export function PatchDeployTab() {
       <Dialog
         open={envPickerOpen}
         onClose={() => setEnvPickerOpen(false)}
-        title="从项目环境导入 home/war 包地址"
-        description="选择项目环境，把它的「home/war 包地址」回显到部署工具。"
+        title="从项目环境导入本机服务地址"
+        description="优先导入项目环境的「本机服务地址」，未配置时使用「home/war 包地址」。"
         width="max-w-2xl"
         footer={
           <>
@@ -1464,7 +1655,9 @@ export function PatchDeployTab() {
           <div className="max-h-80 space-y-2 overflow-auto pr-1">
             {envs.map((item) => {
               const selected = String(item.id) === selectedEnvId;
-              const address = (item.package_path || '').trim();
+              const address =
+                (item.local_service_address || '').trim() ||
+                (item.package_path || '').trim();
               return (
                 <button
                   key={String(item.id)}
@@ -1490,7 +1683,7 @@ export function PatchDeployTab() {
                         address ? 'text-ink-2' : 'text-warning'
                       }`}
                     >
-                      {address || '未填写 home/war 包地址'}
+                      {address || '未填写本机服务地址 / home/war 包地址'}
                     </div>
                   </div>
                   {selected && <Badge tone="accent">已选择</Badge>}

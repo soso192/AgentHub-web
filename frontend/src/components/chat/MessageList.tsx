@@ -28,10 +28,13 @@ function clipTurnText(text: string, max: number): string {
 export function MessageList({
   view,
   compact = false,
+  displayUserPrompt = '',
   onSuggestion,
 }: {
   view: ChatView;
   compact?: boolean;
+  /** 智能开发/智能分析任务只展示表单里填写的问题描述，不展示拼接后的完整提示词。 */
+  displayUserPrompt?: string;
   onSuggestion?: (text: string) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -42,19 +45,31 @@ export function MessageList({
   const [railOpen, setRailOpen] = useState(false);
   const [detail, setDetail] = useState<{ text: string; left: number; top: number } | null>(null);
 
+  const displayMessages = useMemo(() => {
+    if (!displayUserPrompt) return view.messages;
+    let replaced = false;
+    return view.messages.map((message) => {
+      if (!replaced && message.role === 'user') {
+        replaced = true;
+        return { ...message, content: displayUserPrompt };
+      }
+      return message;
+    });
+  }, [view.messages, displayUserPrompt]);
+
   const turns = useMemo<TurnAnchor[]>(
     () =>
-      view.messages
+      displayMessages
         .map((message, index) =>
           message.role === 'user'
             ? {
                 id: `turn-${index}-${message.timestamp}`,
-                text: cleanTurnText(message.content || ''),
+                text: cleanTurnText(message.display_content || message.content || ''),
               }
             : null
         )
         .filter((turn): turn is TurnAnchor => Boolean(turn)),
-    [view.messages]
+    [displayMessages]
   );
 
   // 轨道最多 10 个点，均匀采样全部提问（包含第一条和最后一条）。
@@ -209,7 +224,7 @@ export function MessageList({
             </div>
           ) : (
             <div className="space-y-1 pb-2">
-              {view.messages.map((message, index) => (
+              {displayMessages.map((message, index) => (
                 <MessageItem
                   key={`${message.timestamp}-${index}`}
                   message={message}

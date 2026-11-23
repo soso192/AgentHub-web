@@ -64,6 +64,7 @@ fn save_event_progress(
                 timestamp: Utc::now().timestamp_millis(),
                 content_blocks: blocks,
                 assistant: Some(assistant_name.to_string()),
+                display_content: None,
             });
         }
         session.updated_at = Utc::now();
@@ -338,6 +339,7 @@ pub async fn new_session(
             timestamp: now.timestamp_millis(),
             content_blocks: None,
             assistant: None,
+            display_content: None,
         });
     }
 
@@ -418,6 +420,11 @@ pub async fn start_prompt(
         timestamp: Utc::now().timestamp_millis(),
         content_blocks: None,
         assistant: None,
+        display_content: req
+            .display_content
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
     };
 
     if let Some(session) = data.sessions.write().unwrap().get_mut(&session_id) {
@@ -776,6 +783,7 @@ pub async fn switch_assistant(
                 timestamp: Utc::now().timestamp_millis(),
                 content_blocks: None,
                 assistant: None,
+                display_content: None,
             });
         }
     }
@@ -1144,6 +1152,7 @@ pub async fn send_command(
                             timestamp: Utc::now().timestamp_millis(),
                             content_blocks: req.content_blocks.clone(),
                             assistant: Some(assistant_name.clone()),
+                            display_content: None,
                         });
                     }
                     session.updated_at = Utc::now();

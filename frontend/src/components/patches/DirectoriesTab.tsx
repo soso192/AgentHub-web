@@ -270,14 +270,6 @@ export function DirectoriesTab({ admin }: { admin: boolean }) {
               ))}
             </select>
           </div>
-          <div className="flex items-end pb-1.5">
-            <Checkbox
-              checked={form.is_builtin}
-              disabled={!admin}
-              onChange={(checked) => setForm({ ...form, is_builtin: checked })}
-              label="内置目录（管理员）"
-            />
-          </div>
           {form.category === 'source' && (
             <>
               <div>
@@ -312,6 +304,14 @@ export function DirectoriesTab({ admin }: { admin: boolean }) {
               </div>
             </>
           )}
+          <div className="flex items-end pb-1.5">
+            <Checkbox
+              checked={form.is_builtin}
+              disabled={!admin}
+              onChange={(checked) => setForm({ ...form, is_builtin: checked })}
+              label="内置目录（管理员）"
+            />
+          </div>
         </div>
       </Dialog>
 

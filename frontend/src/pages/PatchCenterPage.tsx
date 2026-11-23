@@ -4,13 +4,13 @@ import {
   Download,
   KeyRound,
   LogOut,
-  ShieldCheck,
   Wand2,
   Zap,
 } from 'lucide-react';
 import { AppShell, SidebarToggle, type NavItem } from '../components/layout/AppShell';
 import { EmbeddedBrowserButton } from '../components/browser/EmbeddedBrowser';
 import { Button, Spinner } from '../components/ui';
+import logoUrl from '../assets/logo.png';
 import { useToast } from '../components/ui/toast';
 import { api, getPatchServers, hasAuthSession } from '../lib/api';
 import { patchApi } from '../lib/patch';
@@ -235,7 +235,7 @@ export function PatchCenterPage() {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="flex items-center gap-2 text-[12.5px] text-ink-3">
-          <Spinner size={16} /> 正在验证补丁中心登录状态…
+          <Spinner size={16} /> 正在验证登录状态…
         </div>
       </div>
     );
@@ -246,12 +246,16 @@ export function PatchCenterPage() {
       <AppShell nav={guestNav} showSessions showFiles={false}>
         <div className="flex flex-1 items-center justify-center p-6">
           <div className="panel w-full max-w-md p-8 text-center">
-            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-soft text-accent">
-              <ShieldCheck size={24} />
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-surface-2 p-1.5">
+              <img
+                src={logoUrl}
+                alt="智能开发平台"
+                className="h-full w-full object-contain"
+              />
             </div>
-            <div className="text-[16px] font-semibold text-ink">登录补丁中心</div>
+            <div className="text-[16px] font-semibold text-ink">登录智能开发平台</div>
             <p className="mt-2 text-[12.5px] leading-6 text-ink-3">
-              检索、上传和适配补丁需要登录补丁中心账号。聊天功能不受影响。
+              登录后可使用补丁中心、智能开发等功能；聊天功能不受影响。
             </p>
             <div className="mt-5 flex justify-center gap-2">
               <Button variant="primary" onClick={() => navigate('/login?next=/')}>

@@ -11,6 +11,8 @@ export interface WorkflowSessionArtifact {
   dir: string;
   runId: string;
   step: number;
+  /** 用户在智能分析表单里填写的业务需求，用于聊天页替代拼接后的完整提示词。 */
+  display_prompt?: string;
 }
 
 interface WorkflowSessionState {
@@ -35,6 +37,7 @@ function readArtifacts(): Record<string, WorkflowSessionArtifact> {
         dir: item.dir,
         runId: String(item.runId || ''),
         step: Number(item.step || 0),
+        display_prompt: String((item as { display_prompt?: unknown }).display_prompt || ''),
       };
     }
     return result;

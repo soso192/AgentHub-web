@@ -74,6 +74,78 @@ pub fn cc_web_dir() -> std::path::PathBuf {
     data_dir
 }
 
+/// 旧版数据目录名：实施版曾经用 `.cc-web-novice`，更早的开发版/实施版用 `.cc-web`。
+fn legacy_data_dir_names() -> &'static [&'static str] {
+    #[cfg(feature = "implCon")]
+    {
+        &[".cc-web-novice", ".cc-web"]
+    }
+    #[cfg(not(feature = "implCon"))]
+    {
+        &[".cc-web"]
+    }
+}
+
+/// 把旧数据目录下的绝对路径重定位到当前数据目录。
+///
+/// 旧版 node_runs.json / sessions.json 里保存的是当时的绝对路径，只改目录名不会自动
+/// 改历史记录。启动时做一次词法替换，既保留相对子路径，也不要求旧目录仍然存在。
+fn rebase_legacy_path(value: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let home_text = home.to_string_lossy().replace('\\', "/");
+    let home_text = home_text.trim_end_matches('/');
+    let normalized = value.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    let home_lower = home_text.to_ascii_lowercase();
+    for legacy in legacy_data_dir_names() {
+        let prefix = format!("{home_lower}/{legacy}");
+        if lower == prefix || lower.starts_with(&format!("{prefix}/")) {
+            let suffix = &normalized[prefix.len()..];
+            let mut next = format!("{home_text}/{DATA_DIR_NAME}{suffix}");
+            #[cfg(windows)]
+            {
+                next = next.replace('/', "\\");
+            }
+            return Some(next);
+        }
+    }
+    None
+}
+
+fn rebase_node_run_paths(run: &mut serde_json::Value) -> bool {
+    let mut changed = false;
+    if let Some(object) = run.as_object_mut() {
+        for key in [
+            "out_dir",
+            "turn_dir",
+            "step_dir",
+            "stage_dir",
+            "patch_output_path",
+            "trigger_url",
+        ] {
+            if let Some(value) = object.get(key).and_then(|item| item.as_str()) {
+                if let Some(next) = rebase_legacy_path(value) {
+                    object.insert(key.to_string(), serde_json::Value::String(next));
+                    changed = true;
+                }
+            }
+        }
+        for key in ["artifacts", "image_paths", "log_paths"] {
+            if let Some(items) = object.get_mut(key).and_then(|item| item.as_array_mut()) {
+                for item in items.iter_mut() {
+                    if let Some(value) = item.as_str() {
+                        if let Some(next) = rebase_legacy_path(value) {
+                            *item = serde_json::Value::String(next);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    changed
+}
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -398,7 +470,17 @@ async fn main() -> std::io::Result<()> {
     registry.register(Box::new(codex));
 
     // Load persisted sessions
-    let saved_sessions = load_sessions_from_disk();
+    let mut saved_sessions = load_sessions_from_disk();
+    let mut sessions_rebased = false;
+    for session in saved_sessions.values_mut() {
+        if let Some(next) = rebase_legacy_path(&session.cwd) {
+            session.cwd = next;
+            sessions_rebased = true;
+        }
+    }
+    if sessions_rebased {
+        save_sessions_to_disk(&saved_sessions);
+    }
     let session_count = saved_sessions.len();
     if session_count > 0 {
         println!("   📂 {} session(s) restored", session_count);
@@ -406,7 +488,16 @@ async fn main() -> std::io::Result<()> {
     }
 
     // Load persisted node runs（智能开发节点的本机运行清单）
-    let saved_node_runs = load_node_runs_from_disk();
+    let mut saved_node_runs = load_node_runs_from_disk();
+    let mut node_runs_rebased = false;
+    for run in saved_node_runs.values_mut() {
+        if rebase_node_run_paths(run) {
+            node_runs_rebased = true;
+        }
+    }
+    if node_runs_rebased {
+        save_node_runs_to_disk(&saved_node_runs);
+    }
     if !saved_node_runs.is_empty() {
         println!("   📂 {} node run(s) restored", saved_node_runs.len());
     }
@@ -645,6 +736,14 @@ async fn main() -> std::io::Result<()> {
             .route(
                 "/api/patch-deploy/preflight",
                 web::post().to(api::patch_deploy::preflight),
+            )
+            .route(
+                "/api/patch-deploy/preflight-by-path",
+                web::post().to(api::patch_deploy::preflight_by_path),
+            )
+            .route(
+                "/api/patch-deploy/session-artifacts",
+                web::get().to(api::patch_deploy::session_artifacts),
             )
             .route(
                 "/api/patch-deploy/deploy",

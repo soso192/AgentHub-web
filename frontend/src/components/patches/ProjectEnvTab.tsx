@@ -17,6 +17,7 @@ interface EnvForm {
   debug_address: string;
   code_directory: string;
   package_path: string;
+  local_service_address: string;
   patch_output_path: string;
   local_skill_path: string;
   local_jdk_path: string;
@@ -30,6 +31,7 @@ const EMPTY_FORM: EnvForm = {
   debug_address: '',
   code_directory: '',
   package_path: '',
+  local_service_address: '',
   patch_output_path: '',
   local_skill_path: '',
   local_jdk_path: '',
@@ -85,6 +87,8 @@ export function ProjectEnvTab() {
         debug_address: editing.debug_address || '',
         code_directory: editing.code_directory || '',
         package_path: editing.package_path || '',
+        local_service_address:
+          editing.local_service_address || editing.package_path || '',
         patch_output_path: editing.patch_output_path || '',
         local_skill_path: editing.local_skill_path || '',
         local_jdk_path: editing.local_jdk_path || '',
@@ -143,10 +147,24 @@ export function ProjectEnvTab() {
     }
   };
 
+  const updatePackagePath = (value: string) => {
+    setForm((current) => {
+      const oldPackage = (current.package_path || '').trim();
+      const currentLocal = (current.local_service_address || '').trim();
+      const shouldFill = !currentLocal || currentLocal === oldPackage;
+      return {
+        ...current,
+        package_path: value,
+        ...(shouldFill ? { local_service_address: value } : {}),
+      };
+    });
+  };
+
   const pathField = (
-    key: 'code_directory' | 'package_path' | 'patch_output_path' | 'local_jdk_path',
+    key: 'code_directory' | 'package_path' | 'local_service_address' | 'patch_output_path' | 'local_jdk_path',
     label: string,
-    required = false
+    required = false,
+    onChange?: (value: string) => void
   ) => (
     <div key={key} className="sm:col-span-2">
       <label className="mb-1 block text-[12px] font-medium text-ink-2">
@@ -156,7 +174,11 @@ export function ProjectEnvTab() {
       <div className="flex gap-2">
         <Input
           value={form[key]}
-          onChange={(event) => setForm({ ...form, [key]: event.target.value })}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (onChange) onChange(value);
+            else setForm({ ...form, [key]: value });
+          }}
         />
         <Button className="shrink-0" icon={<FolderOpen size={14} />} onClick={() => pickFolder(key)}>
           选择
@@ -211,6 +233,15 @@ export function ProjectEnvTab() {
       render: (row) => (
         <span className="block max-w-[200px] truncate font-mono text-[11px] text-ink-3" title={row.package_path || ''}>
           {row.package_path || '—'}
+        </span>
+      ),
+    },
+    {
+      key: 'local_service',
+      title: '本机服务地址',
+      render: (row) => (
+        <span className="block max-w-[200px] truncate font-mono text-[11px] text-ink-3" title={row.local_service_address || row.package_path || ''}>
+          {row.local_service_address || row.package_path || '—'}
         </span>
       ),
     },
@@ -314,7 +345,7 @@ export function ProjectEnvTab() {
 
           {novice ? (
             <>
-              {pathField('package_path', 'home / war 目录', true)}
+              {pathField('package_path', 'home / war 目录', true, updatePackagePath)}
               <div className="sm:col-span-2">
                 <button
                   type="button"
@@ -327,6 +358,7 @@ export function ProjectEnvTab() {
                 </button>
                 {advancedOpen && (
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {pathField('local_service_address', '本机服务地址')}
                     <div>
                       <label className="mb-1 block text-[12px] font-medium text-ink-2">数据库连接</label>
                       <Input
@@ -358,6 +390,11 @@ export function ProjectEnvTab() {
             </>
           ) : (
             <>
+              {pathField('code_directory', '客开代码目录', !novice)}
+              {pathField('package_path', 'home / war 目录', true, updatePackagePath)}
+              {pathField('local_jdk_path', '本地 JDK 路径', !novice)}
+              {pathField('patch_output_path', '补丁输出路径（选填）')}
+              {pathField('local_service_address', '本机服务地址')}
               <div>
                 <label className="mb-1 block text-[12px] font-medium text-ink-2">数据库连接</label>
                 <Input
@@ -381,10 +418,6 @@ export function ProjectEnvTab() {
                   onChange={(event) => setForm({ ...form, local_skill_path: event.target.value })}
                 />
               </div>
-              {pathField('code_directory', '客开代码目录', !novice)}
-              {pathField('package_path', 'home / war 目录', true)}
-              {pathField('patch_output_path', '补丁输出路径（选填）')}
-              {pathField('local_jdk_path', '本地 JDK 路径', !novice)}
             </>
           )}
         </div>

@@ -90,7 +90,7 @@ interface ChatState {
     cwd?: string;
     resumeSessionId?: string;
   }) => Promise<string>;
-  sendMessage: (text: string, sessionId?: string | null) => Promise<void>;
+  sendMessage: (text: string, sessionId?: string | null, displayContent?: string) => Promise<void>;
   abort: (sessionId?: string | null) => Promise<void>;
   switchAssistant: (assistant: string, sessionId?: string | null) => Promise<void>;
   removeQueued: (sessionId: string, index: number) => void;
@@ -209,7 +209,7 @@ function patchView(
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
-  const openStream = (sessionId: string, prompt?: string) => {
+  const openStream = (sessionId: string, prompt?: string, displayContent?: string) => {
     const existing = streams.get(sessionId);
     if (existing && !existing.finished) return;
 
@@ -230,7 +230,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (!prompt || runtime.promptSent) return;
       runtime.promptSent = true;
       try {
-        const result = await api.agent.start(sessionId, prompt);
+        const result = await api.agent.start(sessionId, prompt, displayContent);
         if (result && result.success === false) {
           patchView(set, sessionId, { error: (result as { error?: string }).error || '发送失败' });
           void finalize(sessionId);
@@ -568,7 +568,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       return result.sessionId;
     },
 
-    sendMessage: async (text, sessionId) => {
+    sendMessage: async (text, sessionId, displayContent) => {
       const message = text.trim();
       if (!message) return;
       const id = sessionId ?? get().currentSessionId;
@@ -584,7 +584,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       patchView(set, id, (current) => ({
         messages: [
           ...current.messages,
-          { role: 'user', content: message, timestamp: Date.now() },
+          {
+            role: 'user',
+            content: message,
+            timestamp: Date.now(),
+            display_content: displayContent,
+          },
         ],
         streaming: true,
         startedAt: Date.now(),
@@ -592,7 +597,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         error: undefined,
       }));
       writeStorage(CURRENT_KEY, id);
-      openStream(id, message);
+      openStream(id, message, displayContent);
       get().refreshSessions().catch(() => {});
     },
 

@@ -10,6 +10,8 @@ export interface Message {
   timestamp: number;
   content_blocks?: ContentBlock[];
   assistant?: string;
+  /** 聊天页展示用的短文本；完整提示词仍保存在 content 中。 */
+  display_content?: string;
 }
 
 export interface Session {
@@ -195,6 +197,7 @@ export interface ProjectEnv {
   debug_address?: string;
   code_directory?: string;
   package_path?: string;
+  local_service_address?: string;
   patch_output_path?: string;
   local_skill_path?: string;
   local_jdk_path?: string;

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, Eye, EyeOff, Loader2, Lock, User, Zap } from 'lucide-react';
+import { AlertCircle, Eye, EyeOff, Loader2, Lock, User } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/app';
 import { useAuthStore } from '../store/auth';
 import { Button, Checkbox } from '../components/ui';
 import { useTheme } from '../lib/theme';
+import logoUrl from '../assets/logo.png';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -75,14 +76,18 @@ export function LoginPage() {
   };
 
   return (
-    <div className="relative flex min-h-full items-center justify-center overflow-hidden px-4">
-      <div className="pointer-events-none absolute -left-32 -top-32 h-96 w-96 rounded-full bg-accent/15 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-40 -right-24 h-96 w-96 rounded-full bg-[#a78bfa]/10 blur-3xl" />
+    <div className="relative flex min-h-full items-center justify-center overflow-hidden bg-[radial-gradient(900px_560px_at_8%_0%,#dce9ff_0%,transparent_58%),radial-gradient(800px_520px_at_100%_100%,#e4eeff_0%,transparent_55%),#f3f7ff] px-4 py-8 dark:bg-[var(--bg)]">
+      <div className="pointer-events-none absolute left-[8%] top-[12%] h-56 w-56 rounded-full bg-white/40 blur-3xl dark:bg-accent/10" />
+      <div className="pointer-events-none absolute bottom-[8%] right-[12%] h-64 w-64 rounded-full bg-[#cfe0ff]/50 blur-3xl dark:bg-[#a78bfa]/10" />
 
-      <div className="panel relative w-full max-w-[400px] overflow-hidden">
+      <div className="panel relative z-10 w-full max-w-[420px] overflow-hidden">
         <div className="border-b border-line px-7 pb-6 pt-7 text-center">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-[var(--accent)] to-[#a78bfa] text-white shadow-[0_10px_30px_rgba(124,140,255,.35)]">
-            <Zap size={24} />
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-surface-2 p-1.5 shadow-[0_10px_30px_rgba(124,140,255,.18)]">
+            <img
+              src={logoUrl}
+              alt="智能开发平台"
+              className="h-full w-full object-contain"
+            />
           </div>
           <div className="text-[19px] font-semibold tracking-tight text-ink">智能开发平台</div>
           <div className="mt-1 text-[12.5px] text-ink-3">
@@ -178,11 +183,11 @@ export function LoginPage() {
         </div>
 
         <div className="border-t border-line bg-surface-2/60 px-7 py-3 text-center text-[10.5px] text-ink-3">
-          登录凭据由补丁中心校验 · 智能开发平台 v{version?.version || '—'}
+          智能开发平台 v{version?.version || '—'}
         </div>
       </div>
 
-      <div className="absolute bottom-5 text-[10.5px] text-ink-3">
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[10.5px] text-ink-3">
         {theme === 'dark' ? '深色模式' : '浅色模式'} · 本地工作台
       </div>
     </div>

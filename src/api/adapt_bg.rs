@@ -737,6 +737,7 @@ fn push_session_message(data: &AppState, session_id: &str, role: &str, content: 
                 } else {
                     None
                 },
+                display_content: None,
             });
             session.updated_at = chrono::Utc::now();
         }

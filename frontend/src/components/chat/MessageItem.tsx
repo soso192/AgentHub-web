@@ -50,6 +50,7 @@ export function MessageItem({
   }
 
   if (isUser) {
+    const displayText = message.display_content || message.content;
     return (
       <div
         data-turn-id={turnId}
@@ -57,11 +58,11 @@ export function MessageItem({
       >
         <div className="flex max-w-[82%] flex-col items-end gap-1">
           <div className="whitespace-pre-wrap break-words rounded-2xl rounded-tr-md border border-line bg-[var(--user-bg)] px-4 py-2.5 text-[13.5px] leading-6 text-ink">
-            {message.content}
+            {displayText}
           </div>
           <div className="flex items-center gap-1 pr-1 text-[10.5px] text-ink-3">
             <span>{formatTime(message.timestamp)}</span>
-            <CopyButton text={message.content} />
+            <CopyButton text={displayText} />
           </div>
         </div>
         <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-line bg-surface-2 text-ink-3">

@@ -421,21 +421,6 @@ export function AdaptTab({
         <div className="space-y-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-[12px] font-medium text-ink-2">项目环境（可选）</label>
-              <select
-                value={envId}
-                onChange={(event) => setEnvId(event.target.value)}
-                className="input"
-              >
-                <option value="">不指定</option>
-                {envs.map((env) => (
-                  <option key={String(env.id)} value={String(env.id)}>
-                    {env.project_name} · {env.product_name} {env.product_version}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
               <label className="mb-1 block text-[12px] font-medium text-ink-2">客开工程目录 <span className="text-danger">*</span></label>
               <div className="flex gap-2">
                 <Input value={projectDir} onChange={(event) => setProjectDir(event.target.value)} />
@@ -450,6 +435,21 @@ export function AdaptTab({
                   选择
                 </Button>
               </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-[12px] font-medium text-ink-2">项目环境（可选）</label>
+              <select
+                value={envId}
+                onChange={(event) => setEnvId(event.target.value)}
+                className="input"
+              >
+                <option value="">不指定</option>
+                {envs.map((env) => (
+                  <option key={String(env.id)} value={String(env.id)}>
+                    {env.project_name} · {env.product_name} {env.product_version}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 

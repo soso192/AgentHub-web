@@ -81,6 +81,7 @@ pub async fn get_session(
                             Some(state.content_blocks.clone())
                         },
                         assistant: Some(state.assistant_name.clone()),
+                        display_content: None,
                     });
                 }
             }

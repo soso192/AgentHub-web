@@ -55,6 +55,119 @@ impl Clone for ClaudeSession {
     }
 }
 
+/// 在 Git 安装根目录下找 bash.exe。
+#[cfg(windows)]
+fn git_bash_in_root(root: &std::path::Path) -> Option<String> {
+    for rel in [r"bin\bash.exe", r"usr\bin\bash.exe"] {
+        let candidate = root.join(rel);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn is_wsl_or_store_bash(path: &std::path::Path) -> bool {
+    let lowered = path.to_string_lossy().to_lowercase();
+    lowered.contains(r"\windows\system32\") || lowered.contains(r"\windowsapps\")
+}
+
+/// 从 git.exe 位置反推 Git 根目录：git.exe 常见于 `<root>\cmd`、
+/// `<root>\bin` 或 `<root>\mingw64\bin`，逐级向上找 `bin\bash.exe`。
+#[cfg(windows)]
+fn git_bash_from_git_exe(git_exe: &std::path::Path) -> Option<String> {
+    let mut current = git_exe.parent();
+    for _ in 0..4 {
+        let dir = current?;
+        if let Some(found) = git_bash_in_root(dir) {
+            return Some(found);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+/// 查找 Git Bash 的真实路径（仅 Windows 返回路径；macOS/Linux 由调用方直接查 bash）。
+///
+/// 顺序：
+/// 1. `CLAUDE_CODE_GIT_BASH_PATH`（必须是真实文件）；
+/// 2. PATH 里的 `bash.exe` / `git.exe`（`git.exe` 位于 `Git\cmd` 时反推安装根目录）；
+/// 3. `where git` 兜底；
+/// 4. Git for Windows 常见安装目录。
+///
+/// 显式排除 `C:\Windows\System32\bash.exe`（WSL 启动器）和 WindowsApps 别名。
+#[cfg(windows)]
+pub(crate) fn find_git_bash_path() -> Option<String> {
+    if let Ok(value) = std::env::var("CLAUDE_CODE_GIT_BASH_PATH") {
+        let value = value.trim();
+        if !value.is_empty() {
+            let path = std::path::Path::new(value);
+            if path.is_file() && !is_wsl_or_store_bash(path) {
+                return Some(value.to_string());
+            }
+        }
+    }
+
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let direct = dir.join("bash.exe");
+            if direct.is_file() && !is_wsl_or_store_bash(&direct) {
+                return Some(direct.to_string_lossy().into_owned());
+            }
+            let git_exe = dir.join("git.exe");
+            if git_exe.is_file() {
+                if let Some(found) = git_bash_from_git_exe(&git_exe) {
+                    return Some(found);
+                }
+            }
+            if let Some(found) = git_bash_in_root(&dir) {
+                return Some(found);
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("where")
+        .arg("git")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(found) = git_bash_from_git_exe(std::path::Path::new(line)) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for key in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.trim().is_empty() {
+                let base = std::path::PathBuf::from(value);
+                roots.push(base.join("Git"));
+                if key == "LOCALAPPDATA" {
+                    roots.push(base.join("Programs").join("Git"));
+                }
+            }
+        }
+    }
+    roots.push(std::path::PathBuf::from(r"C:\Git"));
+    roots.push(std::path::PathBuf::from(r"D:\Downloads\Software\Git"));
+    roots.into_iter().find_map(|root| git_bash_in_root(&root))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn find_git_bash_path() -> Option<String> {
+    None
+}
+
 impl ClaudeAssistant {
     pub fn new() -> Self {
         let default_model = Self::read_default_model().unwrap_or_else(|| {
@@ -76,26 +189,14 @@ impl ClaudeAssistant {
                 // 显式给的值也必须真实存在：指向不存在路径的值与字面量 "bash" 一样，
                 // 会让 claude 启动即退（stderr 报 unable to find CLAUDE_CODE_GIT_BASH_PATH）。
                 // 忽略坏值、落到下面的候选路径，比把它原样传下去好。
-                if std::path::Path::new(&value).exists() {
+                if std::path::Path::new(&value).is_file() {
                     Some(value)
                 } else {
                     log::warn!("[claude] CLAUDE_CODE_GIT_BASH_PATH 指向的 {} 不存在，忽略该值", value);
                     None
                 }
             })
-            .or_else(|| {
-                let paths = vec![
-                    r"D:\Downloads\Software\Git\bin\bash.exe",
-                    r"C:\Program Files\Git\bin\bash.exe",
-                    r"C:\Program Files (x86)\Git\bin\bash.exe",
-                    r"C:\Program Files\Git\usr\bin\bash.exe",
-                    r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
-                ];
-                paths
-                    .into_iter()
-                    .find(|path| std::path::Path::new(path).exists())
-                    .map(str::to_string)
-            });
+            .or_else(find_git_bash_path);
 
         let mcp_config_path = super::mcp_config::resolve_mcp_config()
             .map(|path| path.to_string_lossy().to_string());
@@ -130,11 +231,24 @@ impl ClaudeAssistant {
     /// 4. 常见安装路径
     /// 5. fallback: "claude"
     fn find_claude_cmd() -> String {
+        Self::resolve_claude_cmd().unwrap_or_else(|| {
+            log::warn!("[claude] not found, falling back to 'claude'");
+            "claude".to_string()
+        })
+    }
+
+    /// 解析 Claude Code CLI 的启动命令；找不到时返回 None。
+    ///
+    /// 返回值可能是：
+    /// - 可执行文件路径（`CLAUDE_CMD` / npm 全局安装）；
+    /// - `node:<cli.js>`（npm 全局 node_modules 安装，需要 node 启动）；
+    /// - `claude.cmd` / `claude`（PATH 中找到）。
+    pub(crate) fn resolve_claude_cmd() -> Option<String> {
         // 1. 环境变量
         if let Ok(path) = std::env::var("CLAUDE_CMD") {
-            if std::path::Path::new(&path).exists() {
+            if std::path::Path::new(&path).is_file() {
                 log::info!("[claude] found via CLAUDE_CMD: {}", path);
-                return path;
+                return Some(path);
             }
         }
 
@@ -153,9 +267,9 @@ impl ClaudeAssistant {
                 ]
             };
             for path in &npm_paths {
-                if path.exists() {
+                if path.is_file() {
                     log::info!("[claude] found at: {}", path.display());
-                    return path.to_string_lossy().to_string();
+                    return Some(path.to_string_lossy().to_string());
                 }
             }
 
@@ -163,9 +277,9 @@ impl ClaudeAssistant {
             let global_node_modules = home.join("AppData").join("Roaming").join("npm").join("node_modules");
             if global_node_modules.exists() {
                 let claude_cli = global_node_modules.join("@anthropic-ai").join("claude-code").join("cli.js");
-                if claude_cli.exists() {
+                if claude_cli.is_file() {
                     log::info!("[claude] found via node_modules: {}", claude_cli.display());
-                    return format!("node:{}", claude_cli.to_string_lossy());
+                    return Some(format!("node:{}", claude_cli.to_string_lossy()));
                 }
             }
 
@@ -175,9 +289,9 @@ impl ClaudeAssistant {
                 "/usr/bin/claude",
             ];
             for path in &common_paths {
-                if std::path::Path::new(path).exists() {
+                if std::path::Path::new(path).is_file() {
                     log::info!("[claude] found at: {}", path);
-                    return path.to_string();
+                    return Some(path.to_string());
                 }
             }
         }
@@ -191,7 +305,7 @@ impl ClaudeAssistant {
                     .output().map(|o| o.status.success()).unwrap_or(false)
                 {
                     log::info!("[claude] found in PATH as: {}", name);
-                    return name.to_string();
+                    return Some(name.to_string());
                 }
             }
         } else {
@@ -200,12 +314,11 @@ impl ClaudeAssistant {
                 .output().map(|o| o.status.success()).unwrap_or(false)
             {
                 log::info!("[claude] found in PATH");
-                return "claude".to_string();
+                return Some("claude".to_string());
             }
         }
 
-        log::warn!("[claude] not found, falling back to 'claude'");
-        "claude".to_string()
+        None
     }
 
     /// 创建 Claude 命令（处理 node: 前缀和 .cmd 文件）

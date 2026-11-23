@@ -1,6 +1,8 @@
 use super::deploy;
 use super::detect::detect_env;
-use super::model::{BatchSummary, Config, DeployResult, EnvInfo, SavedServiceCommands};
+use super::model::{
+    BatchSummary, Config, DeployMeta, DeployResult, EnvInfo, SavedServiceCommands,
+};
 use super::service;
 use super::state::PatchDeployState;
 use super::util::{new_batch_id, service_key, LogFile};
@@ -10,8 +12,10 @@ use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
+use chrono::{DateTime, Local};
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 struct BusyGuard<'a>(&'a AtomicBool);
@@ -225,6 +229,421 @@ fn safe_filename(name: &str) -> String {
     value
 }
 
+#[derive(Deserialize)]
+pub struct SessionArtifactsQuery {
+    pub session_id: String,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct PreflightByPathReq {
+    pub target: String,
+    #[serde(default)]
+    pub artifact_dir: Option<String>,
+    #[serde(default)]
+    pub edition: Option<String>,
+    #[serde(default)]
+    pub product_name: Option<String>,
+    #[serde(default)]
+    pub product_version: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub operator: Option<String>,
+}
+
+fn run_for_session(state: &AppState, session_id: &str) -> Option<serde_json::Value> {
+    let runs = state.node_runs.read().unwrap();
+    runs.values()
+        .find(|run| run.get("session_id").and_then(|value| value.as_str()) == Some(session_id))
+        .cloned()
+}
+
+fn run_output_roots(run: &serde_json::Value) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for key in ["out_dir", "turn_dir", "step_dir", "stage_dir"] {
+        if let Some(value) = run.get(key).and_then(|item| item.as_str()) {
+            if !value.trim().is_empty() {
+                roots.push(PathBuf::from(value));
+            }
+        }
+    }
+    roots
+}
+
+fn canonical_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    for root in roots {
+        if let Ok(path) = fs::canonicalize(root) {
+            if !result.iter().any(|item: &PathBuf| *item == path) {
+                result.push(path);
+            }
+        }
+    }
+    result
+}
+
+fn path_is_under(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path.starts_with(root))
+}
+
+fn display_canonical_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        text.to_string()
+    }
+}
+
+fn collect_zip_artifacts(
+    dir: &Path,
+    roots: &[PathBuf],
+    depth: usize,
+    recursive: bool,
+    out: &mut Vec<serde_json::Value>,
+) {
+    if depth > 8 || out.len() >= 200 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= 200 {
+            return;
+        }
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if recursive {
+                collect_zip_artifacts(&path, roots, depth + 1, recursive, out);
+            }
+            continue;
+        }
+        if !file_type.is_file()
+            || !path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| value.eq_ignore_ascii_case("zip"))
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        let Ok(canonical) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if !path_is_under(&canonical, roots) {
+            continue;
+        }
+        let Ok(metadata) = fs::metadata(&canonical) else {
+            continue;
+        };
+        if metadata.len() == 0 {
+            continue;
+        }
+        let updated_at = metadata
+            .modified()
+            .map(|value| DateTime::<Local>::from(value).to_rfc3339())
+            .unwrap_or_default();
+        out.push(json!({
+            "path": display_canonical_path(&canonical),
+            "name": path.file_name().and_then(|value| value.to_str()).unwrap_or("patch.zip"),
+            "size": metadata.len(),
+            "updated_at": updated_at,
+        }));
+    }
+}
+
+pub async fn session_artifacts(
+    req: HttpRequest,
+    query: web::Query<SessionArtifactsQuery>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    if let Some(response) = request_guard(&req) {
+        return response;
+    }
+    let session_id = query.session_id.trim();
+    if session_id.is_empty() {
+        return json_error(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "session_id 不能为空",
+        );
+    }
+    let Some(run) = run_for_session(&state, session_id) else {
+        return ok(json!({ "artifacts": [] }));
+    };
+    let roots = canonical_roots(&run_output_roots(&run));
+    let explicit_path = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let scan_roots = match explicit_path {
+        Some(raw) => {
+            let Ok(path) = fs::canonicalize(raw) else {
+                return json_error(
+                    actix_web::http::StatusCode::BAD_REQUEST,
+                    "产物目录不存在",
+                );
+            };
+            if !path.is_dir() || !path_is_under(&path, &roots) {
+                return json_error(
+                    actix_web::http::StatusCode::FORBIDDEN,
+                    "产物目录不在当前会话任务目录内",
+                );
+            }
+            vec![path]
+        }
+        None => roots.clone(),
+    };
+    let mut artifacts = Vec::new();
+    let mut seen = BTreeSet::new();
+    for root in &scan_roots {
+        let mut found = Vec::new();
+        collect_zip_artifacts(root, &roots, 0, explicit_path.is_none(), &mut found);
+        for item in found {
+            let Some(path) = item.get("path").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            if seen.insert(path.to_string()) {
+                artifacts.push(item);
+            }
+        }
+    }
+    artifacts.sort_by(|left, right| {
+        right
+            .get("updated_at")
+            .and_then(|value| value.as_str())
+            .cmp(&left.get("updated_at").and_then(|value| value.as_str()))
+    });
+    ok(json!({ "artifacts": artifacts }))
+}
+
+pub async fn preflight_by_path(
+    req: HttpRequest,
+    body: web::Json<PreflightByPathReq>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    if let Some(response) = request_guard(&req) {
+        return response;
+    }
+    let session_id = body.session_id.as_deref().unwrap_or("").trim().to_string();
+    if session_id.is_empty() {
+        return json_error(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "session_id 不能为空",
+        );
+    }
+    let Some(run) = run_for_session(&state, &session_id) else {
+        return json_error(
+            actix_web::http::StatusCode::NOT_FOUND,
+            "找不到当前会话对应的智能开发任务",
+        );
+    };
+    let roots = canonical_roots(&run_output_roots(&run));
+    if roots.is_empty() {
+        return json_error(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "当前会话没有可用的产物目录",
+        );
+    }
+    let artifact_root = body
+        .artifact_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            fs::canonicalize(value).map_err(|_| "产物目录不存在".to_string())
+        })
+        .transpose();
+    let artifact_root = match artifact_root {
+        Ok(value) => value,
+        Err(error) => {
+            return json_error(actix_web::http::StatusCode::BAD_REQUEST, error);
+        }
+    };
+    if let Some(root) = &artifact_root {
+        if !root.is_dir() || !path_is_under(root, &roots) {
+            return json_error(
+                actix_web::http::StatusCode::FORBIDDEN,
+                "产物目录不在当前会话任务目录内",
+            );
+        }
+    }
+    if body.paths.is_empty() || body.paths.len() > 20 {
+        return json_error(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "请选择 1～20 个补丁 ZIP",
+        );
+    }
+
+    let mut uploads = Vec::new();
+    for raw in &body.paths {
+        let path = PathBuf::from(raw.trim());
+        let Ok(canonical) = fs::canonicalize(&path) else {
+            return json_error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                format!("补丁文件不存在：{}", path.display()),
+            );
+        };
+        if !canonical.is_file() {
+            return json_error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                format!("不是普通文件：{}", canonical.display()),
+            );
+        }
+        if !canonical
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("zip"))
+            .unwrap_or(false)
+        {
+            return json_error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "只支持 ZIP 补丁包",
+            );
+        }
+        let allowed = match &artifact_root {
+            Some(root) => canonical.parent().map(|parent| parent == root).unwrap_or(false),
+            None => path_is_under(&canonical, &roots),
+        };
+        if !allowed {
+            return json_error(
+                actix_web::http::StatusCode::FORBIDDEN,
+                "补丁路径不在当前产物目录内",
+            );
+        }
+        if fs::metadata(&canonical).map(|value| value.len()).unwrap_or(0) > 500 * 1024 * 1024 {
+            return json_error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "补丁文件超过 500MB",
+            );
+        }
+        let name = canonical
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("patch.zip")
+            .to_string();
+        uploads.push((name, canonical));
+    }
+
+    let env_snapshot = run
+        .get("env_snapshot")
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let text = |key: &str| {
+        env_snapshot
+            .get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let target = if body.target.trim().is_empty() {
+        text("package_path")
+    } else {
+        body.target.trim().to_string()
+    };
+    if target.is_empty() {
+        return json_error(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "当前项目环境没有配置 home/war 地址，请填写部署目标",
+        );
+    }
+    let edition = body
+        .edition
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("auto")
+        .to_string();
+    let product_name = body
+        .product_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| text("product_name"));
+    let product_version = body
+        .product_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| text("product_version"));
+    let session_name = run
+        .get("problem_desc")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(80)
+        .collect::<String>();
+
+    let batch_id = new_batch_id();
+    let staging = pd(&state).staging_dir(&batch_id);
+    if let Err(error) = fs::create_dir_all(&staging) {
+        return internal_error(format!("创建临时目录失败：{error}"));
+    }
+    let meta = DeployMeta {
+        source: "chat".to_string(),
+        session_id: Some(session_id),
+        session_name: Some(session_name),
+        operator: body.operator.clone(),
+    };
+    let staging_for_task = staging.clone();
+    let batch_for_task = batch_id.clone();
+    let edition_for_config = edition.clone();
+    let result = web::block(move || {
+        deploy::preflight(
+            &target,
+            &edition,
+            &product_name,
+            &product_version,
+            &uploads,
+            &staging_for_task,
+            &batch_for_task,
+            &meta,
+        )
+    })
+    .await;
+
+    match result {
+        Ok(Ok(plan)) => {
+            let _ = pd(&state).remember_form(
+                &plan.env.input_path,
+                &edition_for_config,
+                &plan.product_name,
+                &plan.product_version,
+            );
+            ok(plan)
+        }
+        Ok(Err(error)) => {
+            let _ = fs::remove_dir_all(&staging);
+            json_error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                format!("{error:#}"),
+            )
+        }
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            internal_error(format!("预检任务失败：{error}"))
+        }
+    }
+}
+
 pub async fn preflight(
     req: HttpRequest,
     mut payload: Multipart,
@@ -376,6 +795,7 @@ pub async fn preflight(
             &uploads,
             &staging_for_task,
             &batch_for_task,
+            &DeployMeta::default(),
         )
     })
     .await;

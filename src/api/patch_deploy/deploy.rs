@@ -2,8 +2,8 @@ use super::archive::{payload_path, read_installpatch, scan_archive, JarIndex};
 use super::detect::detect_env;
 use super::mapping::Mapper;
 use super::model::{
-    ArchivePlan, BatchFile, BatchRecord, DeployResult, PlanStats, PreflightResult, ServiceInfo,
-    StoredPlan,
+    ArchivePlan, BatchFile, BatchRecord, DeployMeta, DeployResult, PlanStats, PreflightResult,
+    ServiceInfo, StoredPlan,
 };
 use super::service;
 use super::util::{
@@ -49,6 +49,7 @@ pub fn preflight(
     uploads: &[(String, PathBuf)],
     staging: &Path,
     batch_id: &str,
+    meta: &DeployMeta,
 ) -> Result<PreflightResult> {
     if uploads.is_empty() {
         bail!("请至少上传一个补丁 ZIP");
@@ -124,6 +125,14 @@ pub fn preflight(
         archives: archives.clone(),
         stats: stats.clone(),
         warnings: warnings.clone(),
+        source: if meta.source.trim().is_empty() {
+            "manual".to_string()
+        } else {
+            meta.source.clone()
+        },
+        session_id: meta.session_id.clone(),
+        session_name: meta.session_name.clone(),
+        operator: meta.operator.clone(),
     };
     write_json_atomic(&staging.join("plan.json"), &stored)?;
 
@@ -349,6 +358,10 @@ pub fn deploy(
         } else {
             Some(warnings.join("；"))
         },
+        source: plan.source.clone(),
+        session_id: plan.session_id.clone(),
+        session_name: plan.session_name.clone(),
+        operator: plan.operator.clone(),
     };
 
     let replaced = files.iter().filter(|f| f.action == "replace").count();
@@ -554,6 +567,7 @@ mod tests {
             &uploads,
             &staging,
             "test-batch",
+            &DeployMeta::default(),
         )
         .unwrap();
         assert_eq!(plan.product_name, "FBIP");
@@ -605,6 +619,10 @@ mod tests {
             status: "deployed".to_string(),
             rolled_back_at: None,
             note: None,
+            source: "manual".to_string(),
+            session_id: None,
+            session_name: None,
+            operator: None,
         };
         let mut batches = vec![
             make("p1", "D:/a/b/c", 1),

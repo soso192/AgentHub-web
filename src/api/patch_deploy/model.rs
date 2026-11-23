@@ -108,6 +108,18 @@ pub struct PreflightResult {
     pub warnings: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DeployMeta {
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub session_name: Option<String>,
+    #[serde(default)]
+    pub operator: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoredPlan {
     pub batch_id: String,
@@ -118,6 +130,14 @@ pub struct StoredPlan {
     pub archives: Vec<ArchivePlan>,
     pub stats: PlanStats,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub session_name: Option<String>,
+    #[serde(default)]
+    pub operator: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -149,6 +169,14 @@ pub struct BatchRecord {
     pub status: String,
     pub rolled_back_at: Option<String>,
     pub note: Option<String>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub session_name: Option<String>,
+    #[serde(default)]
+    pub operator: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -33,6 +33,7 @@ import { FileBrowser } from '../chat/FileBrowser';
 import { EnvCheckView } from '../novice/EnvCheckView';
 import { ProjectEnvTab } from '../patches/ProjectEnvTab';
 import { UpdatePanel } from '../settings/UpdatePanel';
+import logoUrl from '../../assets/logo.png';
 
 export interface NavItem {
   key: string;
@@ -316,8 +317,12 @@ export function AppShell({
           )}
         >
           <div className="flex items-center gap-2.5 px-3.5 py-3.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-[var(--accent)] to-[#a78bfa] text-white shadow-[0_6px_18px_rgba(124,140,255,.32)]">
-              <Zap size={17} />
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-line bg-white p-0.5 shadow-[0_6px_18px_rgba(124,140,255,.22)]">
+              <img
+                src={logoUrl}
+                alt="智能开发平台"
+                className="h-full w-full object-contain"
+              />
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-[14px] font-semibold tracking-tight text-ink">智能开发平台</div>

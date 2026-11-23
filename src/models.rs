@@ -37,6 +37,9 @@ pub struct Message {
     /// Which assistant generated this message (for correct labeling after switching)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assistant: Option<String>,
+    /// 用户消息在界面上展示的短文本（表单问题描述）；content 仍保存完整提示词。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +69,9 @@ pub struct NewSessionRequest {
 #[derive(Debug, Deserialize)]
 pub struct StartPromptRequest {
     pub message: String,
+    /// 仅用于聊天页展示；没有时前端退回显示 content。
+    #[serde(default)]
+    pub display_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -94,6 +94,13 @@ export interface PatchDeployBatchFile {
   shadow_jar: string | null;
 }
 
+export interface PatchDeployArtifact {
+  path: string;
+  name: string;
+  size: number;
+  updated_at: string;
+}
+
 export interface PatchDeployBatch {
   id: string;
   seq: number;
@@ -110,6 +117,10 @@ export interface PatchDeployBatch {
   note: string | null;
   later_deployed: number;
   service_key: string;
+  source?: 'chat' | 'manual' | string;
+  session_id?: string | null;
+  session_name?: string | null;
+  operator?: string | null;
 }
 
 export interface PatchDeployResult {
@@ -154,6 +165,28 @@ export const patchDeployApi = {
       method: 'POST',
       body: form,
     }),
+
+  preflightByPath: (body: {
+    target: string;
+    edition?: string;
+    product_name?: string;
+    product_version?: string;
+    session_id: string;
+    artifact_dir?: string;
+    paths: string[];
+    operator?: string;
+  }) =>
+    patchDeployRequest<PatchDeployPlan>('/api/patch-deploy/preflight-by-path', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  sessionArtifacts: (sessionId: string, path?: string) =>
+    patchDeployRequest<{ artifacts: PatchDeployArtifact[] }>(
+      `/api/patch-deploy/session-artifacts?session_id=${encodeURIComponent(sessionId)}${
+        path ? `&path=${encodeURIComponent(path)}` : ''
+      }`
+    ),
 
   deploy: (body: { batch_id: string; restart: boolean; confirm_replace: boolean }) =>
     patchDeployRequest<PatchDeployResult>('/api/patch-deploy/deploy', {

@@ -341,8 +341,10 @@
 .md code {
   font-family: var(--font-mono);
   font-size: 0.88em;
-  background: var(--surface-3);
-  border: 1px solid var(--border-soft);
+  /* 行内 `code` 也使用浅蓝色底（168, 199, 250） */
+  background: rgb(168, 199, 250);
+  border: 1px solid rgba(59, 130, 246, 0.38);
+  color: #172033;
   border-radius: 5px;
   padding: 0.12em 0.38em;
 }
@@ -350,15 +352,16 @@
   margin: 0.7em 0;
   padding: 12px 14px;
   overflow-x: auto;
-  background: var(--code-bg);
-  border: 1px solid var(--code-border);
+  /* AI 最终输出里的代码块：浅蓝色底（168, 199, 250） */
+  background: rgb(168, 199, 250);
+  border: 1px solid rgba(59, 130, 246, 0.38);
   border-radius: 10px;
 }
 .md pre code {
   background: transparent;
   border: 0;
   padding: 0;
-  color: #c9d2e3;
+  color: #172033;
   font-size: 12.5px;
   line-height: 1.6;
 }

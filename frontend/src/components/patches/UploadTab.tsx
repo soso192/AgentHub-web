@@ -194,19 +194,6 @@ export function UploadTab({ onUploaded }: { onUploaded?: () => void }) {
                 </div>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
                   <div>
-                    <label className="mb-1 block text-[10.5px] text-ink-3">补丁名称</label>
-                    <Input
-                      value={entry.name}
-                      onChange={(event) =>
-                        setEntries((current) =>
-                          current.map((item, i) =>
-                            i === index ? { ...item, name: event.target.value } : item
-                          )
-                        )
-                      }
-                    />
-                  </div>
-                  <div>
                     <label className="mb-1 block text-[10.5px] text-ink-3">产品 <span className="text-danger">*</span></label>
                     <select
                       value={entry.product_name}
@@ -250,6 +237,19 @@ export function UploadTab({ onUploaded }: { onUploaded?: () => void }) {
                           <option key={item.id} value={item.version} />
                         ))}
                     </datalist>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[10.5px] text-ink-3">补丁名称</label>
+                    <Input
+                      value={entry.name}
+                      onChange={(event) =>
+                        setEntries((current) =>
+                          current.map((item, i) =>
+                            i === index ? { ...item, name: event.target.value } : item
+                          )
+                        )
+                      }
+                    />
                   </div>
                   <div>
                     <label className="mb-1 block text-[10.5px] text-ink-3">用户关键词</label>

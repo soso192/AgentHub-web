@@ -20,6 +20,7 @@ mod handlers;
 
 pub use handlers::{
     batch_detail, cancel, delete_batch, deploy_handler, detect, get_config, list_batches, preflight,
-    reset_config_defaults, restart, rollback_handler, save_config, save_service_commands,
+    preflight_by_path, reset_config_defaults, restart, rollback_handler, save_config,
+    save_service_commands, session_artifacts,
 };
 pub use state::PatchDeployState;

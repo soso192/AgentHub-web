@@ -4,6 +4,7 @@ import {
   FolderOpen,
   GitMerge,
   MessageSquarePlus,
+  PackageCheck,
   Sparkles,
   WifiOff,
 } from 'lucide-react';
@@ -18,6 +19,7 @@ import { Button, Input, Select, Spinner, Tooltip } from '../ui';
 import { useToast } from '../ui/toast';
 import { Composer } from './Composer';
 import { MergeDialog } from './MergeDialog';
+import { ChatPatchDeployDialog } from './ChatPatchDeployDialog';
 import { MessageList } from './MessageList';
 
 export interface ChatPanelProps {
@@ -63,6 +65,7 @@ export function ChatPanel({
   const mergeToSession = useNodeStore((state) => state.mergeToSession);
   const [mergeRun, setMergeRun] = useState<LocalNodeRun | null>(null);
   const [mergeBusy, setMergeBusy] = useState(false);
+  const [patchDeployOpen, setPatchDeployOpen] = useState(false);
   const edition = useAppStore((state) => state.edition);
 
   const assistant = view?.assistant || summary?.assistant || globalAssistant;
@@ -77,9 +80,14 @@ export function ChatPanel({
   // 当前会话对应的智能开发任务（开发版/实施版都算），用于「打开产物所在位置」。
   const taskRun = sessionId ? nodeRuns.find((run) => run.session_id === sessionId) : undefined;
   // 智能分析（workflow）的本地步骤没有 node run，产物目录由执行器登记在这里。
-  const workflowArtifactDir = useWorkflowSessionStore((state) =>
-    sessionId ? state.artifacts[sessionId]?.dir || '' : ''
+  const workflowSession = useWorkflowSessionStore((state) =>
+    sessionId ? state.artifacts[sessionId] : undefined
   );
+  const workflowArtifactDir = workflowSession?.dir || '';
+  // 聊天页只展示表单里填写的问题/业务需求，不展示拼好的长提示词。
+  const displayUserPrompt = String(
+    taskRun?.problem_desc || workflowSession?.display_prompt || ''
+  ).trim();
   // 顶栏内置浏览器的默认地址：优先调试地址，其次录制页面，最后触发入口。
   const setBrowserDefaultUrl = useBrowserStore((state) => state.setDefaultUrl);
   useEffect(() => {
@@ -301,11 +309,26 @@ export function ChatPanel({
       </button>
     </Tooltip>
   ) : null;
+  const patchDeployAction =
+    taskRun && artifactDir && !streaming && !nodeStreaming ? (
+      <Tooltip content="部署 AI 产出的补丁">
+        <button
+          type="button"
+          onClick={() => setPatchDeployOpen(true)}
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-line bg-surface-2 text-ink-2 transition-colors hover:border-accent/50 hover:bg-accent-soft hover:text-accent"
+          aria-label="部署补丁"
+          title="部署补丁"
+        >
+          <PackageCheck size={15} />
+        </button>
+      </Tooltip>
+    ) : null;
   const composerActions =
-    openArtifactAction || mergeAction ? (
+    openArtifactAction || mergeAction || patchDeployAction ? (
       <>
         {openArtifactAction}
         {mergeAction}
+        {patchDeployAction}
       </>
     ) : null;
 
@@ -357,6 +380,7 @@ export function ChatPanel({
         <MessageList
           view={view}
           compact={compact}
+          displayUserPrompt={displayUserPrompt}
           onSuggestion={(text) => {
             void handleSend(text, []);
           }}
@@ -383,6 +407,16 @@ export function ChatPanel({
           }
         />
       </div>
+
+      {taskRun && sessionId && (
+        <ChatPatchDeployDialog
+          open={patchDeployOpen}
+          sessionId={sessionId}
+          run={taskRun}
+          artifactDir={artifactDir}
+          onClose={() => setPatchDeployOpen(false)}
+        />
+      )}
 
       {mergeRun && (
         <MergeDialog

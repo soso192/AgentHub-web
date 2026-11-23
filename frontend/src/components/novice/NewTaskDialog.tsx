@@ -49,6 +49,7 @@ function buildPrompt(run: {
     trigger_url: run.trigger_url || '',
     code_directory: s(env.code_directory),
     package_path: s(env.package_path),
+    local_service_address: s(env.local_service_address),
     local_jdk_path: s(env.local_jdk_path),
     local_skill_path: s(env.local_skill_path),
     db_connection: maskDb(s(env.db_connection)),
@@ -276,6 +277,7 @@ export function NewTaskDialog({
           product_version: env.product_version,
           code_directory: env.code_directory,
           package_path: env.package_path,
+          local_service_address: env.local_service_address,
           local_jdk_path: jdk,
           local_skill_path: env.local_skill_path,
           db_connection: env.db_connection,
@@ -336,7 +338,7 @@ export function NewTaskDialog({
       };
       await registerExternal(run);
 
-      await sendMessage(prompt, sessionId);
+      await sendMessage(prompt, sessionId, pseudo.problem_desc);
       if (pollRef.current) {
         window.clearInterval(pollRef.current);
         pollRef.current = null;

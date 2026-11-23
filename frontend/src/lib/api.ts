@@ -116,10 +116,13 @@ export const api = {
         '/api/agent/new',
         { method: 'POST', body: JSON.stringify(body) }
       ),
-    start: (id: string, message: string) =>
+    start: (id: string, message: string, display_content?: string) =>
       request<{ success?: boolean; error?: string }>(
         `/api/agent/${encodeURIComponent(id)}/start`,
-        { method: 'POST', body: JSON.stringify({ message }) }
+        {
+          method: 'POST',
+          body: JSON.stringify({ message, ...(display_content ? { display_content } : {}) }),
+        }
       ),
     abort: (id: string) =>
       request<{ success?: boolean }>(`/api/agent/${encodeURIComponent(id)}/abort`, {
